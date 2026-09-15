@@ -1,6 +1,16 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# Protocol Emulator ASIC
+
+Entry for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/):
+a programmable, firmware-driven protocol emulator (UART/SPI/I2C baseline,
+USB-LS/10M-Ethernet stretch) built on a tiny pin-oriented CPU, rather than
+fixed protocol logic. Built on the [Tiny Tapeout](https://tinytapeout.com)
+IHP Verilog template.
+
+Status: repo scaffolded, ISA/CPU design not started. See
+[docs/architecture.md](docs/architecture.md) for open design questions and
+[firmware/README.md](firmware/README.md) for the protocol-firmware plan.
 
 - [Read the documentation for project](docs/info.md)
 

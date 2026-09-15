@@ -10,11 +10,22 @@ See below to get started or for more information, check the [website](https://ti
 
 ## How to run
 
-To run the RTL simulation:
+To run the RTL simulation (needs `iverilog`, default `SIM`):
 
 ```sh
 make -B
 ```
+
+No local `iverilog`? Use Verilator instead (needs `--timing` on
+Verilator ≥5.024, since the default sim mode rejects the `#1;` delay in
+`tb.v`):
+
+```sh
+SIM=verilator EXTRA_ARGS="--timing" make -B
+```
+
+CI (`.github/workflows/test.yaml`) always uses `iverilog`, so this is a
+local-only convenience -- doesn't change what CI runs.
 
 To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
 

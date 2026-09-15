@@ -1,23 +1,26 @@
 # Tiny Tapeout project information
 project:
-  title:        ""      # Project title
-  author:       ""      # Your name
-  discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  ""      # One line description of what your project does
-  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     0       # Clock frequency in Hz (or 0 if not applicable)
+  title:        "Protocol Emulator"      # TODO: finalize title
+  author:       ""      # TODO: fill in your name
+  discord:      ""      # TODO: fill in your discord username (optional)
+  description:  "Programmable protocol emulator: firmware-driven UART/SPI/I2C via a tiny pin-oriented CPU"
+  language:     "Verilog"
+  clock_hz:     0       # TODO: set once baud-rate/timing budget is worked out
 
-  # How many tiles your design occupies? A single tile is about 167x108 uM.
-  tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
+  # TODO: competition brief says max 6x4 tiles (~0.7mm^2), but this template's
+  # valid-value list doesn't include 6x4 -- confirm actual max for this
+  # shuttle on TT Discord/docs before finalizing. Using 6x2 as a safe
+  # placeholder in the meantime.
+  tiles: "6x2"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
 
-  # Your top module name must start with "tt_um_". Make it unique by including your github username:
-  top_module:  "tt_um_example"
+  # Must be unique -- includes github username per TT convention.
+  top_module:  "tt_um_pankajnair_protocol_emulator"
 
-  # List your project's source files here.
-  # Source files must be in ./src and you must list each source file separately, one per line.
-  # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
+  # Only top.v wired in for now -- cpu/io/mem submodules aren't instantiated
+  # yet (see TODOs in src/cpu, src/io, src/mem). Add them here as they're
+  # wired into top.v, and update test/Makefile PROJECT_SOURCES to match.
   source_files:
-    - "project.v"
+    - "top.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
