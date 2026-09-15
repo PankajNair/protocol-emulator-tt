@@ -9,12 +9,17 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-Explain how your project works
+Flow-validation placeholder: an 8-bit adder (`uo_out = ui_in + uio_in`),
+the template's original example logic. Used to get real synth/P&R/GDS
+numbers for the IHP CMOS5L process before locking the actual protocol
+emulator's sequencer ISA (see `docs/architecture.md`). Not the final
+design -- expect this file to be rewritten once that's built.
 
 ## How to test
 
-Explain how to use your project
+Drive `ui_in` and `uio_in` with two 8-bit values, check `uo_out` equals
+their sum on the next clock edge after reset.
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+None.
