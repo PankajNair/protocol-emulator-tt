@@ -7,11 +7,12 @@ project:
   language:     "Verilog"
   clock_hz:     0       # TODO: set once baud-rate/timing budget is worked out
 
-  # TODO: competition brief says max 6x4 tiles (~0.7mm^2), but this template's
-  # valid-value list doesn't include 6x4 -- confirm actual max for this
-  # shuttle on TT Discord/docs before finalizing. Using 6x2 as a safe
-  # placeholder in the meantime.
-  tiles: "6x2"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
+  # Competition rule: max 6x4 tiles. Confirmed valid against the actual
+  # source of truth (TinyTapeout/tt-support-tools tech/ihp-sg13g2/tile_sizes.yaml,
+  # not this template's stale comment below, which predates 3x4/4x4/5x4/6x4/8x4
+  # support): 6x4 -> 1289.28 x 710.64 um (~0.92mm^2 placed, vs. ~0.7mm^2 naive
+  # 24-tile estimate -- TT adds margin on larger multi-tile footprints).
+  tiles: "6x4"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2 (template comment is stale -- 3x4/4x4/5x4/6x4/8x4 also valid per tt-support-tools)
 
   # Must be unique -- includes github username per TT convention.
   top_module:  "tt_um_pankajnair_protocol_emulator"
