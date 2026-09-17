@@ -17,52 +17,47 @@ project:
   # Must be unique -- includes github username per TT convention.
   top_module:  "tt_um_pankajnair_protocol_emulator"
 
-  # FLOW-VALIDATION ONLY: top.v temporarily instantiates the IHP SRAM hard
-  # macro (see src/config.json MACROS block) instead of cpu/io/mem, to
-  # measure real integration cost before the ISA is locked. The blackbox
-  # netlist below is required alongside it for TT's own port/hierarchy
-  # checks (see MACROS.nl in src/config.json for the synthesis-time copy).
-  # Revert both this list and top.v once the validation run lands.
+  # Only top.v wired in for now -- cpu/io/mem submodules aren't instantiated
+  # yet (see TODOs in src/cpu, src/io, src/mem). Add them here as they're
+  # wired into top.v, and update test/Makefile PROJECT_SOURCES to match.
   source_files:
     - "top.v"
-    - "RM_IHPSG13_1P_1024x8_c2_bm_bist.v"
 
-# FLOW-VALIDATION PLACEHOLDER -- describes the SRAM-macro validation wiring
-# in src/top.v (address/wen/bank_select on ui_in, data on uio_in/uo_out),
-# used only to get real synth/P&R/GDS numbers for the SRAM macro on CMOS5L
-# before the ISA is locked. NOT the real protocol emulator's pinout --
-# expect this whole section to be rewritten once the sequencer ISA + pin
-# mapping (docs/architecture.md) is designed.
+# FLOW-VALIDATION PLACEHOLDER -- describes the trivial passthrough adder in
+# src/top.v (uo_out = ui_in + uio_in), used only to get real synth/P&R/GDS
+# numbers on CMOS5L before the ISA is locked. NOT the real protocol
+# emulator's pinout -- expect this whole section to be rewritten once the
+# sequencer ISA + pin mapping (docs/architecture.md) is designed.
 pinout:
   # Inputs
-  ui[0]: "addr[0]"
-  ui[1]: "addr[1]"
-  ui[2]: "addr[2]"
-  ui[3]: "addr[3]"
-  ui[4]: "addr[4]"
-  ui[5]: "addr[5]"
-  ui[6]: "bank_sel"
-  ui[7]: "wen"
+  ui[0]: "A[0]"
+  ui[1]: "A[1]"
+  ui[2]: "A[2]"
+  ui[3]: "A[3]"
+  ui[4]: "A[4]"
+  ui[5]: "A[5]"
+  ui[6]: "A[6]"
+  ui[7]: "A[7]"
 
   # Outputs
-  uo[0]: "dout[0]"
-  uo[1]: "dout[1]"
-  uo[2]: "dout[2]"
-  uo[3]: "dout[3]"
-  uo[4]: "dout[4]"
-  uo[5]: "dout[5]"
-  uo[6]: "dout[6]"
-  uo[7]: "dout[7]"
+  uo[0]: "SUM[0]"
+  uo[1]: "SUM[1]"
+  uo[2]: "SUM[2]"
+  uo[3]: "SUM[3]"
+  uo[4]: "SUM[4]"
+  uo[5]: "SUM[5]"
+  uo[6]: "SUM[6]"
+  uo[7]: "SUM[7]"
 
   # Bidirectional pins
-  uio[0]: "din[0]/addr[6]"
-  uio[1]: "din[1]/addr[7]"
-  uio[2]: "din[2]/addr[8]"
-  uio[3]: "din[3]/addr[9]"
-  uio[4]: "din[4]"
-  uio[5]: "din[5]"
-  uio[6]: "din[6]"
-  uio[7]: "din[7]"
+  uio[0]: "B[0]"
+  uio[1]: "B[1]"
+  uio[2]: "B[2]"
+  uio[3]: "B[3]"
+  uio[4]: "B[4]"
+  uio[5]: "B[5]"
+  uio[6]: "B[6]"
+  uio[7]: "B[7]"
 
 # Do not change!
 yaml_version: 6
