@@ -5,7 +5,9 @@ project:
   discord:      ""      # TODO: fill in your discord username (optional)
   description:  "Programmable protocol emulator: firmware-driven UART/SPI/I2C via a tiny pin-oriented CPU"
   language:     "Verilog"
-  clock_hz:     0       # TODO: set once baud-rate/timing budget is worked out
+  clock_hz:     50000000 # 50MHz -- TT's documented floor ("at least 50MHz",
+  # RP2040-generated), and already what src/config.json's CLOCK_PERIOD=20 (20ns)
+  # has assumed in every flow-validation run so far. See docs/protocol_timing.md.
 
   # Competition rule: max 6x4 tiles. Confirmed valid against the actual
   # source of truth (TinyTapeout/tt-support-tools tech/ihp-sg13g2/tile_sizes.yaml,
