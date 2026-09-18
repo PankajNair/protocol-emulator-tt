@@ -56,6 +56,7 @@ file stays focused on memory/area/pipeline/pin-level system integration.
   clock, PS/2 has huge margin). Surfaced that `DELAY`'s flat 511-cycle
   max couldn't reach most UART bauds -- fixed via an exponent/mantissa
   immediate encoding, see [isa.md](isa.md)'s `DELAY` row.
+- **Host handshake**: see the Host handshake section below. Locked.
 
 ## Open questions
 
@@ -91,19 +92,46 @@ never touches the CPU datapath.
   `BRANCH`/`LOOP`/`CALL` use for jumps). No address bus needed: host
   streams the raw firmware byte image in order, low byte of instruction
   0 first, matching `FETCH_LO`/`FETCH_HI`'s own `PC*2`/`PC*2+1` order.
-- `uio[6]` (previously reserved) = `START`. Host asserts once loading
-  is done; FSM exits `LOAD`, jumps to `FETCH_LO` with `PC=0`. `uio[7]`
-  stays reserved.
+- `uio[6]` (previously reserved) = `START` during `LOAD` only. Host
+  asserts once loading is done; FSM exits `LOAD`, jumps to `FETCH_LO`
+  with `PC=0`. Repurposed as `HOST_ERROR` during normal execution --
+  see Pin map and "Host handshake" below; `uio[7]` stays reserved.
 - Same physical pins as normal operation (`ui_in`, `HOST_GO`) -- this
   is a mode-dependent reinterpretation, not new pin budget.
+- **`uo_out[7:0]` echoes the byte just written**, every `HOST_GO`
+  pulse. `uo_out` is completely idle during `LOAD` (firmware isn't
+  running yet), so this costs nothing new -- host compares what it sent
+  (`ui_in`) against what got echoed (`uo_out`) on every byte, catching a
+  dropped/doubled pulse the instant it happens rather than discovering
+  corruption only when firmware misbehaves at runtime later. Chosen
+  over an end-of-load checksum: per-byte echo catches errors as they
+  occur, a checksum only gives an aggregate pass/fail at the end, and
+  echo is simpler to boot.
+- **Byte-address counter saturates at 1023, does not wrap.** A
+  `HOST_GO` pulse at address 1023 writes/echoes that byte and stops
+  advancing -- further pulses are harmless no-ops, not silent
+  corruption of address 0 (which a wrapping counter would cause). No
+  separate overflow flag needed on top of this -- the host already
+  tracks its own byte count.
+- **`uio[3:0]` (protocol bus) and `uio[6:7]` are Hi-Z (`oe=0`)
+  throughout `LOAD`.** Nothing should drive external protocol lines
+  before firmware is actually running -- resolves what was previously
+  unspecified pin state during boot.
+- **`HOST_GO` pulse timing**: held stable >=2 target-clock cycles per
+  phase (high, then low), matching the 2-flop synchronizer already
+  planned for host inputs in `pin_ctrl.v`. Exact cycle count is an
+  RTL-timing detail, not locked further here ahead of that RTL.
 
 ### Reset values
 
-PC=0, R0-R3=0, compare/test flag=0, return-address register=0, FSM
-resets into `LOAD` (see above). A reset asserting mid-fetch (partway
-through `FETCH_HI`, partial byte latched) unconditionally returns to
-`LOAD` -- the in-flight fetch is simply discarded, no special-case
-handling needed.
+PC=0, R0-R3=0, compare/test flag=0, return-address register=0,
+`return-valid`=0, illegal-opcode flag=0, `CALL`/`RET` misuse flag=0
+(the latter two are sticky debug flags -- see [isa.md](isa.md)'s
+Undefined opcode behavior and Branch format sections -- cleared only on
+reset, same as everything else here). FSM resets into `LOAD` (see
+above). A reset asserting mid-fetch (partway through `FETCH_HI`,
+partial byte latched) unconditionally returns to `LOAD` -- the
+in-flight fetch is simply discarded, no special-case handling needed.
 
 ### FETCH_LO / FETCH_HI / EXECUTE
 
@@ -166,37 +194,112 @@ the natural move, since `uio` is a strict superset of what `ui_in`/
 |---|---|
 | `ui_in[7:0]` | Host **DATA-IN** bus -- host writes a byte, firmware's `IN` reads it. Matches `IN`'s locked "whole byte, one shot" semantics ([isa.md](isa.md)) directly -- no muxing logic needed. |
 | `uo_out[7:0]` | Host **DATA-OUT** bus -- firmware's `OUT` drives a byte, host reads it. Matches `OUT` directly, no muxing logic. |
-| `uio[3:0]` | **Protocol pin bus** -- `pin_index` 0-3 in every `SET`/`WAIT`/`OUTB`/`INB`. Role is a pure firmware convention, same 4 physical pins for every protocol: UART uses 0=TX,1=RX; SPI uses 0=MOSI,1=MISO,2=SCLK,3=CS; I2C uses 0=SDA,1=SCL (open-drain via `SET`'s existing value-bit convention -- value=1 releases, value=0 drives low). Checked against every protocol on the list, not just baseline: UART needs 2, SPI 4, I2C 2, JTAG 4 (TCK/TMS/TDI/TDO), SWD 2, PS/2 2, CAN 2 -- all fit in 4. Zero protocol-specific wiring, ever; only the firmware's choice of `pin_index` values changes. |
+| `uio[3:0]` | **Protocol pin bus** -- `pin_index` 0-3 in every `SET`/`WAIT`/`OUTB`/`INB`. Role is a pure firmware convention, same physical pins for every protocol: UART uses 0=TX,1=RX; SPI uses 0=MOSI,1=MISO,2=SCLK,3=CS; I2C uses 0=SDA,1=SCL (open-drain via `SET`'s existing value-bit convention -- value=1 releases, value=0 drives low). Extended to 5 pins total with `uio[7]`/`pin_index=7` below -- see that row for why. |
 | `uio[4]` | `HOST_GO`, `pin_index=4`, fixed input. During normal execution: host strobes it, firmware `WAIT`s on it. During `LOAD` (see Pipeline): doubles as the SRAM write-strobe -- same physical pin, mode-dependent meaning. |
 | `uio[5]` | `HOST_STATUS`, `pin_index=5`, fixed output. Firmware `SET`s it when done. |
-| `uio[6]` | `START`, fixed input, `LOAD`-mode only (see Pipeline) -- host asserts once firmware is loaded, to begin execution. Not `pin_index`-addressable; not meaningful once running. |
-| `uio[7]` | reserved, unconnected. |
+| `uio[6]` | Mode-dependent, same pattern as `HOST_GO`: during `LOAD` (see Pipeline) it's `START`, fixed input -- host asserts once firmware is loaded, to begin execution. During normal execution it's **`HOST_ERROR`**, fixed *output*, `pin_index=6` -- firmware `SET`s it on entering an error-handling path (a `WAIT` timeout, specifically). Was previously idle for the entire operational life of the chip after boot; now gives the host a dedicated, unambiguous "something went wrong" signal instead of needing to infer one from a stuck `STATUS`. (An earlier draft of this row said "not `pin_index`-addressable" -- wrong, caught when wiring `uio[7]` forced a re-check of the whole `pin_index` table: `SET`'s only mechanism to drive any pin *is* `pin_index`, so `HOST_ERROR` couldn't be `SET`-able without it. `pin_index=6` is meaningful during normal execution, moot during `LOAD` since no opcodes execute then.) |
+| `uio[7]` | **5th protocol pin**, `pin_index=7`, same firmware-convention model as `uio[3:0]`. Was reserved/unconnected -- the review flagged that SPI and JTAG both use all 4 of `uio[3:0]` with zero spare for a debug/trigger line, second chip-select, or scope-sync pin on exactly the two protocols where you'd most want one. Full pin count checked against every protocol on the list, not just those two: UART 2, SPI 4, I2C 2, JTAG 4 (TCK/TMS/TDI/TDO), SWD 2, PS/2 2, CAN 2 -- SPI and JTAG were the only ones with zero spare at 4 pins, now have 1 spare each at 5. Wiring `uio[7]` in costs one mux input and removes a pin that was doing nothing. |
 
-`pin_index` values 6-7 (in `SET`/`WAIT`/`OUTB`/`INB`) don't correspond
-to `uio[6]`/`uio[7]` directly -- `uio[6]` is dedicated to `START`, not
-exposed on the generic `pin_index` bus, and `uio[7]` is unconnected.
-Both `pin_index` values read as 0, writes are no-ops -- same "safe by
-construction" treatment as the illegal-opcode case in
-[isa.md](isa.md), not undefined behavior.
+`pin_index` values are non-contiguous by role, not by accident: 0-3 and
+7 are the generic protocol bus (`uio[0:3]`, `uio[7]`), 4 is `HOST_GO`
+(`WAIT`-only in practice), 5 is `HOST_STATUS` (`SET`-only), 6 is
+`HOST_ERROR` (`SET`-only, and only during normal execution -- see its
+row above). Non-contiguity costs nothing in hardware (a lookup/case
+handles arbitrary values as cheaply as contiguous ones) and each value
+having exactly one real physical target is easier to verify than
+leaving gaps that "read as 0, write as no-op" would have been.
 
-Forward-compat note: `pin_index` is already 3 bits (0-7) in the locked
-encoding, so if a future protocol genuinely needs more than 4 protocol
-pins, widening to `uio[7:0]` costs zero ISA changes -- pure headroom,
-not a redesign.
+**All 8 `uio` bits are now allocated** (4 protocol + `GO` + `STATUS` +
+`START`/`ERROR` + 1 more protocol) -- unlike the earlier "widening to
+`uio[7:0]` is pure headroom" framing, there's no spare physical pin
+left. If a future protocol genuinely needs a 6th protocol pin, that
+means giving up `HOST_ERROR`, not just wiring in something unused --
+worth knowing before it comes up, not discovering it mid-stretch-goal.
 
 Verification payoff: `pin_index -> physical pin` is one flat table,
-identical for every firmware image. Properties like "`pin_index` 6-7
-never toggle a real pin" or "`HOST_STATUS` is only ever driven, never
-read" get written once and hold across all seven protocols, rather than
-needing a new pin-mapping property per protocol.
+identical for every firmware image. Properties like "`HOST_STATUS` is
+only ever driven, never read" or "`pin_index=6` only ever toggles a
+real pin during normal execution, never during `LOAD`" get written once
+and hold across all seven protocols, rather than needing a new
+pin-mapping property per protocol.
 
 Still needed: an assembler translating protocol programs (using these
 symbolic pin roles) to ISA bytecode, and `pin_ctrl.v`'s actual
-direction-control logic for `uio[3:0]` (the only pins that need any --
-`ui_in`/`uo_out` are hardwired, `uio[4:5]`/`uio[6]` are fixed-direction).
+direction-control logic for `uio[3:0]`/`uio[7]` (the pins that need
+firmware-driven oe control -- `ui_in`/`uo_out` are hardwired, `uio[4:5]`
+are fixed-direction, `uio[6]` needs a direction *mux* keyed on
+`LOAD`-vs-running mode -- input as `START`, output as `HOST_ERROR` --
+but nothing dynamic beyond that single mode switch).
 
 Host-facing inputs (`ui_in`, `uio_in` bits used for `HOST_GO`/`START`)
 are driven by an external host asynchronous to `clk` -- `pin_ctrl.v`
 needs to synchronize them (standard 2-flop synchronizer) before any
 `WAIT`/`IN`/LOAD-write logic consumes them. Not an ISA-level decision,
 just needs to land in `pin_ctrl.v` when it's written.
+
+## Host handshake
+
+Locked. Resolves a real gap the adversarial review found: `WAIT` blocks
+on a pin *level*, but `HOST_GO` was only ever described as "host
+strobes it" -- a level-triggered strobe with no defined protocol means
+naive firmware double-reads the same byte if `HOST_GO` is still high
+when the loop comes back around. Fixed with a fully-interlocked
+4-phase handshake, not a partial one -- the point is firmware
+*physically cannot* see `HOST_GO` high twice for the same byte, since
+it explicitly waits for the low phase before a new high phase can
+start.
+
+**Host -> firmware (`IN`):**
+```
+host: drive ui_in, assert HOST_GO
+fw:   WAIT HOST_GO,1[,timeout]   ; wait for host
+      IN   Rd                     ; capture byte
+      SET  HOST_STATUS,1           ; ack: "got it"
+      WAIT HOST_GO,0                ; wait for host to see the ack and drop GO
+      SET  HOST_STATUS,0             ; clear, ready for next
+host: sees HOST_STATUS,1 -> lowers HOST_GO -> sees HOST_STATUS,0 -> ready for next byte
+```
+
+**Firmware -> host (`OUT`)** is the same pattern, roles reversed:
+firmware drives `uo_out` and asserts `HOST_STATUS`, host reads it and
+asserts `HOST_GO` as its ack, firmware drops `HOST_STATUS` once it sees
+`HOST_GO`. `HOST_GO`/`HOST_STATUS` are reused for both directions
+(rather than a dedicated pair per direction) -- which direction a given
+exchange is follows from what firmware and host have already agreed to
+do next, the same way it does in any real protocol; not actually
+ambiguous in practice.
+
+**Not this protocol's job: bulk, non-real-time data.** A fixed
+test-vector sequence, a lookup table, config constants -- these don't
+need per-byte interlock at all. Push them through the existing `LOAD`
+boot stream, or `STORE` them into the data region ahead of time and
+have firmware `LOAD` from memory with zero handshake overhead. This
+handshake is specifically for the genuinely real-time case: the next
+byte to bit-bang out, right now. Stated explicitly as a criterion for
+which mechanism to reach for -- leaving that ambiguous is exactly the
+kind of thing that trips up firmware later.
+
+**`WAIT`'s timeout (see [isa.md](isa.md)) applies directly here**:
+`WAIT HOST_GO,1,timeout` turns a host that never responds (crashed,
+disconnected) into a detectable, branchable condition -- and combined
+with `HOST_ERROR` (`uio[6]`, Pin map above), firmware has both a way to
+notice the failure and a dedicated pin to report it on, rather than
+just hanging.
+
+**Considered and rejected: pulse-pattern side-channel signaling** (e.g.
+double-pulsing `HOST_STATUS` to mean "error" instead of a single pulse
+for "normal"). Timing-pattern-based signaling is hard to formally
+verify and easy to get a fencepost wrong on -- exactly what this whole
+design has been avoiding. `HOST_ERROR` gives the same information
+cleanly instead.
+
+**Overhead, checked rather than assumed**: 5 instructions/byte against
+even the fastest baseline case (UART 115200 baud, ~1450 instructions of
+budget per byte at 50MHz -- see [protocol_timing.md](protocol_timing.md))
+is ~0.3% -- unmeasurable. No pressure to pipeline or shortcut it.
+
+**Explicitly not pipelined** -- one byte is fully acked before the next
+one starts, no overlap. Consistent with this design's bias toward
+verification simplicity over throughput; revisit only if something
+concrete demands it, which the overhead check above suggests won't
+happen.

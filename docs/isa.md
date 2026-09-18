@@ -101,9 +101,12 @@ condition select:
 between program and data ("Data memory" below) -- program is 256
 words, not the full 512 the field could technically reach. There's no
 hardware guard against branching into the data region (256-511); it's
-a firmware-discipline requirement, same class as not using `pin_index`
-6-7 ([architecture.md](architecture.md) Pin map). The spare encoding
-range is headroom, not currently meaningful.
+a firmware-discipline requirement. (This used to be analogized to
+`pin_index` 6-7 being similarly unused/no-op -- that's no longer true,
+both now have real hardware targets, see
+[architecture.md](architecture.md)'s Pin map; `addr(9)`'s spare range
+is the one genuinely unused encoding space left in the design.) The
+spare encoding range is headroom, not currently meaningful.
 
 `RET` is a separate 0-operand opcode (jumps to the return-address
 register, no operand needed).
@@ -138,6 +141,29 @@ future protocol genuinely needs nested calls or needs to save the flag
 across a `CALL` -- not designed here (that's a firmware/assembler
 convention, not an ISA-level decision), just noting the capability now
 exists where it didn't before.
+
+**Both `CALL`/`RET` misuse hazards above are now diagnosable, not just
+documented.** One bit of internal state, `return-valid` -- set by
+`CALL` (a return address is now pending), cleared by `RET` (consumed),
+reset value 0 -- plus a second sticky debug flag, same class as the
+illegal-opcode flag (Undefined opcode behavior section): formal/
+debug-visibility only, not firmware-readable, cleared only on reset.
+Set when either:
+- `CALL` executes while `return-valid=1` -- the nested-call overwrite
+  hazard documented above.
+- `RET` executes while `return-valid=0` -- an orphan `RET` with no
+  pending address, which would otherwise silently jump to whatever the
+  return-address register happens to hold (its reset value, 0, if
+  nothing's ever called yet). Symmetric case, same tracking bit, added
+  alongside the reviewed finding rather than as a separate later fix --
+  near-zero marginal cost once `return-valid` exists for the first
+  condition.
+
+Cost: one state bit, one sticky flag, two trivial comparisons -- same
+gate count as the illegal-opcode flag, catching a bug that can actually
+happen in real firmware rather than one that (per its own row) is
+"unreachable from any encoding path a real compiled program can
+produce."
 
 ### Reg+immediate format -- `opcode(5) | Rd(2) | imm(9)`
 
