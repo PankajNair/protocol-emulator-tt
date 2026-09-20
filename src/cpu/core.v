@@ -139,6 +139,39 @@ module protocol_cpu_core (
   wire opcode_recognized = (opcode <= 5'd18);
 
   // -----------------------------------------------------------------
+  // Shared DELAY/WAIT countdown counter. Declared before the regfile
+  // write mux below (which reads `exec_done`) -- icarus enforces
+  // declare-before-use for a wire referenced inside another wire's
+  // continuous assignment within the same module, verilator doesn't;
+  // keeping true source order rather than relying on the more lenient
+  // tool's forward-reference tolerance.
+  // -----------------------------------------------------------------
+  wire        wait_has_timeout   = (w_wait_mant != 5'd0);
+  wire        wait_condition_met = (pin_read == w_aux_bit);
+
+  wire        cnt_load     = entering_execute &&
+                              ((opcode == `OP_DELAY) ||
+                               (opcode == `OP_WAIT && wait_has_timeout));
+  wire [8:0]  cnt_mantissa = (opcode == `OP_DELAY) ? w_delay_mant : {4'd0, w_wait_mant};
+  wire [1:0]  cnt_exponent = w_exponent;
+  wire        cnt_expired;
+
+  cycle_counter u_cycle_counter (
+      .clk     (clk),
+      .rst_n   (rst_n),
+      .load    (cnt_load),
+      .mantissa(cnt_mantissa),
+      .exponent(cnt_exponent),
+      .expired (cnt_expired)
+  );
+
+  wire delay_pending = (opcode == `OP_DELAY) && !cnt_expired;
+  wire wait_pending   = (opcode == `OP_WAIT) && !wait_condition_met &&
+                          !(wait_has_timeout && cnt_expired);
+  wire exec_done = !delay_pending && !wait_pending;
+  wire exec_commit = (state == S_EXECUTE) && exec_done;
+
+  // -----------------------------------------------------------------
   // Regfile.
   // -----------------------------------------------------------------
   reg  [1:0] reg_a_sel;
@@ -211,34 +244,6 @@ module protocol_cpu_core (
       .rw_data(rf_wdata),
       .rw_en  (rf_we)
   );
-
-  // -----------------------------------------------------------------
-  // Shared DELAY/WAIT countdown counter.
-  // -----------------------------------------------------------------
-  wire        wait_has_timeout   = (w_wait_mant != 5'd0);
-  wire        wait_condition_met = (pin_read == w_aux_bit);
-
-  wire        cnt_load     = entering_execute &&
-                              ((opcode == `OP_DELAY) ||
-                               (opcode == `OP_WAIT && wait_has_timeout));
-  wire [8:0]  cnt_mantissa = (opcode == `OP_DELAY) ? w_delay_mant : {4'd0, w_wait_mant};
-  wire [1:0]  cnt_exponent = w_exponent;
-  wire        cnt_expired;
-
-  cycle_counter u_cycle_counter (
-      .clk     (clk),
-      .rst_n   (rst_n),
-      .load    (cnt_load),
-      .mantissa(cnt_mantissa),
-      .exponent(cnt_exponent),
-      .expired (cnt_expired)
-  );
-
-  wire delay_pending = (opcode == `OP_DELAY) && !cnt_expired;
-  wire wait_pending   = (opcode == `OP_WAIT) && !wait_condition_met &&
-                          !(wait_has_timeout && cnt_expired);
-  wire exec_done = !delay_pending && !wait_pending;
-  wire exec_commit = (state == S_EXECUTE) && exec_done;
 
   // -----------------------------------------------------------------
   // Branch / LOOP / CALL / RET target resolution.
