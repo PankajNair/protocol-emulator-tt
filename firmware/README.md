@@ -4,9 +4,12 @@ Protocol implementations as programs for the custom ISA (`src/cpu/isa_defs.v`),
 not fixed hardware blocks. This is the "programmable, not fixed logic" part of
 the brief.
 
-- `isa/` — assembler for the custom ISA (turns `.asm` into a hex image for
-  `src/mem/prog_rom.v` via `$readmemh`). Not started — depends on ISA being
-  finalized first.
+- `isa/` — assembler for the custom ISA (turns `.asm` into a raw byte
+  image the host streams into `src/mem/mem.v`'s SRAM at runtime via the
+  `LOAD`-mode boot sequence, `docs/architecture.md` Pipeline section —
+  not a `$readmemh`-preloaded synthesized ROM, that framing predates
+  the SRAM/host-boot-stream design and is stale). ISA is locked
+  (`src/cpu/isa_defs.v`, `docs/isa.md`) — not started yet regardless.
 - `protocols/` — baseline protocol programs: `uart.asm`, `spi.asm`, `i2c.asm`.
 - `protocols/stretch/` — stretch-goal protocols: low-speed USB, 10Mbit
   Ethernet.

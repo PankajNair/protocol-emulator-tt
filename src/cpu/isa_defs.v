@@ -219,6 +219,25 @@
 `define DATA_BASE 10'd512
 
 // ---------------------------------------------------------------------
+// SHIFT direction bit (docs/isa.md SHIFT row: "imm(0) = direction, 0 =
+// left, 1 = right"). Position and semantics are locked by isa.md
+// itself, not this file's discretion -- listed here only so core.v has
+// a name instead of a bare literal.
+// ---------------------------------------------------------------------
+`define SHIFT_DIR_BIT 0   // word[SHIFT_DIR_BIT]
+`define SHIFT_LEFT   1'b0
+`define SHIFT_RIGHT  1'b1
+
+// ---------------------------------------------------------------------
+// OUTB/INB bit_select value mapping (docs/isa.md locks the *bits*
+// touched -- 0 or 7 -- and their field, PIN_AUX_BIT above; it doesn't
+// say which value of that bit means which bit position. Pinned here,
+// same treatment as the pin_index packing above.)
+// ---------------------------------------------------------------------
+`define BITSEL_BIT0  1'b0
+`define BITSEL_BIT7  1'b1
+
+// ---------------------------------------------------------------------
 // Undefined opcode behavior (docs/isa.md): any of the 13 unassigned
 // 5-bit values (19-31) decodes as OP_NOP and sets the sticky
 // illegal-opcode flag (formal/debug-visibility only, not

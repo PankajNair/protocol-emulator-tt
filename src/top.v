@@ -6,10 +6,12 @@
 `default_nettype none
 
 // TODO: this is still the template's passthrough example. Replace with
-// instantiation of cpu/core.v + io/pin_ctrl.v + mem/prog_rom.v once the
-// ISA (src/cpu/isa_defs.v) is settled. Keeping this working (not stubbed
-// to zero) so `make -C test` and the GDS action stay green while the
-// real design is built out incrementally.
+// instantiation of cpu/core.v + io/pin_ctrl.v + mem/mem.v as three
+// top-level siblings (docs/architecture.md hierarchy) now that the ISA
+// (src/cpu/isa_defs.v), pin map, pipeline, and memory map are all
+// locked. Keeping this working (not stubbed to zero) so `make -C test`
+// and the GDS action stay green while the real design is built out
+// incrementally.
 module tt_um_pankajnair_protocol_emulator (
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
