@@ -54,7 +54,8 @@
 
 `default_nettype none
 
-`include "cpu/isa_defs.v"
+// Relies on src/cpu/isa_defs.v's SET_MODE_* `define`s already being
+// visible -- no `include` here, see core.v's header for why.
 
 module pin_ctrl (
     // Raw TT pins.

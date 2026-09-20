@@ -19,47 +19,59 @@ project:
   # Must be unique -- includes github username per TT convention.
   top_module:  "tt_um_pankajnair_protocol_emulator"
 
-  # Only top.v wired in for now -- cpu/io/mem submodules aren't instantiated
-  # yet (see TODOs in src/cpu, src/io, src/mem). Add them here as they're
-  # wired into top.v, and update test/Makefile PROJECT_SOURCES to match.
+  # isa_defs.v first, deliberately: core.v/cycle_counter.v/pin_ctrl.v
+  # use its `define`s with no `include` (portability -- some synth
+  # flows don't share test/Makefile's -I search path), relying instead
+  # on it being compiled before them in this same list, within one
+  # compile invocation. top.v last, since it depends on everything
+  # else. Kept in sync with test/Makefile's PROJECT_SOURCES.
   source_files:
+    - "cpu/isa_defs.v"
+    - "cpu/core.v"
+    - "cpu/regfile.v"
+    - "io/cycle_counter.v"
+    - "io/pin_ctrl.v"
+    - "mem/mem.v"
     - "top.v"
 
-# FLOW-VALIDATION PLACEHOLDER -- describes the trivial passthrough adder in
-# src/top.v (uo_out = ui_in + uio_in), used only to get real synth/P&R/GDS
-# numbers on CMOS5L before the ISA is locked. NOT the real protocol
-# emulator's pinout -- expect this whole section to be rewritten once the
-# sequencer ISA + pin mapping (docs/architecture.md) is designed.
+# Real pinout, locked (docs/architecture.md Pin map is the source of
+# truth -- this mirrors it, not the other way around). Replaces the
+# flow-validation placeholder (trivial passthrough adder) this section
+# described before the ISA/pin map were designed.
 pinout:
-  # Inputs
-  ui[0]: "A[0]"
-  ui[1]: "A[1]"
-  ui[2]: "A[2]"
-  ui[3]: "A[3]"
-  ui[4]: "A[4]"
-  ui[5]: "A[5]"
-  ui[6]: "A[6]"
-  ui[7]: "A[7]"
+  # Host DATA-IN bus -- host writes a byte, firmware's IN reads it.
+  ui[0]: "DATA_IN[0]"
+  ui[1]: "DATA_IN[1]"
+  ui[2]: "DATA_IN[2]"
+  ui[3]: "DATA_IN[3]"
+  ui[4]: "DATA_IN[4]"
+  ui[5]: "DATA_IN[5]"
+  ui[6]: "DATA_IN[6]"
+  ui[7]: "DATA_IN[7]"
 
-  # Outputs
-  uo[0]: "SUM[0]"
-  uo[1]: "SUM[1]"
-  uo[2]: "SUM[2]"
-  uo[3]: "SUM[3]"
-  uo[4]: "SUM[4]"
-  uo[5]: "SUM[5]"
-  uo[6]: "SUM[6]"
-  uo[7]: "SUM[7]"
+  # Host DATA-OUT bus -- firmware's OUT drives a byte, host reads it.
+  uo[0]: "DATA_OUT[0]"
+  uo[1]: "DATA_OUT[1]"
+  uo[2]: "DATA_OUT[2]"
+  uo[3]: "DATA_OUT[3]"
+  uo[4]: "DATA_OUT[4]"
+  uo[5]: "DATA_OUT[5]"
+  uo[6]: "DATA_OUT[6]"
+  uo[7]: "DATA_OUT[7]"
 
-  # Bidirectional pins
-  uio[0]: "B[0]"
-  uio[1]: "B[1]"
-  uio[2]: "B[2]"
-  uio[3]: "B[3]"
-  uio[4]: "B[4]"
-  uio[5]: "B[5]"
-  uio[6]: "B[6]"
-  uio[7]: "B[7]"
+  # uio[3:0]/uio[7]: generic protocol pin bus, pin_index 0-4 -- role is
+  # a firmware convention (UART TX/RX, SPI MOSI/MISO/SCLK/CS, I2C
+  # SDA/SCL all reuse the same 5 physical pins). uio[4:6]: fixed
+  # host-handshake roles, uio[6] mode-dependent (START during LOAD,
+  # HOST_ERROR once running).
+  uio[0]: "PROTO[0]"
+  uio[1]: "PROTO[1]"
+  uio[2]: "PROTO[2]"
+  uio[3]: "PROTO[3]"
+  uio[4]: "HOST_GO"
+  uio[5]: "HOST_STATUS"
+  uio[6]: "START / HOST_ERROR"
+  uio[7]: "PROTO[4]"
 
 # Do not change!
 yaml_version: 6

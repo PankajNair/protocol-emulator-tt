@@ -48,7 +48,8 @@
 
 `default_nettype none
 
-`include "cpu/isa_defs.v"
+// Relies on src/cpu/isa_defs.v's `TIMEOUT_SHIFT` already being visible
+// -- no `include` here, see core.v's header for why.
 
 module cycle_counter (
     input  wire        clk,

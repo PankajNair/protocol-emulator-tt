@@ -45,7 +45,11 @@
 
 `default_nettype none
 
-`include "cpu/isa_defs.v"
+// Relies on src/cpu/isa_defs.v's `define`s already being visible --
+// no `include` here (portability: some synth flows don't share
+// test/Makefile's -I search path). info.yaml/test/Makefile both list
+// isa_defs.v first in source order so its macros are defined before
+// this file is read, within the same compile invocation.
 
 module protocol_cpu_core (
     input  wire        clk,

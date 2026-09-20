@@ -6,7 +6,10 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = top.v
+# isa_defs.v first -- core.v/cycle_counter.v/pin_ctrl.v use its
+# `define`s via file-order visibility, not `include` (kept in sync
+# with info.yaml's source_files; see that file's comment for why).
+PROJECT_SOURCES = cpu/isa_defs.v cpu/core.v cpu/regfile.v io/cycle_counter.v io/pin_ctrl.v mem/mem.v top.v
 
 ifneq ($(GATES),yes)
 
