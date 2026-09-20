@@ -131,15 +131,27 @@ writing it.)
   a protocol pin (Pin map).
 - Same physical pins as normal operation (`ui_in`, `HOST_GO`) -- this
   is a mode-dependent reinterpretation, not new pin budget.
-- **`uo_out[7:0]` echoes the byte just written**, every `HOST_GO`
-  pulse. `uo_out` is completely idle during `LOAD` (firmware isn't
-  running yet), so this costs nothing new -- host compares what it sent
-  (`ui_in`) against what got echoed (`uo_out`) on every byte, catching a
-  dropped/doubled pulse the instant it happens rather than discovering
-  corruption only when firmware misbehaves at runtime later. Chosen
-  over an end-of-load checksum: per-byte echo catches errors as they
-  occur, a checksum only gives an aggregate pass/fail at the end, and
-  echo is simpler to boot.
+- **`uo_out[7:0]` echoes the byte-address counter's low 8 bits
+  (post-increment)**, every `HOST_GO` pulse. `uo_out` is completely idle
+  during `LOAD` (firmware isn't running yet), so this costs nothing new.
+  Echoes the *address*, not the data byte -- an earlier draft echoed the
+  data byte instead, which an adversarial review caught as not actually
+  catching what it claimed: on a stable synchronous bus a write lands
+  correctly whenever it happens, so data-echo is blind to the real
+  failure mode (a dropped or doubled `HOST_GO` pulse), since it echoes
+  the same value whether the pulse fired once, twice, or got silently
+  absorbed by the next real one. Address-echo fixes this: host tracks
+  its own byte count `k`, expects `echo == k mod 256` after each pulse.
+  A single dropped or doubled pulse always shifts the counter by
+  exactly +-1 relative to what the host expects, and consecutive
+  integers are never congruent mod 256 -- so the 8-bit truncation never
+  hides a single-pulse error, it only loses information at exactly
+  256-pulse-aligned discrepancies, which isn't the failure mode being
+  guarded against. Same cost as the data-echo it replaces, strictly
+  better detection. (The "chosen over an end-of-load checksum" reasoning
+  still holds regardless of which value gets echoed: per-byte feedback
+  catches errors as they occur, a checksum only gives an aggregate
+  pass/fail at the end.)
 - **Byte-address counter saturates at 1023, does not wrap.** A
   `HOST_GO` pulse at address 1023 writes/echoes that byte and stops
   advancing -- further pulses are harmless no-ops, not silent
@@ -337,15 +349,31 @@ fw:   WAIT HOST_GO,1[,timeout]   ; wait for host
       SET  HOST_STATUS,0             ; clear, ready for next
 host: sees HOST_STATUS,1 -> lowers HOST_GO -> sees HOST_STATUS,0 -> ready for next byte
 ```
+Host-side timing contract, stated explicitly rather than left implied:
+**the host must hold `ui_in` stable until it observes `HOST_STATUS=1`**
+-- that's firmware's confirmation the byte has actually been captured
+by `IN`; changing `ui_in` any earlier risks the host's *next* byte
+racing firmware's read of the current one.
 
-**Firmware -> host (`OUT`)** is the same pattern, roles reversed:
-firmware drives `uo_out` and asserts `HOST_STATUS`, host reads it and
-asserts `HOST_GO` as its ack, firmware drops `HOST_STATUS` once it sees
-`HOST_GO`. `HOST_GO`/`HOST_STATUS` are reused for both directions
-(rather than a dedicated pair per direction) -- which direction a given
-exchange is follows from what firmware and host have already agreed to
-do next, the same way it does in any real protocol; not actually
-ambiguous in practice.
+**Firmware -> host (`OUT`)** mirrors the same 5-phase structure, not
+just "the same pattern, roles reversed" in prose -- an earlier draft
+said that and left out the last phase, which an adversarial review
+caught: without it, firmware's *next* `OUT` could fire while `HOST_GO`
+is still sitting high from the previous ack, recreating on this side
+the exact double-advance hazard the whole handshake exists to prevent.
+```
+fw:   OUT  Rd                    ; drive byte onto uo_out
+      SET  HOST_STATUS,1          ; data ready
+      WAIT HOST_GO,1                ; wait for host's ack
+      SET  HOST_STATUS,0             ; clear -- host has acked, data consumed
+      WAIT HOST_GO,0                   ; wait for host to release its ack
+host: sees HOST_STATUS,1 -> reads uo_out -> asserts HOST_GO (ack) -> sees HOST_STATUS,0 -> lowers HOST_GO -> ready for next byte
+```
+`HOST_GO`/`HOST_STATUS` are reused for both directions (rather than a
+dedicated pair per direction) -- which direction a given exchange is
+follows from what firmware and host have already agreed to do next, the
+same way it does in any real protocol; not actually ambiguous in
+practice.
 
 **Not this protocol's job: bulk, non-real-time data.** A fixed
 test-vector sequence, a lookup table, config constants -- these don't
