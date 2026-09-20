@@ -99,6 +99,8 @@ module protocol_cpu_core (
   reg        return_valid;
   reg        illegal_op_flag;
   reg        call_ret_misuse_flag;
+  reg        halted;  // OP_HALT -- freezes the FSM, resumable only by
+                       // external reset (docs/isa.md HALT row)
 
   reg [9:0]  boot_addr;
   reg        load_ack;
@@ -331,7 +333,8 @@ module protocol_cpu_core (
       uo_out_reg            <= 8'd0;
       pending_lx_writeback  <= 1'b0;
       pending_lx_rd         <= 2'd0;
-    end else begin
+      halted                <= 1'b0;
+    end else if (!halted) begin
       case (state)
 
         S_LOAD: begin
@@ -364,33 +367,43 @@ module protocol_cpu_core (
           entering_execute <= 1'b0;
 
           if (exec_done) begin
-            state <= S_FETCH_LO;
-            pc    <= next_pc;
+            if (opcode == `OP_HALT) begin
+              // Freeze exactly here -- no state/pc/other update, ever
+              // again until reset (docs/isa.md HALT row: "stops
+              // fetching, no further state changes"). Every other
+              // register (uio_oe/uio_out included, via pin_ctrl.v's
+              // own sticky state that core.v simply stops updating)
+              // holds its last-driven value by construction.
+              halted <= 1'b1;
+            end else begin
+              state <= S_FETCH_LO;
+              pc    <= next_pc;
 
-            case (opcode)
-              `OP_CMP:     flag <= (ra_data == rb_data);
-              `OP_TESTBIT: flag <= ra_data[w_bitidx];
-              `OP_WAIT:    flag <= wait_condition_met ? 1'b0 : 1'b1;
-              default: ;
-            endcase
+              case (opcode)
+                `OP_CMP:     flag <= (ra_data == rb_data);
+                `OP_TESTBIT: flag <= ra_data[w_bitidx];
+                `OP_WAIT:    flag <= wait_condition_met ? 1'b0 : 1'b1;
+                default: ;
+              endcase
 
-            if (is_call) begin
-              retaddr <= pc + 9'd1;
-              if (return_valid) call_ret_misuse_flag <= 1'b1;
-              return_valid <= 1'b1;
-            end else if (is_ret) begin
-              if (!return_valid) call_ret_misuse_flag <= 1'b1;
-              return_valid <= 1'b0;
+              if (is_call) begin
+                retaddr <= pc + 9'd1;
+                if (return_valid) call_ret_misuse_flag <= 1'b1;
+                return_valid <= 1'b1;
+              end else if (is_ret) begin
+                if (!return_valid) call_ret_misuse_flag <= 1'b1;
+                return_valid <= 1'b0;
+              end
+
+              if (opcode == `OP_LOAD || opcode == `OP_LOADX) begin
+                pending_lx_writeback <= 1'b1;
+                pending_lx_rd        <= w_rd;
+              end
+
+              if (opcode == `OP_OUT) uo_out_reg <= ra_data;
+
+              if (!opcode_recognized) illegal_op_flag <= 1'b1;
             end
-
-            if (opcode == `OP_LOAD || opcode == `OP_LOADX) begin
-              pending_lx_writeback <= 1'b1;
-              pending_lx_rd        <= w_rd;
-            end
-
-            if (opcode == `OP_OUT) uo_out_reg <= ra_data;
-
-            if (!opcode_recognized) illegal_op_flag <= 1'b1;
           end
         end
 
