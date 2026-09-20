@@ -35,6 +35,13 @@ endif
 # Allow sharing configuration between design and testbench via `include`:
 COMPILE_ARGS 		+= -I$(SRC_DIR)
 
+ifeq ($(SIM),verilator)
+# tb.v's `#1;` (template file, not ours to edit) needs an explicit
+# timing mode on newer verilator -- cocotb's own Makefile.sim doesn't
+# pass one.
+COMPILE_ARGS		+= --timing
+endif
+
 # Include the testbench sources:
 VERILOG_SOURCES += $(PWD)/tb.v
 TOPLEVEL = tb
