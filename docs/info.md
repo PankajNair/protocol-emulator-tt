@@ -22,4 +22,7 @@ their sum on the next clock edge after reset.
 
 ## External hardware
 
-None.
+None for this flow-validation placeholder. TODO once the real design
+lands: any protocol pin firmware configures open-drain (I2C SDA/SCL,
+`SET`'s drive-mode field -- see `docs/isa.md`'s `SET` row) needs an
+external pull-up. Don't lose this when this file gets rewritten.

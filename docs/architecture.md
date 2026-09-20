@@ -81,8 +81,18 @@ instruction memory is volatile -- it powers up empty and needs firmware
 written in every power-cycle, and (deliberately) no opcode writes
 program memory, to keep the ISA minimal. So loading happens in a
 dedicated hardware state, before fetch/execute ever starts, driven
-directly by the host rather than by firmware -- the SRAM write path
-never touches the CPU datapath.
+directly by the host rather than by firmware.
+
+(Stale as of `LOAD`/`STORE`/`LOADX` landing: this used to say "the SRAM
+write path never touches the CPU datapath," true when the boot stream
+was the *only* thing that ever wrote SRAM. `STORE` also writes SRAM now,
+with `Rd`'s value as write-data -- that's the CPU datapath. The SRAM
+address mux has 4 sources in the finished design: boot byte-counter
+(`LOAD` state), `PC*2`/`PC*2+1` (`FETCH_LO`/`FETCH_HI`), and
+`512+imm`/`512+Rs` (`EXECUTE`, for `LOAD`/`STORE`/`LOADX`); the
+write-data mux has 2: `ui_in` during boot, `Rd` during `STORE`. Worth
+having this concrete before `core.v` gets written, not discovered while
+writing it.)
 
 - **Reset -> `LOAD`**, not `FETCH_LO`.
 - `ui_in[7:0]` = data byte. `HOST_GO` (`uio[4]`) pulses as a
@@ -92,10 +102,33 @@ never touches the CPU datapath.
   `BRANCH`/`LOOP`/`CALL` use for jumps). No address bus needed: host
   streams the raw firmware byte image in order, low byte of instruction
   0 first, matching `FETCH_LO`/`FETCH_HI`'s own `PC*2`/`PC*2+1` order.
-- `uio[6]` (previously reserved) = `START` during `LOAD` only. Host
-  asserts once loading is done; FSM exits `LOAD`, jumps to `FETCH_LO`
-  with `PC=0`. Repurposed as `HOST_ERROR` during normal execution --
-  see Pin map and "Host handshake" below; `uio[7]` stays reserved.
+- `uio[6]` (previously reserved) = `START` during `LOAD` only, then
+  repurposed as `HOST_ERROR` during normal execution -- see Pin map and
+  "Host handshake" below. **`START` is a pulse** (same convention as the
+  `HOST_GO` write-strobe above), not a held level -- this matters: FSM
+  exits `LOAD` on `START`'s synchronized *rising* edge (`PC=0`,
+  execution begins immediately), but `uio_oe[6]` stays 0 (input) until
+  `START`'s synchronized *falling* edge is also observed, only then
+  enabling the `HOST_ERROR` output driver. This closes a real driver-
+  contention hazard an adversarial review found: if the chip started
+  driving `HOST_ERROR` the instant it saw `START` go high, it would be
+  actively driving the same wire the host is still physically holding
+  high (the host has no way to know exactly when the chip sampled it,
+  so it can't release in perfect sync) -- two push-pull drivers fighting
+  on one pin. Gating on the confirmed-low edge means the chip only ever
+  takes over a wire the host has provably stopped driving, by
+  construction, not by timing luck. If firmware `SET`s `HOST_ERROR`
+  before that gate opens (unlikely -- would need an error path in the
+  first few cycles of execution), the value still latches internally
+  and reaches the pin once the gate opens; no CPU-path special-casing,
+  the gate lives entirely in `pin_ctrl.v`'s output stage. Two host-side
+  requirements this adds: `HOST_GO` must be low before pulsing `START`
+  (otherwise the first runtime `WAIT HOST_GO,1` a program executes could
+  fire on a stale high with no real handshake behind it), and the host
+  must release `START` promptly after pulsing it -- same class of pulse-
+  timing contract as `HOST_GO`'s boot-mode write-strobe, exact cycle
+  count TBD until `pin_ctrl.v` exists to measure against. `uio[7]` stays
+  a protocol pin (Pin map).
 - Same physical pins as normal operation (`ui_in`, `HOST_GO`) -- this
   is a mode-dependent reinterpretation, not new pin budget.
 - **`uo_out[7:0]` echoes the byte just written**, every `HOST_GO`
@@ -128,10 +161,18 @@ PC=0, R0-R3=0, compare/test flag=0, return-address register=0,
 `return-valid`=0, illegal-opcode flag=0, `CALL`/`RET` misuse flag=0
 (the latter two are sticky debug flags -- see [isa.md](isa.md)'s
 Undefined opcode behavior and Branch format sections -- cleared only on
-reset, same as everything else here). FSM resets into `LOAD` (see
-above). A reset asserting mid-fetch (partway through `FETCH_HI`,
-partial byte latched) unconditionally returns to `LOAD` -- the
-in-flight fetch is simply discarded, no special-case handling needed.
+reset, same as everything else here). **All 5 protocol pins' drive-mode
+resets to input** ([isa.md](isa.md) `SET` row) -- `uio_oe` is 0 for
+`uio[3:0]`/`uio[7]` until firmware explicitly configures a pin, so
+nothing drives the bus before firmware decides to. `uio[6]`'s "seen
+`START` fall" latch also resets to 0, so `HOST_ERROR`'s driver starts
+gated closed exactly as if the chip had just booted through `LOAD` for
+the first time -- same rule applies after any reset, not just power-up.
+FSM resets into `LOAD` (see above). A reset asserting mid-fetch
+(partway through `FETCH_HI`, partial byte latched) unconditionally
+returns to `LOAD` -- the in-flight fetch is simply discarded, no
+special-case handling
+needed.
 
 ### FETCH_LO / FETCH_HI / EXECUTE
 
@@ -153,17 +194,48 @@ are noise -- but real, and worth stating rather than assuming away.
   its own), and perform the operation.
 
 **Uniform 3 cycles/instruction** for everything -- `NOP`, `BRANCH`,
-`LOOP`, `CMP`, `SET`, register ops, all of it. Two exceptions, both by
-design, and both share the same countdown-counter hardware since they
-never execute simultaneously on a single-issue sequencer: `DELAY` stays
-in `EXECUTE` decrementing it until it hits zero (3+N cycles, N from the
-immediate), and `WAIT` stays in `EXECUTE` until its pin condition is
-true *or* its own optional timeout counter expires (3+N if a timeout is
-set, 3+unbounded if not -- `WAIT`'s default is still unbounded, timeout
-is opt-in per [isa.md](isa.md)'s `WAIT` row, added after an adversarial
-review pointed out an unbounded-only `WAIT` gives firmware no way to
-detect or recover from a hung bus, e.g. an I2C slave holding SCL low
-forever).
+`LOOP`, `CMP`, `SET`, register ops, all of it. This means **FSM
+occupancy** (how long an instruction holds the fetch/execute loop
+before the next one starts fetching), not "every architectural effect
+of the instruction is 100% complete by the end of its own `EXECUTE`" --
+`LOAD`/`LOADX` are the one case where that distinction matters, see
+below. Two timing exceptions, both by design, and both share the same
+countdown-counter hardware since they never execute simultaneously on a
+single-issue sequencer: `DELAY` stays in `EXECUTE` decrementing it
+until it hits zero (3+N cycles, N from the immediate), and `WAIT` stays
+in `EXECUTE` until its pin condition is true *or* its own optional
+timeout counter expires (3+N if a timeout is set, 3+unbounded if not --
+`WAIT`'s default is still unbounded, timeout is opt-in per
+[isa.md](isa.md)'s `WAIT` row, added after an adversarial review
+pointed out an unbounded-only `WAIT` gives firmware no way to detect or
+recover from a hung bus, e.g. an I2C slave holding SCL low forever).
+
+**`LOAD`/`LOADX` writeback trails by exactly 1 cycle, into the
+*following* instruction's `FETCH_LO` -- by design, not an FSM stall.**
+Found while re-checking the design as a whole after several rounds of
+individually-reasonable fixes: the data-region address (`512+imm` or
+`512+Rs`) is only known once `EXECUTE` starts (decode happens there,
+merged in as already described), and the SRAM macro's read has the same
+1-cycle latency as every other access on it -- so `LOAD`/`LOADX` issue
+their address during `EXECUTE`, and the result is only valid the
+*following* cycle, which is the next instruction's `FETCH_LO`. That's
+not a conflict with `FETCH_LO`'s own address issue that cycle (`PC*2`
+for the *next* fetch) -- a synchronous single-port SRAM already handles
+"read last cycle's result while accepting a new address" every cycle,
+which is exactly how `FETCH_LO`->`FETCH_HI` already works one state
+earlier. So `Rd` gets written at the end of that `FETCH_LO`. Checked for
+a hazard: if the *immediately following* instruction reads the same
+register `LOAD` just wrote, is the value stale? No -- the write lands
+at the end of that instruction's `FETCH_LO`, which is always before
+that instruction's own `EXECUTE` (where it would actually read the
+register). Hazard-free by construction; needed to be *stated* rather
+than left for an RTL author to either correctly infer or -- more likely
+-- get wrong by adding a dedicated 4th pipeline state for `LOAD`/
+`LOADX`, which would silently break the 3-cycle property above.
+`STORE` has no such trailing: a synchronous SRAM write completes in the
+cycle it's issued (no return trip the way a read has one), so `STORE`
+writes cleanly within its own `EXECUTE` -- `LOAD` and `STORE` are not
+timing-symmetric, worth not assuming they are.
 
 This also locks something [isa.md](isa.md) left implicit: the branch/
 loop/call `addr(9)` field is a **word index**, not a byte address --
@@ -175,10 +247,13 @@ is split 512/512 between program and data -- see the Memory bullet
 above and [isa.md](isa.md)'s "Data memory".)
 
 Verification payoff, same pattern as the ISA audit: one clean, uniform
-property -- "every instruction retires in exactly 3 cycles, except
+property -- "the FSM occupies exactly 3 cycles per instruction, except
 `DELAY` (3+N, N known) and `WAIT` (3+N if timed, 3+unbounded if not,
-both by design)" -- instead
-of a different cycle-count rule per opcode.
+both by design)" -- instead of a different cycle-count rule per opcode.
+`LOAD`/`LOADX`'s trailing writeback (above) doesn't weaken this: FSM
+occupancy is still exactly 3, the writeback is a stated, hazard-free
+detail of *when within that timing* the register update lands, not an
+exception to the count itself.
 
 ## Pin map
 
@@ -194,10 +269,10 @@ the natural move, since `uio` is a strict superset of what `ui_in`/
 |---|---|
 | `ui_in[7:0]` | Host **DATA-IN** bus -- host writes a byte, firmware's `IN` reads it. Matches `IN`'s locked "whole byte, one shot" semantics ([isa.md](isa.md)) directly -- no muxing logic needed. |
 | `uo_out[7:0]` | Host **DATA-OUT** bus -- firmware's `OUT` drives a byte, host reads it. Matches `OUT` directly, no muxing logic. |
-| `uio[3:0]` | **Protocol pin bus** -- `pin_index` 0-3 in every `SET`/`WAIT`/`OUTB`/`INB`. Role is a pure firmware convention, same physical pins for every protocol: UART uses 0=TX,1=RX; SPI uses 0=MOSI,1=MISO,2=SCLK,3=CS; I2C uses 0=SDA,1=SCL (open-drain via `SET`'s existing value-bit convention -- value=1 releases, value=0 drives low). Extended to 5 pins total with `uio[7]`/`pin_index=7` below -- see that row for why. |
+| `uio[3:0]` | **Protocol pin bus** -- `pin_index` 0-3 in every `SET`/`WAIT`/`OUTB`/`INB`. Role is a pure firmware convention, same physical pins for every protocol: UART uses 0=TX,1=RX; SPI uses 0=MOSI,1=MISO,2=SCLK,3=CS; I2C uses 0=SDA,1=SCL. Each pin's electrical behavior (push-pull, open-drain, or input) is a **sticky per-pin drive-mode** firmware configures via `SET`'s `Rd` field ([isa.md](isa.md) `SET` row) -- resets to input. Not a fixed hardware assignment: the same physical pin is push-pull as UART TX and open-drain as I2C SDA, depending only on which firmware image configured it. Extended to 5 pins total with `uio[7]`/`pin_index=7` below -- see that row for why. |
 | `uio[4]` | `HOST_GO`, `pin_index=4`, fixed input. During normal execution: host strobes it, firmware `WAIT`s on it. During `LOAD` (see Pipeline): doubles as the SRAM write-strobe -- same physical pin, mode-dependent meaning. |
 | `uio[5]` | `HOST_STATUS`, `pin_index=5`, fixed output. Firmware `SET`s it when done. |
-| `uio[6]` | Mode-dependent, same pattern as `HOST_GO`: during `LOAD` (see Pipeline) it's `START`, fixed input -- host asserts once firmware is loaded, to begin execution. During normal execution it's **`HOST_ERROR`**, fixed *output*, `pin_index=6` -- firmware `SET`s it on entering an error-handling path (a `WAIT` timeout, specifically). Was previously idle for the entire operational life of the chip after boot; now gives the host a dedicated, unambiguous "something went wrong" signal instead of needing to infer one from a stuck `STATUS`. (An earlier draft of this row said "not `pin_index`-addressable" -- wrong, caught when wiring `uio[7]` forced a re-check of the whole `pin_index` table: `SET`'s only mechanism to drive any pin *is* `pin_index`, so `HOST_ERROR` couldn't be `SET`-able without it. `pin_index=6` is meaningful during normal execution, moot during `LOAD` since no opcodes execute then.) |
+| `uio[6]` | Mode-dependent, same pattern as `HOST_GO`: during `LOAD` (see Pipeline) it's `START`, fixed input, **pulse-triggered** (rising edge starts execution, falling edge -- confirmed host has released the pin -- unlocks the `HOST_ERROR` driver; see Pipeline's `LOAD` section for why the pulse convention and the driver-contention hazard it fixes). During normal execution it's **`HOST_ERROR`**, fixed *output*, `pin_index=6` -- firmware `SET`s it on entering an error-handling path (a `WAIT` timeout, specifically). Was previously idle for the entire operational life of the chip after boot; now gives the host a dedicated, unambiguous "something went wrong" signal instead of needing to infer one from a stuck `STATUS`. (An earlier draft of this row said "not `pin_index`-addressable" -- wrong, caught when wiring `uio[7]` forced a re-check of the whole `pin_index` table: `SET`'s only mechanism to drive any pin *is* `pin_index`, so `HOST_ERROR` couldn't be `SET`-able without it. `pin_index=6` is meaningful during normal execution, moot during `LOAD` since no opcodes execute then.) |
 | `uio[7]` | **5th protocol pin**, `pin_index=7`, same firmware-convention model as `uio[3:0]`. Was reserved/unconnected -- the review flagged that SPI and JTAG both use all 4 of `uio[3:0]` with zero spare for a debug/trigger line, second chip-select, or scope-sync pin on exactly the two protocols where you'd most want one. Full pin count checked against every protocol on the list, not just those two: UART 2, SPI 4, I2C 2, JTAG 4 (TCK/TMS/TDI/TDO), SWD 2, PS/2 2, CAN 2 -- SPI and JTAG were the only ones with zero spare at 4 pins, now have 1 spare each at 5. Wiring `uio[7]` in costs one mux input and removes a pin that was doing nothing. |
 
 `pin_index` values are non-contiguous by role, not by accident: 0-3 and
@@ -229,7 +304,10 @@ direction-control logic for `uio[3:0]`/`uio[7]` (the pins that need
 firmware-driven oe control -- `ui_in`/`uo_out` are hardwired, `uio[4:5]`
 are fixed-direction, `uio[6]` needs a direction *mux* keyed on
 `LOAD`-vs-running mode -- input as `START`, output as `HOST_ERROR` --
-but nothing dynamic beyond that single mode switch).
+plus one extra gate beyond the mode switch itself: `uio_oe[6]` stays 0
+even after entering running mode until `START`'s falling edge confirms
+the host has released the pin (Pipeline's `LOAD` section) -- a one-bit
+"seen `START` fall" latch, not just a mode mux).
 
 Host-facing inputs (`ui_in`, `uio_in` bits used for `HOST_GO`/`START`)
 are driven by an external host asynchronous to `clk` -- `pin_ctrl.v`
@@ -284,7 +362,13 @@ kind of thing that trips up firmware later.
 disconnected) into a detectable, branchable condition -- and combined
 with `HOST_ERROR` (`uio[6]`, Pin map above), firmware has both a way to
 notice the failure and a dedicated pin to report it on, rather than
-just hanging.
+just hanging. **Caveat, don't skip it**: `WAIT`'s max reach is ~20.3ms,
+and a real host (e.g. Python-over-USB through the RP2040) can routinely
+take longer than that to respond even when it's working fine -- a
+single `WAIT HOST_GO,1,timeout` here risks a false `HOST_ERROR` against
+a merely-slow host, not just a genuinely dead one. Use a `LOOP`-wrapped
+multi-attempt bound instead of one long timeout for this specific
+`WAIT`, per [isa.md](isa.md)'s `WAIT` row.
 
 **Considered and rejected: pulse-pattern side-channel signaling** (e.g.
 double-pulsing `HOST_STATUS` to mean "error" instead of a single pulse
