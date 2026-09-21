@@ -51,3 +51,12 @@ COCOTB_TEST_MODULES = test
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# Randomized differential testing against golden_model.py -- see
+# test_random.py's own header. `make random` runs the default SEEDS;
+# override via e.g. `make random SEEDS=200 SIM=verilator`. Purely
+# additive -- default `make` (no target) is unchanged, still just the
+# 18 directed tests in test.py.
+.PHONY: random
+random:
+	$(MAKE) COCOTB_TEST_MODULES=test_random
