@@ -44,6 +44,23 @@
  * 3-cycles-per-instruction property (docs/architecture.md Pipeline).
  * Found wiring DELAY's exit condition in core.v, not caught at the
  * doc-level audit -- an RTL-timing-specific bug, not a spec gap.
+ *
+ * On `load`, `count` gets `shifted - 1` (not `shifted`), guarded at 0
+ * -- a SEPARATE off-by-one from the one directly above, found by a
+ * cocotb functional test (test/test.py's test_delay_timing) measuring
+ * real elapsed cycles: for mantissa >= 1, the cycle right after `load`
+ * still shows the freshly-loaded, not-yet-decremented `count`, and
+ * `expired` re-checks that same unchanged value against 0 -- a wasted
+ * cycle that isn't wasted for the `load`-cycle's own check (which
+ * correctly special-cases mantissa==0 combinationally, see above), so
+ * every DELAY/WAIT-with-timeout with mantissa >= 1 cost one cycle more
+ * than the documented "3+N" property promises (confirmed by hand
+ * re-deriving the exact cycle count: `shifted` unfixed gives EXECUTE
+ * occupancy of N+2 cycles for N>=1 but only 1 for N==0 -- a genuine
+ * discontinuity, not just a uniform "+1"). Pre-decrementing at load
+ * time removes the wasted cycle uniformly, including at N==0 (where
+ * `shifted-1` would underflow -- guarded to 0, moot anyway since the
+ * `load`-cycle combinational check already handles that case).
  */
 
 `default_nettype none
@@ -70,7 +87,7 @@ module cycle_counter (
     if (!rst_n) begin
       count <= 24'd0;
     end else if (load) begin
-      count <= shifted;
+      count <= (shifted == 24'd0) ? 24'd0 : (shifted - 24'd1);
     end else if (count != 24'd0) begin
       count <= count - 24'd1;
     end

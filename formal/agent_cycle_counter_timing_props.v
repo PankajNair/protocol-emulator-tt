@@ -24,16 +24,31 @@
 // exact update rule (its own header comment explains why `expired`
 // looks at the about-to-be-loaded value during a `load` cycle, not the
 // stale registered `count` -- a same-cycle-load-visibility fix found
-// while wiring DELAY's exit condition in core.v). Confirmed by hand
-// trace for target=0 (expired true on both the load cycle AND the
-// cycle immediately after -- count doesn't actually decrement until
-// the SECOND cycle after load) and target=1 (expired stays false for
-// both of those cycles, only becoming true starting the cycle after).
-// `dist_now`/`target_now` below reproduce that exact timing: `elapsed`
-// is 0 not just on the load cycle but also the cycle immediately
-// after (count[load+1] == count[load] == the freshly loaded value,
-// unchanged -- the DUT's own decrement branch doesn't fire until the
-// cycle after THAT).
+// while wiring DELAY's exit condition in core.v). `dist_now` counts
+// cycles since (and including) `load`, incrementing every cycle with
+// no flat period: `elapsed` is seeded to 1 (not 0) on `load`, since by
+// the very next cycle exactly one full cycle will have passed.
+//
+// This ghost model went through a real revision, not just a first
+// derivation: an earlier version seeded `elapsed` to 0 on `load` (flat
+// for 2 cycles before incrementing), matching what turned out to be a
+// genuine off-by-one BUG in cycle_counter.v itself at the time (DELAY
+// with mantissa>=1 cost one cycle more than the documented "3+N"
+// property promises -- found by a cocotb functional test measuring
+// real elapsed cycles, test/test.py's test_delay_timing, NOT by this
+// formal property, which had PASSED against the buggy DUT because its
+// ghost model was unknowingly fit to match the bug rather than
+// independently derived from the "3+N" spec). After fixing
+// cycle_counter.v (pre-decrementing on load: `count <= shifted - 1`,
+// guarded at 0), this ghost model was corrected to match -- re-verified
+// against a from-scratch Python re-derivation of both the fixed DUT
+// and this exact ghost-model formula before trusting it again. Real
+// lesson for any future props file here: a ghost model derived BY
+// READING the DUT's own update logic (rather than independently from
+// its documented spec) can silently prove the implementation matches
+// itself, not that it matches the spec -- functional/cocotb testing
+// and formal verification here are complementary for exactly this
+// reason, neither replaces the other.
 //
 // Two properties, same ghost model: no-undercount (this file's named
 // candidate property) and the tighter full-equality timing property
@@ -95,7 +110,7 @@ module cycle_counter_timing_props (
       armed   <= 1'b0;
     end else if (load) begin
       target  <= target_next;
-      elapsed <= 24'd0;
+      elapsed <= 24'd1;  // by the next cycle, exactly 1 cycle has passed since load
       armed   <= 1'b1;
     end else if (armed) begin
       elapsed <= elapsed + 24'd1;
