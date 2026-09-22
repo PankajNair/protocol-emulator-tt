@@ -67,6 +67,10 @@ class SeqCoverage:
         # blocking, timed out, met on the exact expiry cycle (tie -- met
         # must win), and unbounded (no timeout armed).
         self.wait_bins = {k: 0 for k in ("met_immediate", "met_later", "timeout", "tie", "unbounded")}
+        # How long WAIT actually blocked (k = extra cycles past 3). 32+
+        # needs the counter's exponent-1 range and a line that really
+        # holds its level -- the clock-stretch / slow-host case.
+        self.wait_k_bins = {k: 0 for k in ("0", "1-31", "32-479", "480+")}
         # Shared DELAY/WAIT counter's exponent field -- each exponent is a
         # different shift of the same hardware (cycle_counter.v).
         self.delay_exp_bins = {str(e): 0 for e in range(4)}
@@ -119,6 +123,7 @@ class SeqCoverage:
                 self.debug_flag_bins["orphan_ret"] += 1
         elif op == asm.OP_WAIT:
             k = cycles - 3
+            self.wait_k_bins["0" if k == 0 else "1-31" if k < 32 else "32-479" if k < 480 else "480+"] += 1
             mant, exp = d["wait_mantissa"], d["exponent"]
             met = not post.flag
             if mant == 0:
