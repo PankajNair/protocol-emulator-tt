@@ -10,9 +10,17 @@ off-by-one (commit 1121ccc) systematically, not just because someone
 happened to write a timing-differential test for that one opcode.
 
 Does not modify test.py or isa_asm.py -- both stay untouched, reused
-directly. See golden_model.py's header for scope (WAIT/IN/INB
-deliberately excluded) and random_gen.py's header for how program
-termination is guaranteed by construction.
+directly. See golden_model.py's header for scope (now all 19 opcodes,
+including WAIT/IN/INB) and random_gen.py's header for how program
+termination is guaranteed by construction, and for WAIT/INB's scoped-
+down pin_index/timeout generation.
+
+WAIT/IN/INB need live external pin/bus stimulus, which this file now
+drives every cycle post-boot from a deterministic per-seed timeline
+(io_stimulus.py) -- see that module's header for the exact timing
+convention (empirically confirmed against real RTL, not assumed) and
+for why cycles at or before `boot_exit_cycle` are handled as a special
+case rather than pulled from the random timeline.
 
 Env vars (matching test/Makefile's existing SIM ?= convention):
     SEEDS           number of seeds to run (default 25)
@@ -20,6 +28,8 @@ Env vars (matching test/Makefile's existing SIM ?= convention):
     MAX_CYCLES      per-seed hard-failure cycle budget (default 20000)
     MAX_DELAY_EXP0  DELAY mantissa clamp at exponent=0 (default 63)
     MAX_DELAY_EXP1  DELAY mantissa clamp at exponent=1 (default 15)
+    MAX_WAIT_EXP0   WAIT mantissa clamp at exponent=0 (default 31)
+    MAX_WAIT_EXP1   WAIT mantissa clamp at exponent=1 (default 15)
 
 Run: make -C test COCOTB_TEST_MODULES=test_random SEEDS=200
      (or the `make -C test random` convenience target)
@@ -34,6 +44,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 import isa_asm as asm
 import random_gen
 from golden_model import SequencerState, _decode, step
+from io_stimulus import IoStimulus
 
 S_LOAD, S_FETCH_LO, S_FETCH_HI, S_EXECUTE = 0, 1, 2, 3
 START_BIT = 6
@@ -105,9 +116,14 @@ def _dump_artifacts(seed, words, report):
         fh.write(report + "\n")
 
 
-async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa):
-    words = random_gen.generate_program(seed, max_delay_mantissa=max_delay_mantissa)
+async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa):
+    words = random_gen.generate_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=max_wait_mantissa)
     boot_exit_cycle = await fast_boot(dut, words)
+    # Margin beyond max_cycles: a WAIT's own lookahead can probe a few
+    # cycles past the program's eventual hard-failure point before that
+    # failure is detected; IoStimulus.raw_*() already returns 0 past
+    # max_cycle regardless, this margin just avoids relying on that.
+    stim = IoStimulus(seed, boot_exit_cycle, max_cycle=max_cycles + 32)
 
     core = dut.user_project.u_core
     regfile = dut.user_project.u_core.u_regfile
@@ -124,6 +140,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa):
     prev_state = int(core.state.value)
     prev_halted = int(core.halted.value)
     instr_index = 0
+    opcode_counts: dict[int, int] = {}
 
     def fail(msg):
         report = f"seed={seed} instr={instr_index} pc={golden.pc}\n{msg}"
@@ -137,6 +154,12 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa):
     while True:
         await RisingEdge(dut.clk)
         cycle += 1
+        # Drive this cycle's raw external stimulus -- see io_stimulus.py's
+        # header for the exact convention and why every opcode (not just
+        # WAIT/IN/INB) can safely be driven uniformly every cycle: no
+        # other opcode's RTL path reads ui_in_sync/pin_read at all.
+        dut.ui_in.value = stim.raw_ui_in(cycle)
+        dut.uio_in.value = stim.raw_uio_in(cycle)
         if cycle > max_cycles:
             fail(
                 f"exceeded MAX_CYCLES={max_cycles} without halting -- random_gen.py "
@@ -153,14 +176,32 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa):
         if not is_commit:
             continue
 
+        # This instruction's own FETCH_LO-start cycle is `last_commit_cycle`
+        # BEFORE this reassignment -- `is_commit` fires on the transition
+        # INTO S_FETCH_LO, i.e. `cycle` right now is where the CURRENT
+        # instruction's own FETCH_LO just began; `last_commit_cycle` (the
+        # value from the PREVIOUS iteration) already holds exactly that
+        # same cycle number for the FIRST instruction ever processed
+        # (seeded from boot_exit_cycle, fast_boot()'s own contract), and
+        # for every instruction after that it's this same variable, one
+        # commit-cycle behind `cycle` itself. Reusing `cycle` directly
+        # here would be off by one whole instruction's occupancy (3+
+        # cycles) -- found via a live RTL/golden IN mismatch: golden
+        # computed an abs_cycle 3 cycles too late, matching the very
+        # first WAIT/IN/INB commit checked end to end.
+        instr_fetch_lo_cycle = last_commit_cycle
         cycles_used = cycle - last_commit_cycle
         last_commit_cycle = cycle
+        # entering_execute: FETCH_LO -> FETCH_HI -> EXECUTE, always
+        # exactly 1 cycle each (docs/architecture.md Pipeline).
+        abs_cycle = instr_fetch_lo_cycle + 2
 
         word = words[golden.pc] if golden.pc < len(words) else asm.nop()
         rtl_ir = int(core.ir.value)
         decoded = _decode(word)
         pre_step_pc = golden.pc
-        golden, expected_cycles = step(golden, word)
+        opcode_counts[decoded["opcode"]] = opcode_counts.get(decoded["opcode"], 0) + 1
+        golden, expected_cycles = step(golden, word, io_read=stim.io_read, abs_cycle=abs_cycle)
         instr_index += 1
 
         check("fetched instruction (ir)", rtl_ir, word)
@@ -208,7 +249,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa):
     for addr in range(512):
         check(f"data_mem[{addr}] (closing diff)", int(mem.storage[512 + addr].value), golden.data_mem[addr])
 
-    return instr_index
+    return instr_index, opcode_counts
 
 
 @cocotb.test()
@@ -220,12 +261,29 @@ async def test_random_differential(dut):
         0: int(os.environ.get("MAX_DELAY_EXP0", "63")),
         1: int(os.environ.get("MAX_DELAY_EXP1", "15")),
     }
+    max_wait_mantissa = {
+        0: int(os.environ.get("MAX_WAIT_EXP0", "31")),
+        1: int(os.environ.get("MAX_WAIT_EXP1", "15")),
+    }
 
     dut._log.info(f"random differential test: SEEDS={n_seeds} SEED_BASE={seed_base} MAX_CYCLES={max_cycles}")
 
+    total_instr = 0
+    total_opcode_counts: dict[int, int] = {}
     for seed in range(seed_base, seed_base + n_seeds):
-        n_instr = await run_one_seed(dut, seed, max_cycles, max_delay_mantissa)
+        n_instr, opcode_counts = await run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa)
+        total_instr += n_instr
+        for op, count in opcode_counts.items():
+            total_opcode_counts[op] = total_opcode_counts.get(op, 0) + count
         if seed % 10 == 0 or seed == seed_base + n_seeds - 1:
             dut._log.info(f"seed={seed}: {n_instr} instructions, matched RTL exactly")
 
+    wait_in_inb = sum(total_opcode_counts.get(op, 0) for op in (asm.OP_WAIT, asm.OP_IN, asm.OP_INB))
+    pct = 100.0 * wait_in_inb / total_instr if total_instr else 0.0
+    dut._log.info(
+        f"WAIT/IN/INB: {wait_in_inb}/{total_instr} committed instructions ({pct:.1f}%) -- "
+        f"WAIT={total_opcode_counts.get(asm.OP_WAIT, 0)} "
+        f"IN={total_opcode_counts.get(asm.OP_IN, 0)} "
+        f"INB={total_opcode_counts.get(asm.OP_INB, 0)}"
+    )
     dut._log.info(f"ALL {n_seeds} SEEDS PASSED ({seed_base}..{seed_base + n_seeds - 1})")

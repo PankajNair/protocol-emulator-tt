@@ -186,9 +186,8 @@ def test_testbit_matches_directed_rtl_test():
 
 
 def test_wait_in_inb_raise_without_io_read():
-    """The deliberate extension seam: these three opcodes must fail
-    loudly, not silently mis-model, until a future io_read callback is
-    implemented."""
+    """WAIT/IN/INB must fail loudly, not silently mis-model, when called
+    without both io_read and abs_cycle."""
     import pytest
 
     state = SequencerState.reset()
@@ -198,3 +197,86 @@ def test_wait_in_inb_raise_without_io_read():
         step(state, asm.in_(0))
     with pytest.raises(NotImplementedError):
         step(state, asm.inb(0, pin_index=0, bitsel=asm.BITSEL_BIT0))
+
+
+def test_wait_met_immediately_costs_exactly_3_cycles():
+    """WAIT resolves at its own first EXECUTE sample (k=0, i.e.
+    io_read(abs_cycle) itself) when the condition is already met then --
+    3 total cycles, the minimum any instruction can take, flag cleared.
+    Hand-built io_read, independent of io_stimulus.py's own timing
+    machinery -- this checks step()'s WAIT logic directly."""
+    def io_read(_t):
+        return 0, 0b1  # uio_in_sync bit0 = 1
+
+    state = SequencerState.reset()
+    new_state, cycles = step(
+        state, asm.wait_(pin_index=0, level=1, mantissa=5, exponent=0), io_read=io_read, abs_cycle=100
+    )
+    assert cycles == 3
+    assert new_state.flag is False
+
+
+def test_wait_timeout_costs_exactly_3_plus_target_cycles():
+    """WAIT whose stimulus never matches times out at exactly
+    k==target (mantissa << exponent*TIMEOUT_SHIFT) -- 3+target total
+    cycles, flag set."""
+    def io_read(_t):
+        return 0, 0b0  # bit0 always 0 -- level=1 never met
+
+    mantissa, exponent = 5, 0
+    target = mantissa << (exponent * 5)
+    state = SequencerState.reset()
+    new_state, cycles = step(
+        state, asm.wait_(pin_index=0, level=1, mantissa=mantissa, exponent=exponent),
+        io_read=io_read, abs_cycle=100,
+    )
+    assert cycles == 3 + target
+    assert new_state.flag is True
+
+
+def test_wait_condition_met_on_expiry_cycle_wins():
+    """docs/isa.md WAIT row: if the pin condition becomes true on the
+    EXACT cycle the counter would expire, condition-met wins -- flag
+    must read 0 (met), not 1 (timed out), at that exact boundary."""
+    mantissa, exponent = 3, 0
+    target = mantissa << (exponent * 5)
+
+    def io_read(t, _target=target):
+        return 0, (1 if (t - 100) >= _target else 0)  # bit0 flips to 1 exactly at k==target
+
+    state = SequencerState.reset()
+    new_state, cycles = step(
+        state, asm.wait_(pin_index=0, level=1, mantissa=mantissa, exponent=exponent),
+        io_read=io_read, abs_cycle=100,
+    )
+    assert cycles == 3 + target
+    assert new_state.flag is False  # met wins the tie, not timeout
+
+
+def test_in_captures_synchronized_byte():
+    """IN samples io_read(abs_cycle) once, directly into Rd -- a
+    hand-built io_read returning a known byte at a known abs_cycle must
+    land there exactly."""
+    def io_read(t):
+        return (0x5A if t == 200 else 0x00), 0
+
+    state = SequencerState.reset()
+    new_state, cycles = step(state, asm.in_(2), io_read=io_read, abs_cycle=200)
+    assert cycles == 3
+    assert new_state.regs[2] == 0x5A
+
+
+def test_inb_captures_one_bit_leaves_others_untouched():
+    """INB writes exactly one bit of Rd, other bits untouched -- verified
+    by pre-loading Rd with a known pattern and confirming only the
+    targeted bit changes."""
+    def io_read(_t):
+        return 0, 0b10000000  # uio_in_sync bit7 = 1
+
+    state = SequencerState.reset()
+    state.regs[1] = 0b00000001  # pre-existing bit0 must survive
+    new_state, cycles = step(
+        state, asm.inb(1, pin_index=7, bitsel=asm.BITSEL_BIT7), io_read=io_read, abs_cycle=50
+    )
+    assert cycles == 3
+    assert new_state.regs[1] == 0b10000001

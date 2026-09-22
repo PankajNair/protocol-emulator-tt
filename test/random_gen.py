@@ -3,10 +3,22 @@
 """Random program generator for the protocol-emulator sequencer ISA,
 for differential testing against golden_model.py (test_random.py).
 
-Scope matches golden_model.py exactly: only opcodes whose behavior
-depends purely on internal architectural state are emitted -- WAIT/IN/
-INB are never generated (they need live external pin/bus state the
-golden model doesn't model yet, see golden_model.py's header).
+Scope matches golden_model.py exactly -- all 19 opcodes are now
+generated. WAIT/IN/INB are scoped down from their full ISA range,
+matching io_stimulus.py's own scoping (see its header for the full
+reasoning):
+  - WAIT/INB's `pin_index` is drawn only from the 5 protocol pins
+    (0,1,2,3,7) -- 4/5/6 (HOST_GO/HOST_STATUS/HOST_ERROR) have
+    role-specific self-loopback/hardwired-oe semantics this flat
+    generator doesn't model, already covered by test.py's directed
+    tests.
+  - WAIT is only ever generated WITH a nonzero timeout (mandatory,
+    never unbounded). This is required, not just conservative: an
+    unbounded WAIT against a live random bitstream has no
+    hardware-guaranteed termination bound, which would break this
+    file's own "MAX_CYCLES trip always means a real bug" guarantee
+    below. Unbounded WAIT is already covered by test.py's directed
+    tests, so this isn't a coverage loss.
 
 Termination is guaranteed BY CONSTRUCTION, not by chance, so a
 MAX_CYCLES trip in test_random.py always means a real bug (RTL hang,
@@ -55,12 +67,22 @@ DEFAULT_CALL_PROB = 0.03
 # than occasionally drawing near the ISA's real ~16.7M-cycle ceiling.
 # Override for an occasional heavier run.
 DEFAULT_MAX_DELAY_MANTISSA = {0: 63, 1: 15}
+# WAIT's mantissa field is only 5 bits (max literal 31, docs/isa.md WAIT
+# row) -- exponent=0/1 by default, same "keep a default run's cost
+# bounded" reasoning as DELAY above. Mantissa is drawn from [1, cap],
+# never 0 -- mandatory nonzero timeout, see module header.
+DEFAULT_MAX_WAIT_MANTISSA = {0: 31, 1: 15}
 
 PROGRAM_WORD_LIMIT = 256  # docs/isa.md "Data memory" -- program region is bytes 0-511 = 256 words
 
+# The 5 protocol pins (docs/architecture.md Pin map) -- WAIT/INB's
+# random pin_index is drawn only from these, see module header.
+PROTOCOL_PIN_INDICES = (0, 1, 2, 3, 7)
+
 _LEAF_OP_POOL = (
     ["LDI"] * 3 + ["OUT"] * 2
-    + ["SET", "OUTB", "SHIFT", "DELAY", "TESTBIT", "CMP", "LOAD", "STORE", "LOADX", "NOP"]
+    + ["SET", "OUTB", "SHIFT", "DELAY", "TESTBIT", "CMP", "LOAD", "STORE", "LOADX", "NOP",
+       "WAIT", "IN", "INB"]
 )
 
 _BLOCK_LEAF = "leaf"
@@ -79,19 +101,28 @@ def _reg(rng: random.Random, forbid_write: int | None) -> int:
     return rng.choice(choices)
 
 
-def _gen_leaf_word(rng: random.Random, max_delay_mantissa: dict, forbid_write_reg: int | None = None) -> int:
+def _gen_leaf_word(
+    rng: random.Random,
+    max_delay_mantissa: dict,
+    max_wait_mantissa: dict | None = None,
+    forbid_write_reg: int | None = None,
+) -> int:
     """`forbid_write_reg`, when given, excludes that register from every
-    register-WRITING opcode's destination (LDI/SHIFT/LOAD/LOADX) --
-    used only when generating a LOOP body, to protect the loop's own
+    register-WRITING opcode's destination (LDI/SHIFT/LOAD/LOADX/IN/INB)
+    -- used only when generating a LOOP body, to protect the loop's own
     counter register from being clobbered mid-loop. Found the hard way:
     an earlier version had no such protection, and SHIFT (or LDI/LOAD/
     LOADX) landing on the loop's counter register inside its own body
     silently undid LOOP's decrement every pass, making the "exactly C
     iterations, guaranteed by construction" claim false -- confirmed via
     a real hang (seed 4, R3 as both loop counter and a body SHIFT's
-    destination) before this fix. Read-only uses (CMP, STORE reading a
-    register, TESTBIT, OUTB, the loop-index register itself via LOOP)
-    are unaffected -- only opcodes that WRITE a GPR need excluding."""
+    destination) before this fix. IN/INB write a GPR too (INB only a
+    single bit, but a stray bit flip into the counter register is the
+    same hazard class) -- excluded the same way. Read-only uses (CMP,
+    STORE reading a register, TESTBIT, OUTB, the loop-index register
+    itself via LOOP) are unaffected -- only opcodes that WRITE a GPR
+    need excluding."""
+    max_wait_mantissa = max_wait_mantissa or DEFAULT_MAX_WAIT_MANTISSA
     op = rng.choice(_LEAF_OP_POOL)
     if op == "LDI":
         return asm.ldi(_reg(rng, forbid_write_reg), rng.randint(0, 255))
@@ -122,6 +153,15 @@ def _gen_leaf_word(rng: random.Random, max_delay_mantissa: dict, forbid_write_re
         return asm.loadx(_reg(rng, forbid_write_reg), rng.randint(0, 3))
     if op == "NOP":
         return asm.nop()
+    if op == "WAIT":
+        exponent = rng.choice(sorted(max_wait_mantissa.keys()))
+        mantissa = rng.randint(1, max_wait_mantissa[exponent])  # mandatory nonzero, see module header
+        return asm.wait_(rng.choice(PROTOCOL_PIN_INDICES), rng.randint(0, 1), mantissa=mantissa, exponent=exponent)
+    if op == "IN":
+        return asm.in_(_reg(rng, forbid_write_reg))
+    if op == "INB":
+        return asm.inb(_reg(rng, forbid_write_reg), rng.choice(PROTOCOL_PIN_INDICES),
+                        rng.choice([asm.BITSEL_BIT0, asm.BITSEL_BIT7]))
     raise AssertionError(f"unhandled leaf op {op!r}")
 
 
@@ -135,11 +175,13 @@ def generate_program(
     loop_prob: float = DEFAULT_LOOP_PROB,
     call_prob: float = DEFAULT_CALL_PROB,
     max_delay_mantissa: dict | None = None,
+    max_wait_mantissa: dict | None = None,
 ) -> list[int]:
     """Returns a list of 16-bit instruction words. Deterministic in
     `seed` alone (own random.Random instance, no global state)."""
     rng = random.Random(seed)
     max_delay_mantissa = max_delay_mantissa or DEFAULT_MAX_DELAY_MANTISSA
+    max_wait_mantissa = max_wait_mantissa or DEFAULT_MAX_WAIT_MANTISSA
     n_blocks = rng.randint(min_blocks, max_blocks)
 
     # Pass 1: decide the abstract block-type sequence and every forward
@@ -189,7 +231,7 @@ def generate_program(
         label = target_labels.get(i)
         kind = bt["kind"]
         if kind == _BLOCK_LEAF:
-            entries.append((label, _gen_leaf_word(rng, max_delay_mantissa)))
+            entries.append((label, _gen_leaf_word(rng, max_delay_mantissa, max_wait_mantissa)))
         elif kind == _BLOCK_BRANCH:
             cond = bt["cond"]
             tgt_label = target_labels[branch_targets[i]]
@@ -200,7 +242,7 @@ def generate_program(
             entries.append((label, asm.ldi(reg, count)))
             for j in range(body_len):
                 entries.append((loop_label if j == 0 else None,
-                                 _gen_leaf_word(rng, max_delay_mantissa, forbid_write_reg=reg)))
+                                 _gen_leaf_word(rng, max_delay_mantissa, max_wait_mantissa, forbid_write_reg=reg)))
             entries.append((None, (lambda L, loop_label=loop_label, reg=reg: asm.loop_(L[loop_label], reg))))
         elif kind == _BLOCK_CALL:
             entries.append((label, (lambda L: asm.call(L["sub_start"]))))
@@ -211,9 +253,9 @@ def generate_program(
 
     if call_sites > 0:
         sub_len = rng.randint(3, 10)
-        entries.append(("sub_start", _gen_leaf_word(rng, max_delay_mantissa)))
+        entries.append(("sub_start", _gen_leaf_word(rng, max_delay_mantissa, max_wait_mantissa)))
         for _ in range(sub_len - 1):
-            entries.append((None, _gen_leaf_word(rng, max_delay_mantissa)))
+            entries.append((None, _gen_leaf_word(rng, max_delay_mantissa, max_wait_mantissa)))
         entries.append((None, asm.ret()))
 
     words = asm.assemble(entries)
