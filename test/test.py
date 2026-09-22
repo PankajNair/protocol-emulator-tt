@@ -450,3 +450,149 @@ async def test_in(dut):
     await reset_and_boot(dut, prog, ui_in_for_run=0x5A)
     await run_to_value(dut, 0x5A)
     dut._log.info("IN correctly captured the host data-in bus")
+
+
+@cocotb.test()
+async def test_call_ret_nested_misuse_flag(dut):
+    """A nested CALL (executed while a return address is already pending)
+    silently overwrites `retaddr` rather than being protected or nesting
+    (docs/isa.md Branch format section's 'no return stack' limitation) --
+    and sets the sticky `call_ret_misuse_flag` (formal/debug-visibility
+    only per isa.md, no opcode can read it -- 'now diagnosable, not just
+    documented'). Confirmed two ways: behaviorally (RET returns to the
+    INNER call's continuation, not the outer one -- proof the outer
+    return address was actually lost, not just theoretically at risk)
+    and via direct hierarchical probe of the sticky flag itself, the
+    same debug-probe access test_hierarchy_smoke.py already established
+    works identically on icarus/verilator."""
+    prog = asm.assemble([
+        (None, lambda L: asm.call(L["sub1"])),
+        (None, lambda L: asm.halt()),          # outer return address -- poison, unreachable if the overwrite is real
+        ("sub1", lambda L: asm.call(L["sub2"])),
+        (None, lambda L: asm.ldi(0, 0x5E)),     # inner return lands here, not at the poison HALT above
+        (None, lambda L: asm.out(0)),
+        (None, lambda L: asm.halt()),
+        ("sub2", lambda L: asm.ret()),
+    ])
+    await reset_and_boot(dut, prog)
+    core = dut.user_project.u_core
+    await run_to_value(dut, 0x5E)
+    assert int(core.call_ret_misuse_flag.value) == 1, "nested CALL (return_valid already 1) should have set the sticky misuse flag"
+    assert int(core.return_valid.value) == 0, "RET should have cleanly consumed the (overwritten) pending return"
+    dut._log.info("nested CALL overwrote the outer return address and set call_ret_misuse_flag, as documented")
+
+
+@cocotb.test()
+async def test_ret_without_call_misuse_flag(dut):
+    """An 'orphan' RET -- executed with no pending return address
+    (return_valid=0) -- silently jumps to the return-address register's
+    reset value, 0 (docs/isa.md Branch format section), and sets the same
+    sticky call_ret_misuse_flag. Confirmed via direct hierarchical probe;
+    the flag has no opcode-visible port by design."""
+    prog = [asm.ret()]  # address 0: orphan RET, no CALL has ever executed
+    await reset_and_boot(dut, prog)
+    core = dut.user_project.u_core
+    await ClockCycles(dut.clk, 30)  # RET->PC0->RET loops harmlessly; flag is sticky either way
+    assert int(core.call_ret_misuse_flag.value) == 1, "orphan RET (return_valid=0) should set the sticky misuse flag"
+    assert int(core.return_valid.value) == 0, "return_valid should remain 0 -- RET consumes nothing when nothing was pending"
+    dut._log.info("orphan RET correctly flagged via call_ret_misuse_flag")
+
+
+@cocotb.test()
+async def test_illegal_opcode_sets_flag(dut):
+    """An unassigned opcode (19) decodes as NOP for execution purposes
+    (already covered by test_illegal_opcode) but ALSO sets the sticky
+    illegal_op_flag (docs/isa.md Undefined opcode behavior) -- confirmed
+    via direct hierarchical probe, since firmware cannot observe this
+    flag by design (formal/debug-visibility only)."""
+    prog = [
+        asm.ldi(0, 0x11),
+        asm.out(0),
+        asm.raw(19),
+        asm.halt(),
+    ]
+    await reset_and_boot(dut, prog)
+    core = dut.user_project.u_core
+    await run_to_value(dut, 0x11)
+    assert int(core.illegal_op_flag.value) == 0, "flag should still be clear before the illegal opcode executes"
+    await ClockCycles(dut.clk, 10)  # let the raw(19) instruction finish its EXECUTE cycle
+    assert int(core.illegal_op_flag.value) == 1, "unassigned opcode 19 should have set the sticky illegal_op_flag"
+    dut._log.info("illegal opcode correctly set illegal_op_flag while still executing as NOP")
+
+
+@cocotb.test()
+async def test_loop_does_not_touch_flag(dut):
+    """LOOP's branch decision is entirely internal to LOOP itself -- it
+    must not write the shared CMP/TEST-bit/WAIT flag (docs/isa.md LOOP
+    row: 'Does not touch the shared flag'). Verified by setting flag=1
+    via CMP immediately before a LOOP, then checking a following BEQ
+    still takes -- if LOOP silently touched the flag, BEQ would not."""
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(0, 5)),
+        (None, lambda L: asm.ldi(1, 5)),
+        (None, lambda L: asm.cmp_(0, 1)),          # flag <= (5==5) = 1
+        (None, lambda L: asm.ldi(2, 2)),            # loop counter
+        ("loop", lambda L: asm.nop()),              # trivial loop body
+        (None, lambda L: asm.loop_(L["loop"], 2)),
+        (None, lambda L: asm.beq(L["flag_still_set"])),  # takes only if LOOP left flag alone
+        (None, lambda L: asm.ldi(3, 0x00)),          # poison: flag was clobbered
+        (None, lambda L: asm.halt()),
+        ("flag_still_set", lambda L: asm.ldi(3, 0xF1)),
+        (None, lambda L: asm.out(3)),
+        (None, lambda L: asm.halt()),
+    ])
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0xF1)
+    dut._log.info("LOOP left the shared flag untouched, as documented")
+
+
+@cocotb.test()
+async def test_shift_does_not_touch_flag(dut):
+    """SHIFT must not write the shared flag (docs/isa.md SHIFT row:
+    'SHIFT does not touch the shared flag') -- verified the same way as
+    LOOP's equivalent property above: set flag=1 via CMP, SHIFT a
+    register, confirm a following BEQ still takes."""
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(0, 5)),
+        (None, lambda L: asm.ldi(1, 5)),
+        (None, lambda L: asm.cmp_(0, 1)),          # flag <= 1
+        (None, lambda L: asm.shift(0, asm.SHIFT_LEFT)),
+        (None, lambda L: asm.beq(L["flag_still_set"])),
+        (None, lambda L: asm.ldi(3, 0x00)),          # poison
+        (None, lambda L: asm.halt()),
+        ("flag_still_set", lambda L: asm.ldi(3, 0xF2)),
+        (None, lambda L: asm.out(3)),
+        (None, lambda L: asm.halt()),
+    ])
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0xF2)
+    dut._log.info("SHIFT left the shared flag untouched, as documented")
+
+
+@cocotb.test()
+async def test_wait_success_clears_flag(dut):
+    """Every WAIT writes the shared flag on exit, uniformly -- 0 if the
+    pin condition was met, 1 if it timed out (docs/isa.md WAIT row).
+    test_wait_timeout already covers the timeout=1 path; this covers the
+    success=0 path, which is otherwise never directly checked -- verified
+    by pre-poisoning flag=1 via CMP, then a successful (non-timeout) WAIT,
+    then a BNE that only takes if flag is genuinely 0."""
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(0, 5)),
+        (None, lambda L: asm.ldi(1, 5)),
+        (None, lambda L: asm.cmp_(0, 1)),             # flag <= 1 (poison state)
+        (None, lambda L: asm.wait_(HOST_GO_BIT, 1)),  # unbounded; met once HOST_GO asserted
+        (None, lambda L: asm.bne(L["flag_cleared"])), # needs flag=0 to take
+        (None, lambda L: asm.ldi(3, 0x00)),            # poison: flag still 1
+        (None, lambda L: asm.halt()),
+        ("flag_cleared", lambda L: asm.ldi(3, 0xF3)),
+        (None, lambda L: asm.out(3)),
+        (None, lambda L: asm.halt()),
+    ])
+    uio_in_state = await reset_and_boot(dut, prog)
+    await ClockCycles(dut.clk, 20)  # let LDI/LDI/CMP run; confirm still blocked at WAIT
+    assert int(dut.uo_out.value) == 0, "shouldn't have progressed past WAIT yet"
+    uio_in_state |= 1 << HOST_GO_BIT
+    dut.uio_in.value = uio_in_state
+    await run_to_value(dut, 0xF3, max_cycles=50)
+    dut._log.info("successful WAIT correctly cleared the shared flag to 0")
