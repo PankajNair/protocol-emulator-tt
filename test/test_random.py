@@ -45,6 +45,7 @@ import isa_asm as asm
 import random_gen
 from golden_model import SequencerState, _decode, step
 from io_stimulus import IoStimulus
+from seq_coverage import SeqCoverage
 
 S_LOAD, S_FETCH_LO, S_FETCH_HI, S_EXECUTE = 0, 1, 2, 3
 START_BIT = 6
@@ -141,10 +142,12 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
     prev_halted = int(core.halted.value)
     instr_index = 0
     opcode_counts: dict[int, int] = {}
+    cov = SeqCoverage(seed)
 
     def fail(msg):
         report = f"seed={seed} instr={instr_index} pc={golden.pc}\n{msg}"
         _dump_artifacts(seed, words, report)
+        cov.write()  # reported even on a failing seed, same as the RISC-V env
         assert False, report
 
     def check(name, rtl_value, golden_value):
@@ -201,8 +204,10 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
         decoded = _decode(word)
         pre_step_pc = golden.pc
         opcode_counts[decoded["opcode"]] = opcode_counts.get(decoded["opcode"], 0) + 1
+        pre_golden = golden
         golden, expected_cycles = step(golden, word, io_read=stim.io_read, abs_cycle=abs_cycle)
         instr_index += 1
+        cov.sample(pre_golden, golden, word, expected_cycles)
 
         check("fetched instruction (ir)", rtl_ir, word)
         check("cycles used", cycles_used, expected_cycles)
@@ -249,6 +254,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
     for addr in range(512):
         check(f"data_mem[{addr}] (closing diff)", int(mem.storage[512 + addr].value), golden.data_mem[addr])
 
+    cov.write()
     return instr_index, opcode_counts
 
 

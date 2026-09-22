@@ -3,7 +3,30 @@
 # 5-Stage-Pipelined-RISC-V-Processor project's `make formal`/
 # `make vacuity` convention (see formal/AGENT_CONTRACT.md).
 
-.PHONY: formal vacuity
+.PHONY: formal vacuity coverage mutate
+
+MUTATE_SEEDS ?= 50
+
+# ---------------------------------------------------------------------------
+# mutate: mutation-testing gate (scripts/mutate.py) -- parent session only,
+#         never delegated to a subagent. Restores src/ unconditionally.
+# ---------------------------------------------------------------------------
+mutate:
+	python3 scripts/mutate.py --seeds $(MUTATE_SEEDS)
+
+COV_SEEDS ?= 50
+COV_DIR   ?= /tmp/seq_coverage
+
+# ---------------------------------------------------------------------------
+# coverage: random differential regression with functional-coverage
+#           sampling (test/seq_coverage.py), then merged closure report
+#           (scripts/merge_coverage.py). Informational, always exits 0 on
+#           a passing regression. Needs cocotb on PATH (e.g. the .venv).
+# ---------------------------------------------------------------------------
+coverage:
+	rm -rf $(COV_DIR)
+	COV_DIR=$(COV_DIR) SEEDS=$(COV_SEEDS) $(MAKE) -C test random
+	python3 scripts/merge_coverage.py $(COV_DIR)
 
 # ---------------------------------------------------------------------------
 # formal: BMC assert pass for formal/agent_*_props.v (yosys + z3, no
