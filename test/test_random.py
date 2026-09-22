@@ -30,11 +30,14 @@ Env vars (matching test/Makefile's existing SIM ?= convention):
     MAX_DELAY_EXP1  DELAY mantissa clamp at exponent=1 (default 15)
     MAX_WAIT_EXP0   WAIT mantissa clamp at exponent=0 (default 31)
     MAX_WAIT_EXP1   WAIT mantissa clamp at exponent=1 (default 15)
+    STIM_PROFILE    stimulus profile test/stim/profile_<name>.py (default: none)
+    COV_DIR         coverage JSON output dir (default /tmp/seq_coverage)
 
 Run: make -C test COCOTB_TEST_MODULES=test_random SEEDS=200
      (or the `make -C test random` convenience target)
 """
 
+import importlib
 import os
 
 import cocotb
@@ -51,6 +54,23 @@ S_LOAD, S_FETCH_LO, S_FETCH_HI, S_EXECUTE = 0, 1, 2, 3
 START_BIT = 6
 
 ARTIFACT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regression_artifacts")
+
+
+def _load_profile():
+    """STIM_PROFILE=<name> -> test/stim/profile_<name>.py (see
+    test/stim/AGENT_CONTRACT.md). Each hook the profile exports
+    (generate_program, make_stimulus) replaces the default; anything it
+    doesn't export falls back to random_gen / IoStimulus. Unset = the
+    default generator, unchanged."""
+    name = os.environ.get("STIM_PROFILE", "")
+    if not name:
+        return "", random_gen.generate_program, IoStimulus
+    mod = importlib.import_module(f"stim.profile_{name}")
+    gen = getattr(mod, "generate_program", None)
+    mk = getattr(mod, "make_stimulus", None)
+    if gen is None and mk is None:
+        raise RuntimeError(f"stim/profile_{name}.py exports neither generate_program nor make_stimulus")
+    return name, gen or random_gen.generate_program, mk or IoStimulus
 
 
 async def fast_boot(dut, words):
@@ -117,14 +137,14 @@ def _dump_artifacts(seed, words, report):
         fh.write(report + "\n")
 
 
-async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa):
-    words = random_gen.generate_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=max_wait_mantissa)
+async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa, gen_program, make_stimulus):
+    words = gen_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=max_wait_mantissa)
     boot_exit_cycle = await fast_boot(dut, words)
     # Margin beyond max_cycles: a WAIT's own lookahead can probe a few
     # cycles past the program's eventual hard-failure point before that
     # failure is detected; IoStimulus.raw_*() already returns 0 past
     # max_cycle regardless, this margin just avoids relying on that.
-    stim = IoStimulus(seed, boot_exit_cycle, max_cycle=max_cycles + 32)
+    stim = make_stimulus(seed, boot_exit_cycle, max_cycle=max_cycles + 32)
 
     core = dut.user_project.u_core
     regfile = dut.user_project.u_core.u_regfile
@@ -272,12 +292,14 @@ async def test_random_differential(dut):
         1: int(os.environ.get("MAX_WAIT_EXP1", "15")),
     }
 
-    dut._log.info(f"random differential test: SEEDS={n_seeds} SEED_BASE={seed_base} MAX_CYCLES={max_cycles}")
+    profile, gen_program, make_stimulus = _load_profile()
+    dut._log.info(f"random differential test: SEEDS={n_seeds} SEED_BASE={seed_base} MAX_CYCLES={max_cycles} "
+                  f"STIM_PROFILE={profile or 'default'}")
 
     total_instr = 0
     total_opcode_counts: dict[int, int] = {}
     for seed in range(seed_base, seed_base + n_seeds):
-        n_instr, opcode_counts = await run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa)
+        n_instr, opcode_counts = await run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa, gen_program, make_stimulus)
         total_instr += n_instr
         for op, count in opcode_counts.items():
             total_opcode_counts[op] = total_opcode_counts.get(op, 0) + count

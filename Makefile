@@ -14,8 +14,9 @@ MUTATE_SEEDS ?= 50
 mutate:
 	python3 scripts/mutate.py --seeds $(MUTATE_SEEDS)
 
-COV_SEEDS ?= 50
-COV_DIR   ?= /tmp/seq_coverage
+COV_SEEDS    ?= 50
+STIM_PROFILE ?=
+COV_DIR      ?= /tmp/seq_coverage$(if $(STIM_PROFILE),_$(STIM_PROFILE))
 
 # ---------------------------------------------------------------------------
 # coverage: random differential regression with functional-coverage
@@ -25,7 +26,7 @@ COV_DIR   ?= /tmp/seq_coverage
 # ---------------------------------------------------------------------------
 coverage:
 	rm -rf $(COV_DIR)
-	COV_DIR=$(COV_DIR) SEEDS=$(COV_SEEDS) $(MAKE) -C test random
+	STIM_PROFILE=$(STIM_PROFILE) COV_DIR=$(COV_DIR) SEEDS=$(COV_SEEDS) $(MAKE) -C test random
 	python3 scripts/merge_coverage.py $(COV_DIR)
 
 # ---------------------------------------------------------------------------
