@@ -596,3 +596,85 @@ async def test_wait_success_clears_flag(dut):
     dut.uio_in.value = uio_in_state
     await run_to_value(dut, 0xF3, max_cycles=50)
     dut._log.info("successful WAIT correctly cleared the shared flag to 0")
+
+
+@cocotb.test()
+async def test_boot_echo_and_saturation(dut):
+    """LOAD-mode boot stream over-run (docs/architecture.md Pipeline LOAD):
+    uo_out echoes the post-increment byte address mod 256 after every
+    HOST_GO pulse, and the counter SATURATES at 1023 rather than
+    wrapping. Streams a full 1024-byte image plus 2 extra bytes encoding
+    HALT -- a wrapping counter would write them to addresses 0/1,
+    replacing instruction 0 with HALT so the marker never appears; a
+    saturating one just rewrites byte 1023 (last data byte, harmless)."""
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
+
+    image = asm.to_bytes([asm.ldi(0, 0x3C), asm.out(0), asm.halt()])
+    image += [0] * (1024 - len(image))
+    image += asm.to_bytes([asm.halt()])  # 2 over-run bytes
+
+    uio_in_state = 0
+    for k, b in enumerate(image, start=1):
+        uio_in_state = await load_byte(dut, b, uio_in_state)
+        expected = min(k, 1023) & 0xFF
+        echo = int(dut.uo_out.value)
+        assert echo == expected, f"boot echo after pulse {k}: got {echo:#x}, expected {expected:#x}"
+
+    uio_in_state |= 1 << START_BIT
+    dut.uio_in.value = uio_in_state
+    await ClockCycles(dut.clk, 4)
+    dut.uio_in.value = uio_in_state & ~(1 << START_BIT)
+    await run_to_value(dut, 0x3C)
+    dut._log.info("boot echo correct for all 1026 pulses; counter saturated, instruction 0 intact")
+
+
+@cocotb.test()
+async def test_host_error_gated_until_start_fall(dut):
+    """uio[6] driver-contention guard (docs/architecture.md LOAD): the
+    chip must not drive HOST_ERROR while the host may still be holding
+    START high -- uio_oe[6] stays 0 until START's synchronized falling
+    edge, even though execution already began on its rising edge and
+    firmware has already SET HOST_ERROR=1. Once START falls, the latched
+    value reaches the pin with no firmware involvement."""
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
+
+    prog = [
+        asm.set_pin(asm.SET_MODE_LEAVE, pin_index=START_BIT, value=1),  # HOST_ERROR = 1
+        asm.ldi(0, 0x6B),
+        asm.out(0),
+        asm.halt(),
+    ]
+    uio_in_state = 0
+    for b in asm.to_bytes(prog):
+        uio_in_state = await load_byte(dut, b, uio_in_state)
+
+    uio_in_state |= 1 << START_BIT
+    dut.uio_in.value = uio_in_state
+    # Hold START high well past the program finishing (marker + HALT).
+    for c in range(60):
+        await RisingEdge(dut.clk)
+        assert _bit(int(dut.uio_oe.value), START_BIT) == 0, \
+            f"uio_oe[6] asserted {c} cycles into the START-high window -- driver contention with host"
+    assert int(dut.uo_out.value) == 0x6B, "program should already have run while START was held"
+
+    dut.uio_in.value = uio_in_state & ~(1 << START_BIT)
+    await ClockCycles(dut.clk, 6)  # 2-flop sync + edge detect + latch
+    assert _bit(int(dut.uio_oe.value), START_BIT) == 1, "HOST_ERROR driver should enable after START falls"
+    assert _bit(int(dut.uio_out.value), START_BIT) == 1, "latched HOST_ERROR=1 should reach the pin once gated open"
+    dut._log.info("HOST_ERROR driver held off until START fell, then drove the latched value")

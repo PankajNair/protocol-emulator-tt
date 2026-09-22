@@ -141,12 +141,23 @@ module pin_ctrl (
   // "Seen START fall" latch -- gates uio_oe[6] closed until the host
   // has provably released the pin, closing the driver-contention
   // hazard documented in docs/architecture.md's LOAD section. Sticky:
-  // set once by a real start_fall, never cleared except reset.
-  reg seen_start_fall;
+  // set once, never cleared except reset.
+  //
+  // Uses its own UNGATED fall detect, qualified by !mode_load: START's
+  // rise is what ends LOAD, so its fall is always observed after
+  // mode_load has already dropped -- the mode_load-gated start_fall
+  // above can never fire for a real START pulse (found by
+  // test_host_error_gated_until_start_fall: uio_oe[6] was stuck at 0
+  // forever, HOST_ERROR undrivable). start_prev is only ever 1 after
+  // the host really drove START high, and the latch is sticky, so
+  // later HOST_ERROR activity looping back through uio_in[6] can't
+  // affect it.
+  wire start_fall_raw = !uio_in_ff2[6] && start_prev;
+  reg  seen_start_fall;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) seen_start_fall <= 1'b0;
-    else if (start_fall) seen_start_fall <= 1'b1;
+    else if (!mode_load && start_fall_raw) seen_start_fall <= 1'b1;
   end
 
   // -----------------------------------------------------------------

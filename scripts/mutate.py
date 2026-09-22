@@ -143,6 +143,14 @@ MUTANTS = [
         edits=[("assign uio_oe[gi]  = mode_load ? 1'b0 : seen_start_fall;",
                 "assign uio_oe[gi]  = mode_load ? 1'b0 : 1'b1;")],
     ),
+    dict(
+        id=14, file="io/pin_ctrl.v",
+        desc="seen_start_fall latched from mode_load-gated start_fall",
+        hazard="HOST_ERROR permanently undrivable (START fall only seen after LOAD exit)",
+        bug_ref="real bug, found by test_host_error_gated_until_start_fall",
+        edits=[("else if (!mode_load && start_fall_raw) seen_start_fall <= 1'b1;",
+                "else if (start_fall) seen_start_fall <= 1'b1;")],
+    ),
 ]
 
 
