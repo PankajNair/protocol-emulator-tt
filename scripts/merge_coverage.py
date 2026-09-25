@@ -21,8 +21,9 @@ import os
 import sys
 
 EXPECTED_OPEN = {
-    # Generator never emits reserved opcodes 19-31; test.py's
-    # test_illegal_opcode* cover NOP-fallthrough + sticky flag.
+    # Default generator never emits reserved opcodes 19-31; test.py's
+    # test_illegal_opcode* cover NOP-fallthrough + sticky flag, and
+    # STIM_PROFILE=illegal_mix reaches this bin and debug_flag_bins.illegal_op.
     "opcode_bins": {"ILLEGAL"},
     # random_gen.py makes both CALL/RET misuse structurally unreachable
     # (single leaf subroutine, RET only via CALL) and never emits
