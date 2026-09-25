@@ -93,10 +93,12 @@ async def fast_boot(dut, words):
     just returned after a fixed hold and let the caller assume it was
     already past boot-exit, which raced the real transition and either
     missed it entirely or under-counted instruction 0's own cycle
-    cost)."""
-    clock = Clock(dut.clk, 20, unit="ns")  # 50MHz, matches info.yaml clock_hz
-    cocotb.start_soon(clock.start())
+    cost).
 
+    Does NOT start the clock -- the caller starts it exactly once per
+    test. An earlier version started a fresh Clock here every seed and
+    never stopped the old ones, so per-cycle cost grew with seed index
+    and total wall time grew ~quadratically in SEEDS."""
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
@@ -293,6 +295,7 @@ async def test_random_differential(dut):
     }
 
     profile, gen_program, make_stimulus = _load_profile()
+    cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())  # 50MHz (info.yaml clock_hz), once for all seeds
     dut._log.info(f"random differential test: SEEDS={n_seeds} SEED_BASE={seed_base} MAX_CYCLES={max_cycles} "
                   f"STIM_PROFILE={profile or 'default'}")
 
