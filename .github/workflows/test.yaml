@@ -41,7 +41,9 @@ jobs:
       - name: Test Summary
         uses: test-summary/action@v2.4
         with:
-          paths: "test/results_directed.xml,test/results.xml"
+          paths: |
+            test/results_directed.xml
+            test/results.xml
         if: always()
 
       - name: upload waveform and test results
