@@ -32,6 +32,11 @@ EXPECTED_OPEN = {
     # WAIT always gets a mandatory nonzero timeout (random_gen.py header:
     # unbounded WAIT against random stimulus has no termination bound).
     "wait_bins": {"unbounded"},
+    # Default pin stimulus is a fresh 50/50 bit per cycle, so a WAIT
+    # blocking 32+ cycles needs ~32 consecutive wrong-level samples
+    # (~2^-32). A stimulus-space limit, not a burst-closable gap:
+    # reached by STIM_PROFILE=protocol_pins (level-holding bus waveforms).
+    "wait_k_bins": {"32-479", "480+"},
     # Default mantissa clamps only cover exponents 0/1 (keeps a default
     # regression's cycle cost bounded; exponent 3 reaches ~16.7M cycles).
     # Reachable via STIM_PROFILE=wide_timing (delay exp 3 also needs

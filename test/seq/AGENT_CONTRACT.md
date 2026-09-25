@@ -49,9 +49,12 @@ Real project notes (quirks a generic subagent can't know on its own):
   mode first, then OUTB. For `wait_bins.tie`, the real condition is the
   pin match landing on exactly the expiry cycle; state how often your
   construct really lands there, measured, not assumed.
-- **Currently known open / thin bins** (from a 100-seed `make coverage`):
-  `set_mode_x_pin_bins.leave.p7` (open -- rarity), `wait_bins.timeout`
-  (3 of 375 WAITs), `wait_bins.tie` (1), `flag_writer_bins.WAIT.1` (3),
-  `outb_mode_bins.pp`/`.od` (21 of 255 OUTBs actually drive a pin).
-  `EXPECTED_OPEN` bins in `scripts/merge_coverage.py` are out of scope
-  unless the parent session explicitly asks.
+- **Accepted bursts** (wired into `random_gen.CLOSURE_BURSTS` as top-level
+  blocks, 0.06/block, max 3/program): `cov_closure_outb_drive.py`
+  (SET pp/od then OUTB/DELAY/SHIFT/LOOP; outb_mode pp 12 -> 346, od 9 -> 341
+  per 100 seeds) and `cov_closure_wait_tie.py` (short-timeout WAIT retry;
+  wait_bins.tie 1 -> 15, timeout 3 -> 18). Read them for convention.
+- **Remaining open bins** under the default generator are all in
+  `EXPECTED_OPEN` in `scripts/merge_coverage.py`, each with its reason;
+  most are reached by a `STIM_PROFILE` (test/stim/). Rerun `make coverage`
+  for current numbers before targeting anything.

@@ -36,6 +36,13 @@ golden-model bug, or a bug in this file), never an expected timeout:
     nested-call hazard (docs/isa.md Branch format section) is
     structurally unreachable here, not just avoided by low probability.
   - Program always ends with a literal HALT.
+  - Coverage-closure bursts (test/seq/cov_closure_*.py, CLOSURE_BURSTS)
+    are emitted only as whole top-level blocks. Each carries its own
+    LDI-seeded (1-8) LOOP whose counter its body never writes, and
+    only forward branches to its own labels -- the same rules as
+    above, just authored per construct. Two today: a bit-bang TX loop
+    (SET pp/od then OUTB/DELAY/SHIFT/LOOP) and a short-timeout WAIT
+    retry loop (exercises the met-on-expiry tie rule).
 
 Deliberately NOT supported in v1 (kept flat/non-nested to avoid a
 combinatorial explosion of interaction cases): branches, LOOP, and
@@ -54,6 +61,8 @@ from __future__ import annotations
 import random
 
 import isa_asm as asm
+from seq.cov_closure_outb_drive import gen_cov_closure_outb_drive_burst
+from seq.cov_closure_wait_tie import gen_cov_closure_wait_tie_burst
 
 DEFAULT_MIN_BLOCKS = 40
 DEFAULT_MAX_BLOCKS = 100
@@ -62,6 +71,12 @@ DEFAULT_MAX_CALL_SITES = 3
 DEFAULT_BRANCH_PROB = 0.12
 DEFAULT_LOOP_PROB = 0.04
 DEFAULT_CALL_PROB = 0.03
+# Coverage-closure bursts (test/seq/, written by the coverage-closure
+# agent under test/seq/AGENT_CONTRACT.md): whole-construct blocks at top
+# level only, each self-contained and termination-safe on its own.
+DEFAULT_CLOSURE_PROB = 0.06
+DEFAULT_MAX_CLOSURE_SITES = 3
+CLOSURE_BURSTS = (gen_cov_closure_outb_drive_burst, gen_cov_closure_wait_tie_burst)
 # exponent=0/1 only by default -- keeps a default regression's DELAY
 # cost bounded (max 63 and 15*32=480 extra cycles respectively) rather
 # than occasionally drawing near the ISA's real ~16.7M-cycle ceiling.
@@ -89,6 +104,7 @@ _BLOCK_LEAF = "leaf"
 _BLOCK_BRANCH = "branch"
 _BLOCK_LOOP = "loop"
 _BLOCK_CALL = "call"
+_BLOCK_CLOSURE = "closure"
 
 
 def _reg(rng: random.Random, forbid_write: int | None) -> int:
@@ -193,6 +209,7 @@ def generate_program(
     branch_targets = {}  # block_index -> target_block_index (always > block_index)
     loop_sites = 0
     call_sites = 0
+    closure_sites = 0
 
     for i in range(n_blocks):
         r = rng.random()
@@ -218,6 +235,10 @@ def generate_program(
         elif call_sites < max_call_sites and r < branch_prob + loop_prob + call_prob:
             block_types.append({"kind": _BLOCK_CALL})
             call_sites += 1
+        elif (closure_sites < DEFAULT_MAX_CLOSURE_SITES
+              and r < branch_prob + loop_prob + call_prob + DEFAULT_CLOSURE_PROB):
+            block_types.append({"kind": _BLOCK_CLOSURE, "gen": rng.choice(CLOSURE_BURSTS)})
+            closure_sites += 1
         else:
             block_types.append({"kind": _BLOCK_LEAF})
 
@@ -246,6 +267,12 @@ def generate_program(
             entries.append((None, (lambda L, loop_label=loop_label, reg=reg: asm.loop_(L[loop_label], reg))))
         elif kind == _BLOCK_CALL:
             entries.append((label, (lambda L: asm.call(L["sub_start"]))))
+        elif kind == _BLOCK_CLOSURE:
+            burst = bt["gen"](rng, f"cc{i}")
+            first_label, first_word = burst[0]
+            assert first_label is None or label is None, "burst's first entry can't carry a label here"
+            entries.append((label or first_label, first_word))
+            entries.extend(burst[1:])
         else:
             raise AssertionError(f"unhandled block kind {kind!r}")
 

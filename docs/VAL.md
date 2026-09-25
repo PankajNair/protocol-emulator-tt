@@ -171,6 +171,12 @@ Agents never grade their own output: the parent session runs every gate.
 `.claude/settings.json` denies `Edit(src/**)`, and the parent runs `git diff
 src/` after every invocation. The deny rule is defense in depth, not proof.
 
+Coverage-closure bursts accepted so far (`test/seq/`, wired into
+`random_gen.CLOSURE_BURSTS`): bit-bang TX loop (OUTB on a pin actually
+driving: 21 -> 687 per 100 seeds) and short-timeout WAIT retry (tie on
+the expiry cycle 1 -> 15, timeout 3 -> 18). Every remaining open bin under
+the default generator is now in `EXPECTED_OPEN` with a stated reason.
+
 Findings from agent runs so far: the stimulus-gen agent found a harness
 Clock leak (a new clock per seed, making wall time roughly quadratic in
 SEEDS; fixed in 0636edf, 150 seeds 82.8s -> 12.4s).
