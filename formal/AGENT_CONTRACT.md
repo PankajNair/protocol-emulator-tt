@@ -66,6 +66,6 @@ same toolchain, same yosys/z3 install):
   illegal-opcode detection (`agent_core_illegal_opcode_props.v`, 9/9);
   `core.v` reset / no leakage across reset (`agent_core_reset_props.v`, 22/22);
   `core.v` CALL/RET misuse flag (`agent_core_call_ret_misuse_props.v`, 17/17);
-  `core.v` LOOP + flag-writer set (`agent_core_loop_flag_props.v`, 22/22).
-- **Candidate next targets**: see formal/README.md's list (WAIT
-  met-wins-on-expiry at the core level).
+  `core.v` LOOP + flag-writer set (`agent_core_loop_flag_props.v`, 22/22);
+  `core.v` WAIT exit timing + tie rule (`agent_core_wait_props.v`, 16/16).
+- **Candidate next targets**: none open; see formal/README.md.

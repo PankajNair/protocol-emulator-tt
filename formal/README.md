@@ -94,10 +94,22 @@ elaborated on this yosys build).
   #11, SHIFT writes flag, LOOP taken iff flag, LOOP decrements by 2, CMP
   inverted.
 
+- **`core.v` WAIT exit timing + met-wins-on-expiry -- done, proven.**
+  `agent_core_wait_props.v` (assertion-formal agent): the core leaves
+  EXECUTE on exactly the first k where the pin matches or (mantissa != 0
+  and k >= mantissa << exponent*5) -- target from the spec, k counted by
+  the checker; a tie clears the flag; mantissa 0 never times out whatever
+  the exponent; no side effects while waiting; exit fetches PC+1. 16/16
+  covers. Scratch mutants each fail: mutate.py #6 (timeout wins), timeout
+  enable from the exponent, mutate.py #1 in cycle_counter.v (the real
+  DELAY/WAIT off-by-one from 1121ccc, caught end to end at core level),
+  inverted pin level. Bounded: timeout exits only reached for exponent 0
+  (target <= ~16); exponent >= 1 is checked only for "not early".
+
 ## Candidate properties, not yet written
 
-None open from the original list. Natural next target: WAIT's met-wins-on-expiry rule at the
-core level (the cycle_counter file proves the counter, not the rule).
+None open. Every candidate on the original list, plus the follow-ups
+(CALL/RET misuse, LOOP/flag-writer set, WAIT tie rule), is done.
 
 ## Rest of the verification environment
 
