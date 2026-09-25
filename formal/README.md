@@ -74,11 +74,19 @@ elaborated on this yosys build).
   pending writeback (sharpened so only the real leak path can fail),
   reset into FETCH_LO, regfile without reset.
 
+- **`core.v` CALL/RET misuse flag -- done, proven.**
+  `agent_core_call_ret_misuse_props.v` (assertion-formal agent): ghost
+  `return_valid`/`retaddr` built only from identified CALL/RET commits
+  must match the core every cycle; the sticky misuse flag rises only after
+  a nested CALL or orphan RET and always after one, stays set until reset;
+  CALL saves PC+1 and jumps, RET (orphan included) jumps to `retaddr`.
+  17/17 covers. Scratch mutants each fail: mutate.py #4 and #5, RET not
+  clearing `return_valid`, CALL saving PC instead of PC+1.
+
 ## Candidate properties, not yet written
 
-None open from the original list. Natural next targets: CALL/RET
-misuse-flag soundness/completeness (mirrors the illegal-opcode file),
-LOOP never touching the flag, and WAIT's met-wins-on-expiry rule at the
+None open from the original list. Natural next targets: LOOP never
+touching the flag, and WAIT's met-wins-on-expiry rule at the
 core level (the cycle_counter file proves the counter, not the rule).
 
 ## Rest of the verification environment

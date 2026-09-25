@@ -64,7 +64,8 @@ same toolchain, same yosys/z3 install):
   `pin_ctrl.v` pin direction + uio[6] contention gate
   (`agent_pin_ctrl_direction_props.v`, 31/31 covers); `core.v`
   illegal-opcode detection (`agent_core_illegal_opcode_props.v`, 9/9);
-  `core.v` reset / no leakage across reset (`agent_core_reset_props.v`, 22/22).
-- **Candidate next targets**: see formal/README.md's list (CALL/RET
-  misuse-flag soundness/completeness, LOOP never writes the flag, WAIT
+  `core.v` reset / no leakage across reset (`agent_core_reset_props.v`, 22/22);
+  `core.v` CALL/RET misuse flag (`agent_core_call_ret_misuse_props.v`, 17/17).
+- **Candidate next targets**: see formal/README.md's list (LOOP never
+  writes the flag, WAIT
   met-wins-on-expiry at the core level).
