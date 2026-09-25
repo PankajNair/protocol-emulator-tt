@@ -33,6 +33,8 @@ EXPECTED_OPEN = {
     "wait_bins": {"unbounded"},
     # Default mantissa clamps only cover exponents 0/1 (keeps a default
     # regression's cycle cost bounded; exponent 3 reaches ~16.7M cycles).
+    # Reachable via STIM_PROFILE=wide_timing (delay exp 3 also needs
+    # MAX_CYCLES=50000) -- expected-open for the DEFAULT generator only.
     "delay_exp_bins": {"2", "3"},
     "wait_exp_bins": {"2", "3"},
     # LOOP counters are always seeded by LDI 1-8 and protected from body
