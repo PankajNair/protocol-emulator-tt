@@ -63,9 +63,23 @@ elaborated on this yosys build).
   step, never from core.v's own decode. 9/9 covers. Agent-side scratch
   mutants: mutate.py #8, flag-never-set, LDI-also-sets -- each fails.
 
+- **`core.v` reset -- done, proven.** `agent_core_reset_props.v`
+  (assertion-formal agent): first cycle after any reset (including
+  mid-trace) is LOAD with every documented reset value; nothing executes,
+  drives a pin or writes memory (except host boot writes) before START;
+  first fetch is byte 0; and no effect of an interrupted DELAY, blocked
+  WAIT, FETCH_HI or pending LOAD/LOADX writeback leaks past reset (a
+  cover per scenario proves reset really lands there). 22/22 covers.
+  Scratch mutants each fail: dropped pc/return_valid reset, surviving
+  pending writeback (sharpened so only the real leak path can fail),
+  reset into FETCH_LO, regfile without reset.
+
 ## Candidate properties, not yet written
 
-- **Reset brings `core.v` back to a known fetch state within N cycles.**
+None open from the original list. Natural next targets: CALL/RET
+misuse-flag soundness/completeness (mirrors the illegal-opcode file),
+LOOP never touching the flag, and WAIT's met-wins-on-expiry rule at the
+core level (the cycle_counter file proves the counter, not the rule).
 
 ## Rest of the verification environment
 

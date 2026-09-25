@@ -93,6 +93,20 @@ DEBUG_PORTS = {
         # committing instruction.
         "retaddr":              ("logic [8:0]", None),
         "rf_we":                ("logic", None),
+        # Added for agent_core_reset_props.v. rf_waddr/rf_wdata are the
+        # regfile's literal write-port inputs (ghost "written since
+        # reset" tracking); reg_a_sel/reg_b_sel + ra_data/rb_data are
+        # its two read ports -- regfile.v's `regs` array lives in a
+        # child instance and isn't reachable by a dbg_ assign, so R0-R3
+        # are observed through whatever the read ports select.
+        # pending_lx_writeback is only ever asserted on.
+        "rf_waddr":             ("logic [1:0]", None),
+        "rf_wdata":             ("logic [7:0]", None),
+        "reg_a_sel":            ("logic [1:0]", None),
+        "reg_b_sel":            ("logic [1:0]", None),
+        "ra_data":              ("logic [7:0]", None),
+        "rb_data":              ("logic [7:0]", None),
+        "pending_lx_writeback": ("logic", None),
     },
     "pin_ctrl": {
         "mode": ("logic [7:0][1:0]", 8),
