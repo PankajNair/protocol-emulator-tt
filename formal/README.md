@@ -53,13 +53,18 @@ elaborated on this yosys build).
   142ab71 makes the assert FAIL and the `uio_oe[6]` cover UNREACHED --
   this file would have caught that bug without simulation.
 
+- **`core.v` illegal-opcode detection -- done, proven.**
+  `agent_core_illegal_opcode_props.v` (assertion-formal agent): the
+  sticky `illegal_op_flag` rises only after a reserved-opcode (19-31)
+  commit, always rises after one, stays set until reset, and a
+  reserved-opcode commit is a true NOP (no mem write, no pin request, no
+  regfile write, PC+1, other flags and `uo_out` unchanged). The
+  committing opcode is read from `mem_rdata` at the FETCH_HI->EXECUTE
+  step, never from core.v's own decode. 9/9 covers. Agent-side scratch
+  mutants: mutate.py #8, flag-never-set, LDI-also-sets -- each fails.
+
 ## Candidate properties, not yet written
 
-- **Illegal-opcode detection in `core.v`**: `illegal_op_flag` sets iff
-  the executed opcode was actually outside the 19 recognized values
-  (0-18). `formal_common.py`'s `DEBUG_PORTS` already has the
-  `protocol_cpu_core` entries this needs (`state`, `illegal_op_flag`,
-  and friends).
 - **Reset brings `core.v` back to a known fetch state within N cycles.**
 
 ## Rest of the verification environment

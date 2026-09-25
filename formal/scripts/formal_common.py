@@ -88,6 +88,11 @@ DEBUG_PORTS = {
         "halted":                ("logic", None),
         "pc":                   ("logic [8:0]", None),
         "return_valid":         ("logic", None),
+        # Added for agent_core_illegal_opcode_props.v's NOP-behavior
+        # property: observed (asserted on), never used to identify the
+        # committing instruction.
+        "retaddr":              ("logic [8:0]", None),
+        "rf_we":                ("logic", None),
     },
     "pin_ctrl": {
         "mode": ("logic [7:0][1:0]", 8),

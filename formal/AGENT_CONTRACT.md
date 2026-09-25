@@ -62,9 +62,7 @@ same toolchain, same yosys/z3 install):
 - **Done so far**: `cycle_counter.v`'s DELAY/WAIT timing (no
   undercount + exact timing, both proven, `agent_cycle_counter_timing_props.v`);
   `pin_ctrl.v` pin direction + uio[6] contention gate
-  (`agent_pin_ctrl_direction_props.v`, 31/31 covers).
-- **Candidate next targets** (`formal/README.md`'s list, still open):
-  illegal-opcode detection in `core.v` (needs the `DEBUG_PORTS` entries
-  for `state`/`illegal_op_flag` already present in
-  `formal_common.py`), reset brings `core.v` back to a known fetch
-  state within N cycles.
+  (`agent_pin_ctrl_direction_props.v`, 31/31 covers); `core.v`
+  illegal-opcode detection (`agent_core_illegal_opcode_props.v`, 9/9).
+- **Candidate next targets**: reset brings `core.v` back to a known
+  fetch state within N cycles.
