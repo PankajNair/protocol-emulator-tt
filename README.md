@@ -8,9 +8,14 @@ USB-LS/10M-Ethernet stretch) built on a tiny pin-oriented CPU, rather than
 fixed protocol logic. Built on the [Tiny Tapeout](https://tinytapeout.com)
 IHP Verilog template.
 
-Status: repo scaffolded, ISA/CPU design not started. See
-[docs/architecture.md](docs/architecture.md) for open design questions and
-[firmware/README.md](firmware/README.md) for the protocol-firmware plan.
+Status: ISA, sequencer core, pin control and memory are implemented
+(`src/`). The verification environment covers directed tests, randomized
+differential testing against a golden model with coverage, a mutation-
+testing gate, and formal properties, with AI agents extending stimulus,
+coverage and properties under per-directory contracts; see
+[docs/VAL.md](docs/VAL.md). Design docs:
+[docs/isa.md](docs/isa.md), [docs/architecture.md](docs/architecture.md);
+protocol-firmware plan: [firmware/README.md](firmware/README.md).
 
 - [Read the documentation for project](docs/info.md)
 

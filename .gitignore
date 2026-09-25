@@ -15,3 +15,4 @@ test/regression_artifacts/
 __pycache__/
 .venv/
 mutation_results.json
+test/results_directed.xml

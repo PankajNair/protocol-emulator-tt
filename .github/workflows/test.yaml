@@ -31,10 +31,17 @@ jobs:
           # make will return success even if the test fails, so check for failure in the results.xml
           ! grep failure results.xml
 
+      - name: Run random differential regression
+        run: |
+          cd test
+          mv results.xml results_directed.xml
+          SEEDS=50 make random
+          ! grep failure results.xml
+
       - name: Test Summary
         uses: test-summary/action@v2.4
         with:
-          paths: "test/results.xml"
+          paths: "test/results_directed.xml,test/results.xml"
         if: always()
 
       - name: upload waveform and test results
@@ -45,4 +52,6 @@ jobs:
           path: |
             test/tb.fst
             test/results.xml
+            test/results_directed.xml
+            test/regression_artifacts/**
             test/output/*
