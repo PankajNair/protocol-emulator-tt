@@ -96,7 +96,12 @@ class SeqCoverage:
         # LOAD/LOADX immediately followed by a reader of the same Rd --
         # the documented trailing-writeback hazard case.
         self.hazard_bins = {k: 0 for k in ("load_then_read", "loadx_then_read")}
+        # Dynamic control-flow nesting: LOOP depth at each LOOP commit,
+        # and branch/CALL executed while inside a live LOOP body -- the
+        # interaction space random_gen's flat-only v1 never produces.
+        self.loop_nest_bins = {k: 0 for k in ("depth1", "depth2", "depth3+", "branch_in_loop", "call_in_loop")}
         self._prev: dict | None = None
+        self._loops: list[tuple[int, int]] = []  # live (body_start, loop_pc) ranges
 
     def sample(self, pre, post, word: int, cycles: int) -> None:
         d = _decode(word)
@@ -163,11 +168,33 @@ class SeqCoverage:
                 self.loop_bins["wrap_from_0"] += 1
             self.loop_bins["taken" if post.regs[d["loop_rd"]] != 0 else "exit"] += 1
 
+        self._sample_nesting(pre.pc, post.pc, d)
+
         if self._prev is not None and self._prev["opcode"] in (asm.OP_LOAD, asm.OP_LOADX):
             if self._prev["rd"] in _regs_read(d):
                 key = "load_then_read" if self._prev["opcode"] == asm.OP_LOAD else "loadx_then_read"
                 self.hazard_bins[key] += 1
         self._prev = d
+
+    def _sample_nesting(self, pc: int, next_pc: int, d: dict) -> None:
+        # A live loop is one whose body contains the executing pc; any we
+        # left (fall-through, forward branch out, CALL) drop off. A loop
+        # only becomes live at its first back-edge, so an outer loop's
+        # first pass under-counts as not-nested -- conservative, never
+        # over-reports nesting.
+        op = d["opcode"]
+        live = [(s, e) for (s, e) in self._loops if s <= pc <= e]
+        if op == asm.OP_LOOP:
+            rng = (d["addr"], pc)
+            if next_pc == d["addr"] and rng not in live:
+                live.append(rng)
+            depth = len([1 for (s, e) in live if s <= pc <= e]) or 1
+            self.loop_nest_bins["depth1" if depth == 1 else "depth2" if depth == 2 else "depth3+"] += 1
+            if next_pc != d["addr"]:
+                live = [r for r in live if r != rng]
+        elif live and op == asm.OP_BRANCH:
+            self.loop_nest_bins["call_in_loop" if d["cond"] == asm.COND_CALL else "branch_in_loop"] += 1
+        self._loops = live
 
     def to_dict(self) -> dict:
         return {k: v for k, v in vars(self).items() if not k.startswith("_")}

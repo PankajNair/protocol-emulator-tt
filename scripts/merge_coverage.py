@@ -41,6 +41,9 @@ EXPECTED_OPEN = {
     # LOOP counters are always seeded by LDI 1-8 and protected from body
     # writes (forbid_write_reg), so Rd=0 on LOOP entry never happens.
     "loop_bins": {"wrap_from_0"},
+    # Default generator is flat-only: LOOP/CALL/branches never nest in a
+    # LOOP body (random_gen.py header). Target of STIM_PROFILE=nested_flow.
+    "loop_nest_bins": {"depth2", "depth3+", "branch_in_loop", "call_in_loop"},
 }
 
 META_KEYS = {"seed", "commit_count"}

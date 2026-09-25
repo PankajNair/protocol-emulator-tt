@@ -36,6 +36,13 @@ Real project notes (quirks a generic subagent can't know on its own):
 - **Determinism namespacing**: `random_gen` seeds `random.Random(seed)`,
   `io_stimulus` uses `random.Random(f"io_stim:{seed}")`. Use your own
   prefix, e.g. `random.Random(f"stim:<name>:{seed}")`.
+- **Timeouts on macOS**: no `timeout`/`gtimeout` here -- wrap long sim
+  runs as `perl -e 'alarm 900; exec @ARGV' bash -c '...'`. 200 default
+  seeds take ~15-40s (a harness Clock leak was fixed in 0636edf); if a
+  run takes minutes, investigate rather than wait.
+- **Accepted so far**: `protocol_pins`, `wide_timing`, `illegal_mix` --
+  read them as convention references (post-process random_gen output
+  in place / subclass IoStimulus).
 - **Requested profiles** (one per invocation, parent names which):
   1. `protocol_pins` -- level-holding waveforms with random dwell per
      protocol pin (UART idle-high + start/data bits at a plausible
@@ -51,5 +58,8 @@ Real project notes (quirks a generic subagent can't know on its own):
      sprinkled into otherwise-normal programs. Opens
      `opcode_bins.ILLEGAL`, `debug_flag_bins.illegal_op`.
   4. `nested_flow` -- branches/LOOPs inside LOOP bodies, termination
-     still by construction. Needs a nesting-depth coverage bin the
-     parent will add; describe what you'd want it to count.
+     still by construction. Target bins (test/seq_coverage.py
+     `loop_nest_bins`, all 0 under the default generator):
+     `depth2`, `depth3+`, `branch_in_loop`, `call_in_loop`. Note a loop
+     only counts as live from its first back-edge (see
+     `_sample_nesting`).
