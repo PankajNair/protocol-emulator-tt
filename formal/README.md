@@ -83,10 +83,20 @@ elaborated on this yosys build).
   17/17 covers. Scratch mutants each fail: mutate.py #4 and #5, RET not
   clearing `return_valid`, CALL saving PC instead of PC+1.
 
+- **`core.v` LOOP and the flag-writer set -- done, proven.**
+  `agent_core_loop_flag_props.v` (assertion-formal agent): a ghost
+  regfile built from the write port is checked against both read ports
+  every cycle; any commit other than CMP/TEST-bit/WAIT leaves the flag
+  unchanged (LOOP and SHIFT covered with flag 0 and 1); LOOP writes
+  Rd-1 mod 256 and branches iff the result is nonzero (wrap from 0
+  covered); CMP, TEST-bit and WAIT write the value the spec says, using
+  ghost operands. 22/22 covers. Scratch mutants each fail: mutate.py
+  #11, SHIFT writes flag, LOOP taken iff flag, LOOP decrements by 2, CMP
+  inverted.
+
 ## Candidate properties, not yet written
 
-None open from the original list. Natural next targets: LOOP never
-touching the flag, and WAIT's met-wins-on-expiry rule at the
+None open from the original list. Natural next target: WAIT's met-wins-on-expiry rule at the
 core level (the cycle_counter file proves the counter, not the rule).
 
 ## Rest of the verification environment
