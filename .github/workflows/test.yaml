@@ -23,27 +23,63 @@ jobs:
         shell: bash
         run: pip install -r test/requirements.txt
 
-      - name: Run tests
+      # Every verification step runs even if an earlier one failed
+      # (!cancelled()), so one run reports everything that's broken.
+      # Each step saves its own results_<name>.xml for the summary.
+      - name: Directed tests
         run: |
           cd test
           make clean
           make
-          # make will return success even if the test fails, so check for failure in the results.xml
-          ! grep failure results.xml
+          mv results.xml results_directed.xml
+          # make can succeed with a failing test, so check the results file
+          ! grep failure results_directed.xml
 
-      - name: Run random differential regression
+      - name: Golden-model self-check
+        if: ${{ !cancelled() }}
         run: |
           cd test
-          mv results.xml results_directed.xml
-          SEEDS=50 make random
-          ! grep failure results.xml
+          python -m pytest test_golden_model_selfcheck.py -q --junitxml=results_selfcheck.xml
+
+      - name: Hierarchy smoke test
+        if: ${{ !cancelled() }}
+        run: |
+          cd test
+          make COCOTB_TEST_MODULES=test_hierarchy_smoke
+          mv results.xml results_smoke.xml
+          ! grep failure results_smoke.xml
+
+      # Random differential regression + functional coverage, gated: fails
+      # if any bin outside scripts/merge_coverage.py's EXPECTED_OPEN is
+      # left open. 100 seeds: some rare SET mode x pin cross bins aren't
+      # reached at 50.
+      - name: Random regression + coverage gate (default generator)
+        if: ${{ !cancelled() }}
+        run: |
+          make coverage-gate COV_SEEDS=100
+          mv test/results.xml test/results_random_default.xml
+          ! grep failure test/results_random_default.xml
+
+      # Each stimulus profile (test/stim/) must still reach the bins it
+      # exists for (merge_coverage.py PROFILE_REQUIRED).
+      - name: Random regression + coverage gate (stimulus profiles)
+        if: ${{ !cancelled() }}
+        run: |
+          status=0
+          for p in protocol_pins wide_timing illegal_mix nested_flow; do
+            echo "::group::profile $p"
+            make coverage-gate STIM_PROFILE=$p COV_SEEDS=50 || status=1
+            mv test/results.xml test/results_random_$p.xml || status=1
+            ! grep failure test/results_random_$p.xml || status=1
+            echo "::endgroup::"
+          done
+          exit $status
 
       - name: Test Summary
         uses: test-summary/action@v2.4
         with:
           paths: |
-            test/results_directed.xml
-            test/results.xml
+            test/results_*.xml
         if: always()
 
       - name: upload waveform and test results
@@ -53,7 +89,6 @@ jobs:
           name: test-results
           path: |
             test/tb.fst
-            test/results.xml
-            test/results_directed.xml
+            test/results_*.xml
             test/regression_artifacts/**
             test/output/*

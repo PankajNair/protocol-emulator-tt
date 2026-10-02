@@ -4,10 +4,16 @@ closure. Port of the sibling 5-Stage-Pipelined-RISC-V-Processor
 project's ooo/scripts/merge_coverage.py.
 
 Usage:
-    merge_coverage.py [COV_DIR]   # default $COV_DIR or /tmp/seq_coverage
+    merge_coverage.py [COV_DIR] [--gate] [--profile NAME]
+        COV_DIR default: $COV_DIR or /tmp/seq_coverage
+        --profile default: $STIM_PROFILE (empty = default generator)
 
-Exit 0 always -- informational, not a gate (mutation score is the gate,
-see scripts/mutate.py).
+Without --gate: report only, exit 0. With --gate: exit 1 on a coverage
+regression -- for the default generator, any bin not in EXPECTED_OPEN
+left open; for a stimulus profile, any of PROFILE_REQUIRED[profile] left
+open (a profile is only gated on the bins it exists to reach, since
+EXPECTED_OPEN is scoped to the default generator and would otherwise
+hide a profile that stopped reaching its targets).
 
 EXPECTED_OPEN lists bins test/random_gen.py structurally cannot reach,
 each for a stated reason -- reported apart from real gaps so closure %
@@ -46,9 +52,22 @@ EXPECTED_OPEN = {
     # LOOP counters are always seeded by LDI 1-8 and protected from body
     # writes (forbid_write_reg), so Rd=0 on LOOP entry never happens.
     "loop_bins": {"wrap_from_0"},
-    # Default generator is flat-only: LOOP/CALL/branches never nest in a
-    # LOOP body (random_gen.py header). Target of STIM_PROFILE=nested_flow.
-    "loop_nest_bins": {"depth2", "depth3+", "branch_in_loop", "call_in_loop"},
+    # Default generator never nests LOOP/CALL in a LOOP body (random_gen.py
+    # header). branch_in_loop IS reached by default since the WAIT-tie
+    # closure burst's BNE sits inside its retry loop, so it's not listed.
+    # Target of STIM_PROFILE=nested_flow.
+    "loop_nest_bins": {"depth2", "depth3+", "call_in_loop"},
+}
+
+# Bins each stimulus profile (test/stim/) exists to reach. Gated with
+# --gate --profile NAME. Keep in sync with test/stim/AGENT_CONTRACT.md.
+PROFILE_REQUIRED = {
+    "protocol_pins": {"wait_bins.timeout", "flag_writer_bins.WAIT.1",
+                      "wait_k_bins.32-479", "wait_k_bins.480+"},
+    "wide_timing": {"delay_exp_bins.2", "wait_exp_bins.2", "wait_exp_bins.3"},
+    "illegal_mix": {"opcode_bins.ILLEGAL", "debug_flag_bins.illegal_op"},
+    "nested_flow": {"loop_nest_bins.depth2", "loop_nest_bins.depth3+",
+                    "loop_nest_bins.branch_in_loop", "loop_nest_bins.call_in_loop"},
 }
 
 META_KEYS = {"seed", "commit_count"}
@@ -88,12 +107,21 @@ def print_section(section: str, bins: dict) -> tuple[list[str], list[str]]:
     return real_open, expected_open
 
 
-def main() -> None:
-    cov_dir = sys.argv[1] if len(sys.argv) >= 2 else os.environ.get("COV_DIR", "/tmp/seq_coverage")
+def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cov_dir", nargs="?", default=os.environ.get("COV_DIR", "/tmp/seq_coverage"))
+    ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--profile", default=os.environ.get("STIM_PROFILE", ""))
+    args = ap.parse_args()
+    if args.profile and args.profile not in PROFILE_REQUIRED:
+        print(f"ERROR: no PROFILE_REQUIRED entry for profile {args.profile!r}", file=sys.stderr)
+        return 1
+    cov_dir = args.cov_dir
     records = load_files(cov_dir)
     if not records:
         print(f"No coverage files in {cov_dir} -- nothing to merge.")
-        return
+        return 1 if args.gate else 0
 
     agg = merge(records)
     W = 64
@@ -123,6 +151,21 @@ def main() -> None:
         print(f"Open (expected -- see EXPECTED_OPEN): {', '.join(expected_open)}")
     print("=" * W)
 
+    if not args.gate:
+        return 0
+    if args.profile:
+        hit_keys = {f"{s}.{k}" for s, b in agg.items() if isinstance(b, dict) for k, v in b.items() if v > 0}
+        missing = sorted(PROFILE_REQUIRED[args.profile] - hit_keys)
+        label = f"profile {args.profile}"
+    else:
+        missing = real_open
+        label = "default generator"
+    if missing:
+        print(f"COVERAGE GATE FAIL ({label}): {', '.join(missing)}")
+        return 1
+    print(f"COVERAGE GATE PASS ({label})")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

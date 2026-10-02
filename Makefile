@@ -1,9 +1,10 @@
-# Top-level Makefile. test/Makefile (cocotb sim) stays separate --
-# this is just the formal-verification gate, mirroring the sibling
-# 5-Stage-Pipelined-RISC-V-Processor project's `make formal`/
-# `make vacuity` convention (see formal/AGENT_CONTRACT.md).
+# Top-level Makefile: the verification gates (docs/VAL.md). Simulation
+# itself lives in test/Makefile (cocotb); these targets wrap it with
+# coverage (coverage, coverage-gate), mutation testing (mutate), and the
+# formal flow (formal, vacuity), mirroring the sibling
+# 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage mutate
+.PHONY: formal vacuity coverage coverage-gate mutate
 
 MUTATE_SEEDS ?= 50
 
@@ -28,6 +29,16 @@ coverage:
 	rm -rf $(COV_DIR)
 	STIM_PROFILE=$(STIM_PROFILE) COV_DIR=$(COV_DIR) SEEDS=$(COV_SEEDS) $(MAKE) -C test random
 	python3 scripts/merge_coverage.py $(COV_DIR)
+
+# ---------------------------------------------------------------------------
+# coverage-gate: same run, but fails on a coverage regression (default
+#                generator: any non-EXPECTED_OPEN bin open; profile: any of
+#                its PROFILE_REQUIRED bins open). Used by CI.
+# ---------------------------------------------------------------------------
+coverage-gate:
+	rm -rf $(COV_DIR)
+	STIM_PROFILE=$(STIM_PROFILE) COV_DIR=$(COV_DIR) SEEDS=$(COV_SEEDS) $(MAKE) -C test random
+	python3 scripts/merge_coverage.py $(COV_DIR) --gate --profile "$(STIM_PROFILE)"
 
 # ---------------------------------------------------------------------------
 # formal: BMC assert pass for formal/agent_*_props.v (yosys + z3, no

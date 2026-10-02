@@ -25,7 +25,7 @@ without adding checking power.
 | Golden self-check | `test/test_golden_model_selfcheck.py` | Does the golden model agree with the RTL-proven directed tests before being trusted as an oracle? | `pytest test/test_golden_model_selfcheck.py` |
 | Hierarchy smoke | `test/test_hierarchy_smoke.py` | Does hierarchical signal access (the scoreboard's foundation) still work on this simulator? | `make -C test COCOTB_TEST_MODULES=test_hierarchy_smoke` |
 
-CI (`.github/workflows/test.yaml`) runs the directed suite plus 50 random seeds. On this fork push-triggered workflows are disabled (GitHub's fork default), so it currently runs only via manual dispatch.
+CI (`.github/workflows/test.yaml`) runs: the directed suite, the golden-model self-check, the hierarchy smoke test, the random regression with a coverage gate for the default generator (100 seeds), and the same for each stimulus profile (50 seeds each). All steps run even if one fails. Mutation and formal stay local (mutation needs ~10 min; formal needs a yosys/z3 build CI doesn't have). On this fork push-triggered workflows are disabled (GitHub's fork default), so it currently runs only via manual dispatch.
 
 ## 2. Scoreboard
 
@@ -64,7 +64,13 @@ live loop body).
 `EXPECTED_OPEN` in `merge_coverage.py` lists bins the default generator
 structurally can't reach, each with its reason. It is scoped to the
 default generator: most of those bins are reached by a stimulus profile
-(section 4). Report is informational; the mutation score is the gate.
+(section 4).
+
+`make coverage-gate` (and CI) turns the report into a gate: for the
+default generator every bin outside `EXPECTED_OPEN` must be hit; for a
+profile, every bin in `PROFILE_REQUIRED[profile]` (the bins it exists
+to reach) must be hit. Without the per-profile list, a profile that
+stopped reaching its targets would just show them as expected-open.
 
 ## 4. Stimulus
 
