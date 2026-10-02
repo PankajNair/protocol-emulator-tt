@@ -9,7 +9,9 @@ fixed protocol logic. Built on the [Tiny Tapeout](https://tinytapeout.com)
 IHP Verilog template.
 
 Status: ISA, sequencer core, pin control and memory are implemented
-(`src/`). The verification environment covers directed tests, randomized
+(`src/`), with the real IHP SRAM hard macro. The design hardens cleanly
+through the TinyTapeout flow (timing met at all corners, 0 DRC/LVS,
+precheck passes; docs/VAL.md section 11). The verification environment covers directed tests, randomized
 differential testing against a golden model with coverage, a mutation-
 testing gate, and formal properties, with AI agents extending stimulus,
 coverage and properties under per-directory contracts; see

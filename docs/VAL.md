@@ -227,3 +227,33 @@ reads and drops `HOST_GO`, firmware drops `HOST_STATUS`. Every exchange
 ends on a firmware edge made after it saw `HOST_GO` low; still 5
 instructions per byte. The test now turns every transfer around with
 zero gap, the exact case that used to deadlock.
+
+## 11. Physical implementation (hardening) and gate-level simulation
+
+The design hardens through the TinyTapeout GDS flow (LibreLane 3.0.5,
+IHP SG13G2 PDK) with the real `RM_IHPSG13_1P_1024x8_c2_bm_bist` SRAM
+macro (src/mem/mem.v; until then info.yaml shipped a behavioral array
+that synthesized to 8192 flops). First full run, 2026-10-02:
+
+| Metric | Result |
+|---|---|
+| Std cells / sequential / macros | 1564 / 179 / 1 |
+| Utilization (6x4 tiles) | 8.3% |
+| Setup slack, 20 ns clock (slow 1.08V/125C, typ, fast) | +5.99 / +9.54 / +11.59 ns, 0 violations |
+| Hold slack (slow, typ, fast) | +0.64 / +0.31 / +0.12 ns, 0 violations |
+| Routing DRC / LVS / antenna | 0 / 0 / 0 |
+| TinyTapeout precheck (KLayout SG13G2 DRC, pins, layers, ...) | all pass |
+| Max-slew warnings | 3, slow corner only |
+
+Magic DRC reports ~246k errors from the SRAM macro's own internals; the
+macro-integration recipe disables that check (`ERROR_ON_MAGIC_DRC`
+false) and the authoritative KLayout SG13G2 DRC in precheck passes.
+
+Gate-level simulation: the GDS action runs the directed suite on the
+hardened netlist (`GATES=yes`), with IHP's SRAM model. Tests that only
+observe internal RTL state skip there (`GL` flag in test/test.py); the
+rest run unchanged. First run: 24/28 pass, the 4 failures were all
+internal-signal probes, not design bugs.
+
+Not done: hardening runs only in the GDS workflow (dispatched manually),
+and the random/profile regressions don't run at gate level.

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: © 2026 Pankaj Nair
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -12,6 +14,13 @@ import isa_asm as asm
 HOST_GO_BIT = 4
 HOST_STATUS_BIT = 5
 START_BIT = 6
+
+# Gate-level simulation (`GATES=yes make`, run by the TinyTapeout GDS
+# action on the hardened netlist): internal RTL signals (u_core.*) don't
+# exist in the flattened netlist. Tests that only observe internal state
+# are skipped there; tests with a behavioral part keep it and drop only
+# the internal probes.
+GL = os.environ.get("GATES") == "yes"
 
 
 def _bit(value: int, n: int) -> int:
@@ -510,14 +519,16 @@ async def test_call_ret_nested_misuse_flag(dut):
         ("sub2", lambda L: asm.ret()),
     ])
     await reset_and_boot(dut, prog)
-    core = dut.user_project.u_core
+    core = None if GL else dut.user_project.u_core
     await run_to_value(dut, 0x5E)
+    if GL:
+        return  # behavioral half (return lands at the inner continuation) checked above
     assert int(core.call_ret_misuse_flag.value) == 1, "nested CALL (return_valid already 1) should have set the sticky misuse flag"
     assert int(core.return_valid.value) == 0, "RET should have cleanly consumed the (overwritten) pending return"
     dut._log.info("nested CALL overwrote the outer return address and set call_ret_misuse_flag, as documented")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL)  # observes only an internal flag
 async def test_ret_without_call_misuse_flag(dut):
     """An 'orphan' RET -- executed with no pending return address
     (return_valid=0) -- silently jumps to the return-address register's
@@ -533,7 +544,7 @@ async def test_ret_without_call_misuse_flag(dut):
     dut._log.info("orphan RET correctly flagged via call_ret_misuse_flag")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL)  # observes only an internal flag; behavior covered by test_illegal_opcode
 async def test_illegal_opcode_sets_flag(dut):
     """An unassigned opcode (19) decodes as NOP for execution purposes
     (already covered by test_illegal_opcode) but ALSO sets the sticky
@@ -790,7 +801,8 @@ async def test_halt_holds_pins(dut):
     await reset_and_boot(dut, prog)
     await run_to_value(dut, 0x5D, max_cycles=80)
     await ClockCycles(dut.clk, 10)
-    assert int(dut.user_project.u_core.halted.value) == 1
+    if not GL:
+        assert int(dut.user_project.u_core.halted.value) == 1
 
     oe, out = int(dut.uio_oe.value), int(dut.uio_out.value)
     expect_oe = {0: 1, 1: 1, 4: 0, 5: 1, 6: 1, 7: 1}
