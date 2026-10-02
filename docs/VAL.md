@@ -253,7 +253,11 @@ Gate-level simulation: the GDS action runs the directed suite on the
 hardened netlist (`GATES=yes`), with IHP's SRAM model. Tests that only
 observe internal RTL state skip there (`GL` flag in test/test.py); the
 rest run unchanged. First run: 24/28 pass, the 4 failures were all
-internal-signal probes, not design bugs.
+internal-signal probes, not design bugs. After the `GL` fix (run
+37068387932): 26 pass, 2 skipped, 0 fail.
+
+The workflow's `viewer` job (GitHub Pages deploy) fails because Pages
+isn't enabled on this repo; unrelated to the design.
 
 Not done: hardening runs only in the GDS workflow (dispatched manually),
 and the random/profile regressions don't run at gate level.
