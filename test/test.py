@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: © 2026 Pankaj Nair
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -715,41 +713,33 @@ async def test_host_error_gated_until_start_fall(dut):
     dut._log.info("HOST_ERROR driver held off until START fell, then drove the latched value")
 
 
-# Host must hold HOST_GO low for a while after an OUT exchange before
-# raising it for the next transfer. docs/architecture.md's OUT sequence
-# ends with firmware's `WAIT HOST_GO,0`, which nothing acks -- HOST_GO is
-# both the OUT-direction ack and the IN-direction request, so on an
-# OUT->IN turnaround the host can't observe when firmware saw the
-# release. Measured: a zero-width low (GO re-raised before any clock
-# edge sees it) deadlocks both sides. Firmware needs ~sync latency +
-# WAIT re-entry (~3-5 cycles) to observe it; 8 is conservative. This is
-# an undocumented host timing requirement (spec gap), not an RTL bug.
-GO_LOW_HOLD = int(os.environ.get("GO_LOW_HOLD", "8"))
-
-
 @cocotb.test()
 async def test_host_handshake_in_out(dut):
     """The runtime host protocol, end to end (docs/architecture.md Host
-    handshake): firmware runs the documented 5-phase IN sequence then the
-    5-phase OUT sequence, three times in a LOOP, echoing each host byte
-    back. The host side here follows only the level contract -- wait for
-    HOST_STATUS, never count cycles -- and requires HOST_STATUS to be
-    actually driven (uio_oe[5]). Before this test nothing exercised
-    firmware-driven HOST_STATUS at all: a mutant that never let runtime
-    SET HOST_STATUS reach the pin survived the whole suite."""
+    handshake): both directions host-initiated 4-phase exchanges ending
+    on firmware's HOST_STATUS fall. Firmware echoes each host byte back,
+    three times in a LOOP. The host follows only the level contract --
+    wait for HOST_STATUS, never count cycles -- requires HOST_STATUS to
+    be actually driven (uio_oe[5]), and turns every transfer around with
+    ZERO gap: it raises HOST_GO for the next exchange the instant it sees
+    the previous one complete. Under the old firmware-initiated OUT
+    sequence that exact turnaround deadlocked both sides (nothing acked
+    the host's final HOST_GO fall), which is what made the spec change."""
     go = HOST_GO_BIT
     prog = asm.assemble([
         (None, lambda L: asm.ldi(1, 3)),
-        ("byte", lambda L: asm.wait_(go, 1)),                                  # IN: wait for host
-        (None, lambda L: asm.in_(0)),                                          # capture byte
-        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)), # ack: got it
-        (None, lambda L: asm.wait_(go, 0)),                                    # host saw ack, dropped GO
-        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)), # ready for next
-        (None, lambda L: asm.out(0)),                                          # OUT: drive byte back
-        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)), # data ready
-        (None, lambda L: asm.wait_(go, 1)),                                    # host acks
-        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)), # consumed
-        (None, lambda L: asm.wait_(go, 0)),                                    # host releases ack
+        # host -> firmware (IN)
+        ("byte", lambda L: asm.wait_(go, 1)),
+        (None, lambda L: asm.in_(0)),
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)),
+        (None, lambda L: asm.wait_(go, 0)),
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)),
+        # firmware -> host (OUT), host-initiated
+        (None, lambda L: asm.wait_(go, 1)),
+        (None, lambda L: asm.out(0)),
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)),
+        (None, lambda L: asm.wait_(go, 0)),
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)),
         (None, lambda L: asm.loop_(L["byte"], 1)),
         (None, lambda L: asm.halt()),
     ])
@@ -757,26 +747,27 @@ async def test_host_handshake_in_out(dut):
     await ClockCycles(dut.clk, 10)
     assert host_status(dut) == 0, "HOST_STATUS should idle low after boot"
 
+    async def exchange(uio):
+        uio |= 1 << go
+        dut.uio_in.value = uio
+        await wait_host_status(dut, 1)
+        return uio
+
+    async def release(uio):
+        uio &= ~(1 << go)
+        dut.uio_in.value = uio
+        await wait_host_status(dut, 0)
+        return uio
+
     for byte in (0xA5, 0x3C, 0x81):
-        # host -> firmware
-        dut.ui_in.value = byte
-        uio |= 1 << go
-        dut.uio_in.value = uio
-        await wait_host_status(dut, 1, what="(IN ack)")
-        uio &= ~(1 << go)
-        dut.uio_in.value = uio
-        await wait_host_status(dut, 0, what="(IN ack clear)")
-        # firmware -> host
-        await wait_host_status(dut, 1, what="(OUT data ready)")
-        assert int(dut.uo_out.value) == byte, f"echoed {int(dut.uo_out.value):#x}, sent {byte:#x}"
-        uio |= 1 << go
-        dut.uio_in.value = uio
-        await wait_host_status(dut, 0, what="(OUT consumed)")
-        uio &= ~(1 << go)
-        dut.uio_in.value = uio
-        if GO_LOW_HOLD:
-            await ClockCycles(dut.clk, GO_LOW_HOLD)
-    dut._log.info("3 bytes round-tripped through the documented 5-phase IN/OUT handshake")
+        dut.ui_in.value = byte          # host -> firmware
+        uio = await exchange(uio)
+        uio = await release(uio)
+        uio = await exchange(uio)       # firmware -> host: request, zero gap
+        got = int(dut.uo_out.value)
+        uio = await release(uio)
+        assert got == byte, f"echoed {got:#x}, sent {byte:#x}"
+    dut._log.info("3 bytes round-tripped, zero-gap turnarounds, both directions host-initiated")
 
 
 @cocotb.test()

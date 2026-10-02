@@ -206,13 +206,18 @@ SEEDS; fixed in 0636edf, 150 seeds 82.8s -> 12.4s).
   SMT-hard constraints here (9-bit addresses, 512-byte data region, 19
   opcodes); a seeded RNG covers the space.
 
-## 10. Known spec gap: OUT->IN handshake turnaround
+## 10. Resolved spec gap: OUT->IN handshake turnaround
 
-Found by `test_host_handshake_in_out`. In architecture.md's OUT sequence
-the firmware's last step is `WAIT HOST_GO,0`, which nothing acks. HOST_GO
-is both the OUT-direction ack and the IN-direction request, so on an
-OUT->IN turnaround the host can't observe when firmware saw it release
-GO. A zero-width GO low (re-raised before any chip clock edge sees it)
-deadlocks both sides -- reproduced. The test holds GO low for 8 cycles;
-the spec states no minimum. Options: document a minimum GO-low time in
-chip clocks, or add a final ack phase to the OUT sequence. Undecided.
+Found by `test_host_handshake_in_out`. The original OUT sequence was
+firmware-initiated, so the host's final `HOST_GO` fall was the last edge
+and nothing acked it. Because `HOST_GO` is also the IN request, a host
+that dropped and re-raised `HOST_GO` before any chip clock edge saw it
+low deadlocked both sides (reproduced). With two wires taking turns the
+side that didn't start an exchange always makes its last edge, so extra
+phases alone couldn't fix it. Resolution (docs/architecture.md Host
+handshake): OUT is now host-initiated like IN -- host raises `HOST_GO`
+to request a byte, firmware `OUT`s it and raises `HOST_STATUS`, host
+reads and drops `HOST_GO`, firmware drops `HOST_STATUS`. Every exchange
+ends on a firmware edge made after it saw `HOST_GO` low; still 5
+instructions per byte. The test now turns every transfer around with
+zero gap, the exact case that used to deadlock.

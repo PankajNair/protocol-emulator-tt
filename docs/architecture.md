@@ -447,25 +447,49 @@ Host-side timing contract, stated explicitly rather than left implied:
 by `IN`; changing `ui_in` any earlier risks the host's *next* byte
 racing firmware's read of the current one.
 
-**Firmware -> host (`OUT`)** mirrors the same 5-phase structure, not
-just "the same pattern, roles reversed" in prose -- an earlier draft
-said that and left out the last phase, which an adversarial review
-caught: without it, firmware's *next* `OUT` could fire while `HOST_GO`
-is still sitting high from the previous ack, recreating on this side
-the exact double-advance hazard the whole handshake exists to prevent.
+**Firmware -> host (`OUT`)** is **host-initiated**, the same shape as
+`IN`: the host requests a byte, firmware answers, and firmware makes the
+final edge.
 ```
-fw:   OUT  Rd                    ; drive byte onto uo_out
-      SET  HOST_STATUS,1          ; data ready
-      WAIT HOST_GO,1                ; wait for host's ack
-      SET  HOST_STATUS,0             ; clear -- host has acked, data consumed
-      WAIT HOST_GO,0                   ; wait for host to release its ack
-host: sees HOST_STATUS,1 -> reads uo_out -> asserts HOST_GO (ack) -> sees HOST_STATUS,0 -> lowers HOST_GO -> ready for next byte
+host: assert HOST_GO              ; "send me a byte"
+fw:   WAIT HOST_GO,1[,timeout]    ; wait for the request
+      OUT  Rd                     ; drive byte onto uo_out
+      SET  HOST_STATUS,1          ; data valid
+      WAIT HOST_GO,0              ; wait for host to read it and drop GO
+      SET  HOST_STATUS,0          ; done, ready for next transfer
+host: sees HOST_STATUS,1 -> reads uo_out -> lowers HOST_GO -> sees HOST_STATUS,0 -> ready for next transfer
 ```
+Host-side timing contract, mirroring `IN`'s: **the host must not lower
+`HOST_GO` until it observes `HOST_STATUS=1`**, and must read `uo_out`
+only after that (`OUT` commits before the `SET`, so the byte is stable
+by then).
+
+**Why host-initiated, not firmware-initiated -- this replaced an earlier
+version that was not actually fully interlocked.** The earlier OUT
+sequence had firmware start the exchange (`OUT`, `SET HOST_STATUS,1`,
+`WAIT HOST_GO,1`, `SET HOST_STATUS,0`, `WAIT HOST_GO,0`). With two wires
+taking turns, the side that did *not* start an exchange always makes its
+last edge, so there the host's `HOST_GO` fall was the final edge and
+nothing acknowledged it. Because `HOST_GO` is also the `IN` request, an
+OUT->IN turnaround had a real race: a host that dropped and re-raised
+`HOST_GO` before any chip clock edge saw it low left firmware stuck in
+its last `WAIT HOST_GO,0` while the host waited for an `IN` ack that
+never came -- a deadlock, reproduced in simulation
+(`test/test.py::test_host_handshake_in_out`), not just argued. Adding
+phases while firmware still initiates only moves the un-acked edge.
+Making the host initiate every transfer, in both directions, means
+firmware's `HOST_STATUS` fall is always the last edge and always comes
+after firmware has seen `HOST_GO` low, so the host's next `HOST_GO` rise
+can never be missed. Same cost: 5 instructions per byte. Trade-off,
+deliberate: firmware can't push a byte unprompted; the host asks when it
+expects one (it already must know which direction comes next).
+
 `HOST_GO`/`HOST_STATUS` are reused for both directions (rather than a
 dedicated pair per direction) -- which direction a given exchange is
 follows from what firmware and host have already agreed to do next, the
-same way it does in any real protocol; not actually ambiguous in
-practice.
+same way it does in any real protocol. With both directions host-
+initiated and ending on firmware's `HOST_STATUS` fall, back-to-back
+transfers in any order are safe with no minimum `HOST_GO` low time.
 
 **Not this protocol's job: bulk, non-real-time data.** A fixed
 test-vector sequence, a lookup table, config constants -- these don't
