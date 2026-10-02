@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: © 2026 Pankaj Nair
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -18,25 +20,61 @@ def _bit(value: int, n: int) -> int:
     return (value >> n) & 1
 
 
+def host_status(dut) -> int:
+    """HOST_STATUS as the host physically sees it: the chip must be
+    driving uio[5] (uio_oe[5]=1) for its value to mean anything. Reading
+    uio_out alone let a stuck-at-0 uio_oe[5] -- the chip unable to talk
+    to the host at all -- pass every test."""
+    assert _bit(int(dut.uio_oe.value), HOST_STATUS_BIT) == 1, "HOST_STATUS (uio[5]) not driven: uio_oe[5]=0"
+    return _bit(int(dut.uio_out.value), HOST_STATUS_BIT)
+
+
+async def wait_host_status(dut, level: int, max_cycles: int = 200, what: str = ""):
+    """Bounded wait for HOST_STATUS == level. An unbounded loop here hung
+    the whole suite (and make mutate) on a boot-handshake bug instead of
+    failing it."""
+    for _ in range(max_cycles):
+        if host_status(dut) == level:
+            return
+        await RisingEdge(dut.clk)
+    assert False, f"HOST_STATUS never reached {level} within {max_cycles} cycles {what}".rstrip()
+
+
 async def load_byte(dut, byte_val, uio_in_state):
     """One LOAD-mode boot write: host asserts HOST_GO, waits for the
     HOST_STATUS ack, then releases and waits for the ack to clear
     (docs/architecture.md Pipeline LOAD section's write-commit
-    handshake) -- not a fixed cycle count, just level transitions."""
+    handshake) -- not a fixed cycle count, just level transitions.
+    The ack must also HOLD until the host drops HOST_GO: the host is
+    entitled to sample it late (architecture.md), so an ack that
+    withdraws early is a protocol violation, checked here."""
     dut.ui_in.value = byte_val
     uio_in_state |= 1 << HOST_GO_BIT
     dut.uio_in.value = uio_in_state
 
-    while not _bit(int(dut.uio_out.value), HOST_STATUS_BIT):
+    await wait_host_status(dut, 1, what="(boot write ack)")
+    for _ in range(4):  # host deliberately slow to react; ack must persist
         await RisingEdge(dut.clk)
+        assert host_status(dut) == 1, "boot write ack dropped while HOST_GO still high"
 
     uio_in_state &= ~(1 << HOST_GO_BIT)
     dut.uio_in.value = uio_in_state
 
-    while _bit(int(dut.uio_out.value), HOST_STATUS_BIT):
-        await RisingEdge(dut.clk)
-
+    await wait_host_status(dut, 0, what="(boot ack clear)")
     return uio_in_state
+
+
+_clock_task = None
+
+
+def _ensure_clock(dut):
+    """One clock per test. Some tests call reset_and_boot twice; starting
+    a second Clock on the same signal is the same leak fixed in
+    test_random.py (0636edf). cocotb cancels tasks at test end, so a
+    finished task means a new test."""
+    global _clock_task
+    if _clock_task is None or _clock_task.done():
+        _clock_task = cocotb.start_soon(Clock(dut.clk, 20, unit="ns").start())  # 50MHz, info.yaml clock_hz
 
 
 async def reset_and_boot(dut, words, ui_in_for_run=None):
@@ -56,8 +94,7 @@ async def reset_and_boot(dut, words, ui_in_for_run=None):
     whose first instruction is IN -- confirmed the hard way, an earlier
     version of test_in raced exactly this and read a stale boot-stream
     leftover byte instead."""
-    clock = Clock(dut.clk, 20, unit="ns")  # 50MHz, matches info.yaml clock_hz
-    cocotb.start_soon(clock.start())
+    _ensure_clock(dut)
 
     dut.ena.value = 1
     dut.ui_in.value = 0
@@ -607,8 +644,7 @@ async def test_boot_echo_and_saturation(dut):
     HALT -- a wrapping counter would write them to addresses 0/1,
     replacing instruction 0 with HALT so the marker never appears; a
     saturating one just rewrites byte 1023 (last data byte, harmless)."""
-    clock = Clock(dut.clk, 20, unit="ns")
-    cocotb.start_soon(clock.start())
+    _ensure_clock(dut)
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
@@ -644,8 +680,7 @@ async def test_host_error_gated_until_start_fall(dut):
     edge, even though execution already began on its rising edge and
     firmware has already SET HOST_ERROR=1. Once START falls, the latched
     value reaches the pin with no firmware involvement."""
-    clock = Clock(dut.clk, 20, unit="ns")
-    cocotb.start_soon(clock.start())
+    _ensure_clock(dut)
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
@@ -678,3 +713,109 @@ async def test_host_error_gated_until_start_fall(dut):
     assert _bit(int(dut.uio_oe.value), START_BIT) == 1, "HOST_ERROR driver should enable after START falls"
     assert _bit(int(dut.uio_out.value), START_BIT) == 1, "latched HOST_ERROR=1 should reach the pin once gated open"
     dut._log.info("HOST_ERROR driver held off until START fell, then drove the latched value")
+
+
+# Host must hold HOST_GO low for a while after an OUT exchange before
+# raising it for the next transfer. docs/architecture.md's OUT sequence
+# ends with firmware's `WAIT HOST_GO,0`, which nothing acks -- HOST_GO is
+# both the OUT-direction ack and the IN-direction request, so on an
+# OUT->IN turnaround the host can't observe when firmware saw the
+# release. Measured: a zero-width low (GO re-raised before any clock
+# edge sees it) deadlocks both sides. Firmware needs ~sync latency +
+# WAIT re-entry (~3-5 cycles) to observe it; 8 is conservative. This is
+# an undocumented host timing requirement (spec gap), not an RTL bug.
+GO_LOW_HOLD = int(os.environ.get("GO_LOW_HOLD", "8"))
+
+
+@cocotb.test()
+async def test_host_handshake_in_out(dut):
+    """The runtime host protocol, end to end (docs/architecture.md Host
+    handshake): firmware runs the documented 5-phase IN sequence then the
+    5-phase OUT sequence, three times in a LOOP, echoing each host byte
+    back. The host side here follows only the level contract -- wait for
+    HOST_STATUS, never count cycles -- and requires HOST_STATUS to be
+    actually driven (uio_oe[5]). Before this test nothing exercised
+    firmware-driven HOST_STATUS at all: a mutant that never let runtime
+    SET HOST_STATUS reach the pin survived the whole suite."""
+    go = HOST_GO_BIT
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(1, 3)),
+        ("byte", lambda L: asm.wait_(go, 1)),                                  # IN: wait for host
+        (None, lambda L: asm.in_(0)),                                          # capture byte
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)), # ack: got it
+        (None, lambda L: asm.wait_(go, 0)),                                    # host saw ack, dropped GO
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)), # ready for next
+        (None, lambda L: asm.out(0)),                                          # OUT: drive byte back
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1)), # data ready
+        (None, lambda L: asm.wait_(go, 1)),                                    # host acks
+        (None, lambda L: asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 0)), # consumed
+        (None, lambda L: asm.wait_(go, 0)),                                    # host releases ack
+        (None, lambda L: asm.loop_(L["byte"], 1)),
+        (None, lambda L: asm.halt()),
+    ])
+    uio = await reset_and_boot(dut, prog)
+    await ClockCycles(dut.clk, 10)
+    assert host_status(dut) == 0, "HOST_STATUS should idle low after boot"
+
+    for byte in (0xA5, 0x3C, 0x81):
+        # host -> firmware
+        dut.ui_in.value = byte
+        uio |= 1 << go
+        dut.uio_in.value = uio
+        await wait_host_status(dut, 1, what="(IN ack)")
+        uio &= ~(1 << go)
+        dut.uio_in.value = uio
+        await wait_host_status(dut, 0, what="(IN ack clear)")
+        # firmware -> host
+        await wait_host_status(dut, 1, what="(OUT data ready)")
+        assert int(dut.uo_out.value) == byte, f"echoed {int(dut.uo_out.value):#x}, sent {byte:#x}"
+        uio |= 1 << go
+        dut.uio_in.value = uio
+        await wait_host_status(dut, 0, what="(OUT consumed)")
+        uio &= ~(1 << go)
+        dut.uio_in.value = uio
+        if GO_LOW_HOLD:
+            await ClockCycles(dut.clk, GO_LOW_HOLD)
+    dut._log.info("3 bytes round-tripped through the documented 5-phase IN/OUT handshake")
+
+
+@cocotb.test()
+async def test_halt_holds_pins(dut):
+    """HALT freezes everything (docs/isa.md HALT row): all outputs,
+    uio_oe included, hold their last-driven state; pins are NOT released
+    and HOST_STATUS is not touched. Configures a mix of drive modes and
+    host pins, halts, then wiggles every input for 100 cycles and checks
+    no output moves. Previously only uo_out was checked after HALT."""
+    prog = [
+        asm.set_pin(asm.SET_MODE_PUSH_PULL, 0, 1),
+        asm.set_pin(asm.SET_MODE_OPEN_DRAIN, 1, 0),   # actively pulling low
+        asm.set_pin(asm.SET_MODE_PUSH_PULL, 7, 0),
+        asm.set_pin(asm.SET_MODE_LEAVE, HOST_STATUS_BIT, 1),
+        asm.set_pin(asm.SET_MODE_LEAVE, START_BIT, 1),  # HOST_ERROR
+        asm.ldi(0, 0x5D),
+        asm.out(0),
+        asm.halt(),
+    ]
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x5D, max_cycles=80)
+    await ClockCycles(dut.clk, 10)
+    assert int(dut.user_project.u_core.halted.value) == 1
+
+    oe, out = int(dut.uio_oe.value), int(dut.uio_out.value)
+    expect_oe = {0: 1, 1: 1, 4: 0, 5: 1, 6: 1, 7: 1}
+    expect_out = {0: 1, 1: 0, 5: 1, 6: 1, 7: 0}
+    for b, v in expect_oe.items():
+        assert _bit(oe, b) == v, f"uio_oe[{b}]={_bit(oe, b)}, expected {v} at HALT"
+    for b, v in expect_out.items():
+        assert _bit(out, b) == v, f"uio_out[{b}]={_bit(out, b)}, expected {v} at HALT"
+
+    import random
+    rng = random.Random(7)
+    for c in range(100):
+        dut.uio_in.value = rng.randint(0, 255) & ~(1 << START_BIT)
+        dut.ui_in.value = rng.randint(0, 255)
+        await RisingEdge(dut.clk)
+        assert int(dut.uio_oe.value) == oe, f"uio_oe moved after HALT (cycle {c})"
+        assert int(dut.uio_out.value) == out, f"uio_out moved after HALT (cycle {c})"
+        assert int(dut.uo_out.value) == 0x5D, f"uo_out moved after HALT (cycle {c})"
+    dut._log.info("all pins held their driven state through 100 cycles of input noise after HALT")

@@ -56,7 +56,7 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 # test_random.py's own header. `make random` runs the default SEEDS;
 # override via e.g. `make random SEEDS=200 SIM=verilator`. Purely
 # additive -- default `make` (no target) is unchanged, still just the
-# 18 directed tests in test.py.
+# directed tests in test.py.
 .PHONY: random
 random:
 	$(MAKE) COCOTB_TEST_MODULES=test_random

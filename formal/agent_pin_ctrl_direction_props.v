@@ -34,6 +34,15 @@
 // from the set_en/set_mode/pin_index ports, so a wrong reset value or
 // wrong LEAVE handling can't hide behind the debug-port read.
 //
+// Extension (driven-VALUE properties, Properties 5-7): the direction
+// properties above never checked what value goes OUT on uio_out. Two
+// sim-surviving mutants motivated this: uio_out[5] tied to 0 outside
+// LOAD (runtime SET HOST_STATUS never reaches the pin), and a wrong-index
+// drive source. Ghost model 3 (`g_val`) is the last value written to each
+// pin_index, built ONLY from the set_en/set_value and outb_en/outb_bit
+// ports -- the DUT's `drv` debug port is never used to decide what is
+// expected on uio_out.
+//
 // Scope: bounded-depth BMC (DEFAULT_DEPTH=20), not an inductive proof.
 // All inputs (uio_in, mode_load, set_*, outb_*, pin_index) are free;
 // the only assume is the standard "reset happens at step 0".
@@ -47,6 +56,10 @@ module pin_ctrl_direction_props (
     input wire [2:0]       pin_index,
     input wire             set_en,
     input wire [1:0]       set_mode,
+    input wire             set_value,
+    input wire             outb_en,
+    input wire             outb_bit,
+    input wire [7:0]       uio_out,
     input wire [7:0][1:0]  mode,   // DEBUG_PORTS: pin_ctrl.mode[0:7]
     input wire [7:0]       drv     // DEBUG_PORTS: pin_ctrl.drv[0:7]
 );
@@ -174,6 +187,97 @@ module pin_ctrl_direction_props (
     end
   endgenerate
 
+  // ----------------------------------------------------------------------
+  // Ghost model 3: last value written to each pin_index via SET or OUTB
+  // (docs/isa.md SET/OUTB rows; architecture.md pin_index table rows 5/6).
+  // Reset value 0 (architecture.md "Reset values"). If set_en and outb_en
+  // ever fire together (core.v never does this) OUTB is taken as the later
+  // write -- irrelevant to the spec, just keeps the ghost total.
+  // Also records, per write, side-band facts the covers need:
+  //   g_wr5_run/g_wr5_val : a running-mode write to pin 5 happened last
+  //                         cycle, and its value
+  //   g_out5_prev         : uio_out[5] last cycle
+  //   g_wr6_closed        : the most recent write to pin 6 happened while
+  //                         HOST_ERROR's gate (ghost-derived) was closed
+  // ----------------------------------------------------------------------
+  reg       g_val [0:7];
+  reg       g_wr5_run, g_wr5_val, g_out5_prev, g_wr6_closed;
+  integer   j;
+  wire      g_gate6_open = !mode_load && g_seen_fall;
+  wire      wr_any = set_en || outb_en;
+  wire      wr_bit = outb_en ? outb_bit : set_value;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      for (j = 0; j < 8; j = j + 1) g_val[j] <= 1'b0;
+      g_wr5_run    <= 1'b0;
+      g_wr5_val    <= 1'b0;
+      g_out5_prev  <= 1'b0;
+      g_wr6_closed <= 1'b0;
+    end else begin
+      if (wr_any) g_val[pin_index] <= wr_bit;
+      g_wr5_run   <= wr_any && pin_index == 3'd5 && !mode_load;
+      g_wr5_val   <= wr_bit;
+      g_out5_prev <= uio_out[5];
+      if (wr_any && pin_index == 3'd6) g_wr6_closed <= !g_gate6_open;
+    end
+  end
+
+  // ======================================================================
+  // Property 5 -- HOST_STATUS (uio[5]) always shows the last value written
+  // to pin 5, in LOAD (write ack) and running mode alike. Covers: LOAD-mode
+  // ack visible; a running-mode write of 1 reaching the pin; a running-mode
+  // write of 0 pulling a previously-high pin low.
+  // ======================================================================
+  always @(posedge clk) begin
+    if (rst_n) begin
+      cover (mode_load && uio_out[5]);
+      cover (!mode_load && uio_out[5]);
+      assert (uio_out[5] == g_val[5]);
+      if (g_wr5_run) begin
+        cover (g_wr5_val && !g_out5_prev);
+        cover (!g_wr5_val && g_out5_prev);
+        assert (uio_out[5] == g_wr5_val);
+      end
+    end
+  end
+
+  // ======================================================================
+  // Property 6 -- HOST_ERROR (uio[6]): whenever its driver is enabled, the
+  // pin shows the last value written to pin 6. Cover: a 1 written while
+  // the gate was still closed appears once the gate opens.
+  // ======================================================================
+  always @(posedge clk) begin
+    if (rst_n && uio_oe[6]) begin
+      cover (g_val[6]);
+      assert (uio_out[6] == g_val[6]);
+      // Value latched pre-gate, shown post-gate (assert above covers it).
+      cover (g_wr6_closed && g_val[6]);
+    end
+  end
+
+  // ======================================================================
+  // Property 7 -- protocol pins (0-3, 7): whenever driven, the pin shows
+  // the last value written; in open-drain mode (ghost sticky mode) a driven
+  // pin is always driving 0.
+  // ======================================================================
+  generate
+    for (n = 0; n < 8; n = n + 1) begin : V
+      if (n <= 3 || n == 7) begin : G_PROTO_VAL
+        always @(posedge clk) begin
+          if (rst_n && uio_oe[n]) begin
+            cover (uio_out[n]);
+            assert (uio_out[n] == g_val[n]);
+            if (g_mode[n] == `SET_MODE_OPEN_DRAIN) begin
+              cover (1'b1);
+              assert (!uio_out[n]);
+            end
+          end
+        end
+      end
+    end
+  endgenerate
+
 endmodule
 
 bind pin_ctrl pin_ctrl_direction_props u_pin_ctrl_direction_props (
@@ -185,6 +289,10 @@ bind pin_ctrl pin_ctrl_direction_props u_pin_ctrl_direction_props (
     .pin_index(pin_index),
     .set_en   (set_en),
     .set_mode (set_mode),
+    .set_value(set_value),
+    .outb_en  (outb_en),
+    .outb_bit (outb_bit),
+    .uio_out  (uio_out),
     .mode     (mode),
     .drv      (drv)
 );

@@ -3,7 +3,7 @@
 """Randomized differential testing: generates a program per seed
 (random_gen.py), runs it on the real RTL and on golden_model.py in
 lockstep, comparing full architectural state after every instruction
-commit. Where test.py's 18 directed tests ask "does this one sequence
+commit. Where test.py's directed tests ask "does this one sequence
 work," this asks "does every sequence agree with the spec" -- the
 class of check that would have caught the cycle_counter.v DELAY
 off-by-one (commit 1121ccc) systematically, not just because someone
@@ -83,7 +83,7 @@ async def fast_boot(dut, words):
     driver-contention-gate logic (`seen_start_fall`) must actually run,
     or anything touching pin_index=6 (HOST_ERROR) would silently
     diverge from a real boot. Deliberately skips the slow per-byte
-    LOAD-mode handshake -- already proven by test.py's 18 directed
+    LOAD-mode handshake -- already proven by test.py's directed
     tests; this harness spends its budget on instruction semantics.
 
     Returns the cycle count (relative to START's assertion) at which
@@ -261,6 +261,25 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
         for i in range(8):
             check(f"pin_mode[{i}]", int(pin_ctrl.mode[i].value), golden.pin_mode[i])
             check(f"pin_drv[{i}]", int(pin_ctrl.drv[i].value), golden.pin_drv[i])
+        # The physical pins, derived from the spec's drive-mode table
+        # (isa.md SET row, architecture.md Pin map), not from pin_ctrl's
+        # own arrays -- comparing only mode/drv let a uio_oe/uio_out
+        # generation bug (e.g. HOST_STATUS never reaching the pin) pass.
+        # uio_out is only meaningful where the pin is driven. uio_oe[6]
+        # (HOST_ERROR gate) depends on START-fall timing around boot and
+        # is covered by its own directed test and formal props.
+        uio_oe, uio_out = int(dut.uio_oe.value), int(dut.uio_out.value)
+        for i in (0, 1, 2, 3, 7):
+            m, d = golden.pin_mode[i], golden.pin_drv[i]
+            exp_oe = int(m == asm.SET_MODE_PUSH_PULL or (m == asm.SET_MODE_OPEN_DRAIN and d == 0))
+            check(f"uio_oe[{i}]", (uio_oe >> i) & 1, exp_oe)
+            if exp_oe:
+                check(f"uio_out[{i}]", (uio_out >> i) & 1, d)
+        check("uio_oe[4] (HOST_GO, input)", (uio_oe >> 4) & 1, 0)
+        check("uio_oe[5] (HOST_STATUS, output)", (uio_oe >> 5) & 1, 1)
+        check("uio_out[5] (HOST_STATUS)", (uio_out >> 5) & 1, golden.pin_drv[5])
+        if (uio_oe >> 6) & 1:
+            check("uio_out[6] (HOST_ERROR)", (uio_out >> 6) & 1, golden.pin_drv[6])
 
         if decoded["opcode"] == asm.OP_STORE:
             addr = decoded["imm"]
