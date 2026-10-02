@@ -28,6 +28,8 @@ Exit 0 iff score >= SCORE_THRESHOLD and nothing errored.
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +42,7 @@ VENV_BIN  = REPO_ROOT / ".venv" / "bin"
 DEFAULT_SEEDS   = 50
 SCORE_THRESHOLD = 0.80
 REPORT_OUT      = REPO_ROOT / "mutation_results.json"
+SUITE_TIMEOUT_S = 300  # a mutant that hangs the suite counts as killed, not a stalled gate
 
 MUTANTS = [
     dict(
@@ -151,12 +154,47 @@ MUTANTS = [
         edits=[("else if (!mode_load && start_fall_raw) seen_start_fall <= 1'b1;",
                 "else if (start_fall) seen_start_fall <= 1'b1;")],
     ),
+    # 15-17: survivors of a blind operator-mutation sample (VAL scrub,
+    # 2026-10) -- real gaps no curated mutant covered.
+    dict(
+        id=15, file="io/pin_ctrl.v",
+        desc="HOST_STATUS output never enabled (uio_oe[5] stuck 0)",
+        hazard="chip cannot talk to the host at all",
+        bug_ref="blind-mutation survivor; tests read uio_out ignoring uio_oe",
+        edits=[("        assign uio_oe[gi]  = 1'b1;\n        assign uio_out[gi] = drv[gi];",
+                "        assign uio_oe[gi]  = 1'b0;\n        assign uio_out[gi] = drv[gi];")],
+    ),
+    dict(
+        id=16, file="io/pin_ctrl.v",
+        desc="runtime SET HOST_STATUS never reaches the pin (LOAD ack still works)",
+        hazard="firmware-driven host handshake (architecture.md Host handshake)",
+        bug_ref="targeted hypothesis H2; survived directed + random before the handshake test",
+        edits=[("        assign uio_oe[gi]  = 1'b1;\n        assign uio_out[gi] = drv[gi];",
+                "        assign uio_oe[gi]  = 1'b1;\n        assign uio_out[gi] = mode_load ? drv[gi] : 1'b0;")],
+    ),
+    dict(
+        id=17, file="io/pin_ctrl.v",
+        desc="host_go_fall misfires while HOST_GO is still high (boot ack drops early)",
+        hazard="LOAD-mode write-commit handshake (architecture.md LOAD)",
+        bug_ref="blind-mutation survivor",
+        edits=[("assign host_go_fall = mode_load && !uio_in_ff2[4] &&  host_go_prev;",
+                "assign host_go_fall = mode_load && !uio_in_ff2[4] ||  host_go_prev;")],
+    ),
 ]
 
 
-def _bash(cmd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", "-c", f"source {VENV_BIN}/activate && {cmd}"],
-                          cwd=TEST_DIR, capture_output=True, text=True)
+def _bash(cmd: str, timeout: int = SUITE_TIMEOUT_S) -> subprocess.CompletedProcess:
+    # Own process group so a timeout kills make, vvp and all, not just bash.
+    pr = subprocess.Popen(["bash", "-c", f"source {VENV_BIN}/activate && {cmd}"], cwd=TEST_DIR,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          start_new_session=True)
+    try:
+        out, err = pr.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(pr.args, pr.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        os.killpg(pr.pid, signal.SIGKILL)
+        pr.communicate()
+        return subprocess.CompletedProcess(pr.args, 124, "", f"TIMEOUT after {timeout}s")
 
 
 def _failed(r: subprocess.CompletedProcess) -> bool:
@@ -206,6 +244,13 @@ def main() -> int:
     args = ap.parse_args()
     only = {int(x) for x in args.only.split(",")} if args.only else None
     mutants = [m for m in MUTANTS if only is None or m["id"] in only]
+
+    dirty = subprocess.run(["git", "diff", "--quiet", "--", "src"], cwd=REPO_ROOT).returncode
+    if dirty:
+        print("ERROR: src/ has uncommitted changes -- refusing to run: the baseline would "
+              "test a tree you didn't mean to, and 'restore' would write the dirty text back. "
+              "Commit or stash first.", file=sys.stderr)
+        return 1
 
     print(f"[mutate] baseline check (directed + SEEDS={args.seeds}) ...", flush=True)
     if not rebuild():

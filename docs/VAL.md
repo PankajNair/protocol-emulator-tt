@@ -20,12 +20,12 @@ without adding checking power.
 
 | Suite | File | What it asks | Run |
 |---|---|---|---|
-| Directed | `test/test.py` (26 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate). | `make -C test` |
+| Directed | `test/test.py` (28 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
 | Random differential | `test/test_random.py` | Does every generated program agree with the golden model, instruction by instruction? | `make -C test random SEEDS=n` |
 | Golden self-check | `test/test_golden_model_selfcheck.py` | Does the golden model agree with the RTL-proven directed tests before being trusted as an oracle? | `pytest test/test_golden_model_selfcheck.py` |
 | Hierarchy smoke | `test/test_hierarchy_smoke.py` | Does hierarchical signal access (the scoreboard's foundation) still work on this simulator? | `make -C test COCOTB_TEST_MODULES=test_hierarchy_smoke` |
 
-CI runs the directed suite plus 50 random seeds on every push.
+CI (`.github/workflows/test.yaml`) runs the directed suite plus 50 random seeds. On this fork push-triggered workflows are disabled (GitHub's fork default), so it currently runs only via manual dispatch.
 
 ## 2. Scoreboard
 
@@ -34,7 +34,7 @@ RTL (EXECUTE -> FETCH_LO, or HALT) and steps the golden model once. At
 every commit it compares: fetched instruction word, cycles used (exact,
 so DELAY/WAIT timing is checked, not just results), PC, all four GPRs,
 flag, return address, `return_valid`, both sticky debug flags, `halted`,
-`uo_out`, and every pin's sticky `mode`/`drv`. STOREs are spot-checked on
+`uo_out`, every pin's sticky `mode`/`drv`, and the physical pins: `uio_oe`/`uio_out` for the protocol pins and HOST_STATUS, expected values derived from the spec's drive-mode table rather than pin_ctrl's own arrays (`uio_oe[6]` excluded -- boot-timing dependent, covered by its directed test and formal). STOREs are spot-checked on
 the written byte; the full 512-byte data region is diffed at the end.
 
 One documented skip: a LOAD/LOADX's destination register is not compared
@@ -121,8 +121,11 @@ Runs in the parent session only, never delegated.
 | 12 | core.v | SHIFT rotates instead of zero-fill | isa.md SHIFT |
 | 13 | pin_ctrl.v | HOST_ERROR driven before START falls | uio[6] contention guard |
 | 14 | pin_ctrl.v | latch START fall from mode_load-gated edge | real bug, commit 142ab71 |
+| 15 | pin_ctrl.v | HOST_STATUS `uio_oe[5]` stuck 0 | blind-sample survivor |
+| 16 | pin_ctrl.v | runtime SET HOST_STATUS never reaches pin | targeted hypothesis survivor |
+| 17 | pin_ctrl.v | `host_go_fall` misfires, boot ack drops early | blind-sample survivor |
 
-Current score: 14/14, also 14/14 under each stimulus profile
+Each suite run has a 300s timeout (a hang counts as killed) and the script refuses to run on a dirty `src/`. Current score: 17/17. Mutants 1-14 were also 14/14 under each stimulus profile
 (`STIM_PROFILE=x python3 scripts/mutate.py`).
 
 History worth keeping: the first run scored 11/13. Survivors #10 and #13
@@ -130,6 +133,17 @@ led to new directed tests, and the #13 test found a real RTL bug
 (HOST_ERROR could never be driven: the START falling edge was only
 detected in LOAD mode, which START's own rising edge ends). #14 now
 guards that fix.
+
+The curated list is biased toward bugs we already knew about, so it was
+cross-checked with a **blind** sample: 45 seeded random operator
+mutations (`==`/`!=`, `&&`/`||`, constants, ternaries) across all RTL.
+Raw score 80%; of the 9 survivors, 7 were equivalent or dead logic and 2
+were real gaps (HOST_STATUS output enable; boot-ack withdrawn early).
+Those, plus a targeted "runtime HOST_STATUS never reaches the pin"
+mutant that also survived, became #15-17 and are now killed by the
+host-handshake test, oe-aware boot helper and physical-pin scoreboard.
+The same sample hung the suite on a boot mutant (`load_byte` had an
+unbounded wait), which is why waits are now bounded.
 
 ## 6. Formal / vacuity gate
 
@@ -148,7 +162,7 @@ docstring.
 | `agent_core_call_ret_misuse_props.v` | `protocol_cpu_core`: ghost `return_valid`/`retaddr` from identified CALL/RET commits match the core every cycle; misuse flag rises only after a nested CALL or orphan RET, always after one, sticky until reset; CALL saves PC+1 and jumps, RET (orphan included) jumps to `retaddr` | proven, 17/17 covers. Scratch mutants (#4, #5, RET not clearing return_valid, CALL saving PC) each fail |
 | `agent_core_reset_props.v` | `protocol_cpu_core`: known state on the first cycle after any (incl. mid-trace) reset; nothing executes, drives pins or writes memory before START except host boot writes; first fetch byte 0; no leakage from a DELAY, blocked WAIT, FETCH_HI or pending LOAD/LOADX writeback interrupted by reset (a cover per scenario) | proven, 22/22 covers. Scratch mutants (dropped reset, surviving writeback, reset into FETCH_LO, regfile without reset) each fail |
 | `agent_core_illegal_opcode_props.v` | `protocol_cpu_core`: illegal_op_flag rises only after a reserved-opcode commit, always rises after one, sticky until reset; reserved opcode is a true NOP (no mem/pin/regfile write, PC+1, other state unchanged). Opcode taken from `mem_rdata` at FETCH_HI->EXECUTE, not core.v's decode | proven, 9/9 covers. Agent scratch mutants (#8, flag never set, LDI also sets) each fail |
-| `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model | proven, 31/31 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
+| `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model; output VALUES: `uio_out[5]` always the last value written to pin 5 (LOAD ack and runtime), `uio_out[6]` the latched HOST_ERROR once its gate opens, protocol pins drive their last written value (0 in open-drain) | proven, 47/47 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
 
 ## 7. Golden model
 
@@ -191,3 +205,14 @@ SEEDS; fixed in 0636edf, 150 seeds 82.8s -> 12.4s).
 - **constraint_dsl** (Rust/PyO3/Bitwuzla SMT stimulus solver): no
   SMT-hard constraints here (9-bit addresses, 512-byte data region, 19
   opcodes); a seeded RNG covers the space.
+
+## 10. Known spec gap: OUT->IN handshake turnaround
+
+Found by `test_host_handshake_in_out`. In architecture.md's OUT sequence
+the firmware's last step is `WAIT HOST_GO,0`, which nothing acks. HOST_GO
+is both the OUT-direction ack and the IN-direction request, so on an
+OUT->IN turnaround the host can't observe when firmware saw it release
+GO. A zero-width GO low (re-raised before any chip clock edge sees it)
+deadlocks both sides -- reproduced. The test holds GO low for 8 cycles;
+the spec states no minimum. Options: document a minimum GO-low time in
+chip clocks, or add a final ack phase to the OUT sequence. Undecided.
