@@ -41,7 +41,7 @@ async def test_hierarchy_smoke(dut):
 
     core = dut.user_project.u_core
     regfile = dut.user_project.u_core.u_regfile
-    mem = dut.user_project.u_mem
+    mem = dut.user_project.u_mem.sram.i_SRAM_1P_behavioral_bm_bist.memory  # SRAM macro model's array (src/mem/mem.v)
     pin_ctrl = dut.user_project.u_pin_ctrl
 
     # Plain internal registers.
@@ -55,20 +55,20 @@ async def test_hierarchy_smoke(dut):
     assert flag0 == 0
     assert halted0 == 0
 
-    # Unpacked-array elements: regfile.regs[0:3], mem.storage[0:1023],
+    # Unpacked-array elements: regfile.regs[0:3], the SRAM model's memory[0:1023],
     # pin_ctrl.mode[0:7]/drv[0:7] -- read every element of each to
     # shake out any simulator-specific indexing quirk, not just index 0.
     for i in range(4):
         v = int(regfile.regs[i].value)
         assert v == 0, f"regs[{i}] expected 0 post-reset, got {v}"
 
-    # mem.v's storage[] has no reset (real SRAM content is undefined
+    # The SRAM has no reset (real SRAM content is undefined
     # until written, by design -- see mem.v's own header) -- these
     # elements read back as X in simulation, so just confirm the read
     # itself doesn't error, not that it converts to a clean int.
     for i in (0, 1, 511, 512, 1023):
-        raw = mem.storage[i].value
-        dut._log.info(f"storage[{i}] post-reset (undefined by design) = {raw}")
+        raw = mem[i].value
+        dut._log.info(f"sram[{i}] post-reset (undefined by design) = {raw}")
 
     for i in range(8):
         mode_v = int(pin_ctrl.mode[i].value)
@@ -80,9 +80,9 @@ async def test_hierarchy_smoke(dut):
     # actually visible on the next read -- test_random.py's fast_boot()
     # depends on this exact mechanism to poke the full 1024-byte SRAM
     # image directly.
-    mem.storage[7].value = 0xA5
+    mem[7].value = 0xA5
     await RisingEdge(dut.clk)
-    v = int(mem.storage[7].value)
+    v = int(mem[7].value)
     assert v == 0xA5, f"write-then-read through hierarchical path failed: got {v:#x}"
 
     dut._log.info("hierarchical signal access confirmed: plain regs, array reads, array writes")

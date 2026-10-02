@@ -53,6 +53,12 @@ from seq_coverage import SeqCoverage
 S_LOAD, S_FETCH_LO, S_FETCH_HI, S_EXECUTE = 0, 1, 2, 3
 START_BIT = 6
 
+def sram_array(dut):
+    """The SRAM macro's storage array inside IHP's behavioral model
+    (test/models/), via src/mem/mem.v's `sram` instance."""
+    return dut.user_project.u_mem.sram.i_SRAM_1P_behavioral_bm_bist.memory
+
+
 ARTIFACT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regression_artifacts")
 
 
@@ -75,9 +81,8 @@ def _load_profile():
 
 async def fast_boot(dut, words):
     """Pokes the full 1024-byte SRAM image directly (program words +
-    zero-fill everywhere else -- mem.v's storage[] has no reset, see
-    its own header comment, so a never-written byte is simulator-
-    dependent garbage that would cause a spurious mismatch against a
+    zero-fill everywhere else -- the SRAM macro has no reset (src/mem/
+    mem.v header), so a never-written byte is X in its model that would cause a spurious mismatch against a
     golden model that assumes zero), then does a REAL uio[6] (START)
     pin toggle rather than a poke -- pin_ctrl.v's own edge-detect/
     driver-contention-gate logic (`seen_start_fall`) must actually run,
@@ -107,9 +112,9 @@ async def fast_boot(dut, words):
 
     image = asm.to_bytes(words)
     image += [0] * (1024 - len(image))
-    mem = dut.user_project.u_mem
+    mem = sram_array(dut)
     for i, b in enumerate(image):
-        mem.storage[i].value = b
+        mem[i].value = b
 
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 5)
@@ -150,7 +155,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
 
     core = dut.user_project.u_core
     regfile = dut.user_project.u_core.u_regfile
-    mem = dut.user_project.u_mem
+    mem = sram_array(dut)
     pin_ctrl = dut.user_project.u_pin_ctrl
 
     golden = SequencerState.reset()
@@ -284,7 +289,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
         if decoded["opcode"] == asm.OP_STORE:
             addr = decoded["imm"]
             check(f"data_mem[{addr}] (just STOREd, pc={pre_step_pc})",
-                  int(mem.storage[512 + addr].value), golden.data_mem[addr])
+                  int(mem[512 + addr].value), golden.data_mem[addr])
 
         if golden.halted:
             break
@@ -293,7 +298,7 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
     # per-STORE spot-check might have missed (e.g. a write landing at
     # the wrong address entirely).
     for addr in range(512):
-        check(f"data_mem[{addr}] (closing diff)", int(mem.storage[512 + addr].value), golden.data_mem[addr])
+        check(f"data_mem[{addr}] (closing diff)", int(mem[512 + addr].value), golden.data_mem[addr])
 
     cov.write()
     return instr_index, opcode_counts

@@ -16,6 +16,11 @@ ifneq ($(GATES),yes)
 # RTL simulation:
 SIM_BUILD				= sim_build/rtl
 VERILOG_SOURCES += $(addprefix $(SRC_DIR)/,$(PROJECT_SOURCES))
+# SRAM macro: IHP's own behavioral model, not src/'s port-only synthesis
+# stub (see src/mem/mem.v header). FUNCTIONAL selects the model's
+# zero-delay functional view instead of its timing-check view.
+VERILOG_SOURCES += $(PWD)/models/RM_IHPSG13_1P_core_behavioral_bm_bist.v $(PWD)/models/RM_IHPSG13_1P_1024x8_c2_bm_bist.v
+COMPILE_ARGS    += -DFUNCTIONAL
 
 else
 
@@ -29,6 +34,8 @@ VERILOG_SOURCES += $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2
 
 # this gets copied in by the GDS action workflow
 VERILOG_SOURCES += $(PWD)/gate_level_netlist.v
+# The netlist instantiates the SRAM macro as a cell; simulate it with IHP's model.
+VERILOG_SOURCES += $(PWD)/models/RM_IHPSG13_1P_core_behavioral_bm_bist.v $(PWD)/models/RM_IHPSG13_1P_1024x8_c2_bm_bist.v
 
 endif
 
