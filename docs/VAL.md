@@ -387,6 +387,18 @@ transaction, two transactions, and the fastest SCLK (12-cycle halves,
 ~2.08 MHz). Measured: SCLK halves exactly 25 (1 MHz) / 12 cycles, MOSI
 setup >= 19 / 6 cycles, CS setup >= 69 / 43, hold >= 53 / 40.
 
+SPI modes 1-3 (same file, `-D MODE=n`; CPHA picks the bit loop through
+the assembler's `.if`): the slave model was generalized to any mode
+(leading vs trailing edge by CPOL, sample/launch by CPHA), and every mode
+passes at the default and the fastest clock (12-cycle halves for CPHA 0,
+15 for CPHA 1). Checked that the mode tests discriminate by running
+firmware for each mode against a slave expecting each other mode: all
+12 mismatches fail. Two of them (0 vs 1, 2 vs 3) first passed -- the
+master samples MISO late enough to read either CPHA's data, so data
+alone can't tell CPHA apart -- which led to the check that actually
+defines CPHA: MOSI may only change while SCLK is at the mode's launch
+level (idle for CPHA 0, active for CPHA 1).
+
 All three baseline protocols (UART, I2C, SPI) now have firmware verified
 end to end on the RTL against independent models.
 

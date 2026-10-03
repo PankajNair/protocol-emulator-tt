@@ -120,3 +120,34 @@ def test_shipped_firmware_assembles(name):
     p = asm.assemble_file(ROOT / "firmware" / "protocols" / name)
     assert not p.warnings
     assert len(p.words) <= asm.PROGRAM_WORDS
+
+
+def test_conditional_assembly():
+    src = """
+    .equ MODE, 0
+    .if MODE
+        LDI R0, 1
+    .else
+        LDI R0, 2
+        .if MODE + 1
+            NOP
+        .endif
+    .endif
+        HALT
+    """
+    assert asm.assemble(src).words == [A.ldi(0, 2), A.nop(), A.halt()]
+    assert asm.assemble(src, {"MODE": 3}).words == [A.ldi(0, 1), A.halt()]
+    # labels inside a skipped branch don't exist
+    with pytest.raises(asm.AsmError, match="unknown label"):
+        asm.assemble(".if 0\nx: NOP\n.endif\nJMP x")
+
+
+@pytest.mark.parametrize("src,msg", [
+    (".if 1\nNOP", ".if without .endif"),
+    (".endif", "without .if"),
+    (".else", "without .if"),
+    (".if\n.endif", "needs an expression"),
+])
+def test_conditional_errors(src, msg):
+    with pytest.raises(asm.AsmError, match=msg):
+        asm.assemble(src)

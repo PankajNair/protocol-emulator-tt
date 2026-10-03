@@ -35,12 +35,13 @@ the brief.
   hanging. 100 kHz by default, 400 kHz with `-D SCL_LOW=70 -D
   SCL_HIGH=55`. Verified on the board testbench against an independent
   I2C slave model (`test/test_i2c.py`).
-- `protocols/spi.asm` -- SPI master, mode 0 (CPOL=0, CPHA=0), MSB first,
-  full duplex. MOSI/MISO/SCLK/CS = pins 0-3. Host sends a length, then per
-  byte sends one and gets one back; CS stays low for the transaction.
-  1 MHz default, up to ~2.08 MHz (`-D SCK_HALF=12`, 12 cycles of fixed
-  cost per half period). Verified against an independent mode-0 slave
-  model (`test/test_spi.py`).
+- `protocols/spi.asm` -- SPI master, all four modes (`-D MODE=0..3`),
+  MSB first, full duplex. MOSI/MISO/SCLK/CS = pins 0-3. Host sends a
+  length, then per byte sends one and gets one back; CS stays low for the
+  transaction. 1 MHz default; fastest SCLK half period is 12 cycles for
+  CPHA 0 (~2.08 MHz), 15 for CPHA 1 (~1.67 MHz). The CPHA variants differ
+  in instruction order, selected with the assembler's `.if`. Verified
+  against an independent slave model for every mode (`test/test_spi.py`).
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

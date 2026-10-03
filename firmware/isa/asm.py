@@ -13,6 +13,9 @@ Syntax (follows docs/isa.md's own examples):
 
     ; comment                     # also accepted
     .equ NAME, expr               constant (expr: ints, names, + - * / // ( ))
+    .if expr / .else / .endif     conditional assembly: lines kept when expr
+                                  != 0 (constants and -D defines only --
+                                  labels aren't known yet); nestable
     label:                        word address of the next instruction
     .data                         following .byte/.ascii go to the data region
     .byte 1, 0x2A, NAME           .ascii "text"
@@ -153,10 +156,30 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
     in_data = False
     pc = 0
     labels: dict[str, int] = {}
+    cond: list[list] = []  # .if stack: [active_here, branch_taken, where]
     for lineno, raw in enumerate(text.splitlines(), 1):
         where = f"{name}:{lineno}"
         s = re.split(r"[;#]", raw, maxsplit=1)[0].strip()
         if not s:
+            continue
+        directive = s.split(None, 1)
+        d0 = directive[0].upper()
+        if d0 in (".IF", ".ELSE", ".ENDIF"):
+            outer = all(f[0] for f in cond)
+            if d0 == ".IF":
+                if len(directive) < 2:
+                    raise AsmError(f"{where}: .if needs an expression")
+                v = bool(_eval(directive[1], consts, where)) if outer else False
+                cond.append([v, v, where])
+            elif not cond:
+                raise AsmError(f"{where}: {d0.lower()} without .if")
+            elif d0 == ".ELSE":
+                cond[-1][0] = not cond[-1][1]
+                cond[-1][1] = True
+            else:
+                cond.pop()
+            continue
+        if not all(f[0] for f in cond):
             continue
         while True:
             m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$", s)
@@ -197,6 +220,8 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
             raise AsmError(f"{where}: instructions not allowed after .data")
         lines.append((where, mn, ops, pc))
         pc += 1
+    if cond:
+        raise AsmError(f"{cond[-1][2]}: .if without .endif")
     if pc > PROGRAM_WORDS:
         raise AsmError(f"{name}: {pc} words, program region holds {PROGRAM_WORDS}")
 
