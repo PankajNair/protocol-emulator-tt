@@ -295,6 +295,23 @@ def generate_wrapper(checker_name: str, target_module: str, ports: dict[str, str
     return out_path, wrapper_name
 
 
+def strip_bind(props_path: Path) -> Path:
+    """Scratch copy of the props file without its trailing documentation-
+    only `bind` statement. Some yosys builds parse `bind` and ignore it,
+    others (the OSS CAD Suite build CI uses) reject it as a syntax error;
+    the wrapper never needs it either way."""
+    text = props_path.read_text()
+    m = re.search(r"^\s*bind\s+\w+\s+\w+\s+\w+\s*\(", text, re.M)
+    if not m:
+        return props_path
+    close = _find_matching_paren(text, text.index("(", m.start()))
+    end = text.index(";", close) + 1
+    SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = SCRATCH_DIR / f"{props_path.stem}_nobind.v"
+    out_path.write_text(text[:m.start()] + text[end:])
+    return out_path
+
+
 def build_smt2(props_path: Path) -> tuple[Path, str]:
     """Full pipeline: parse props file, generate debug copy + wrapper,
     drive yosys to produce an SMT2 file. Returns (smt2_path, wrapper_top_name)."""
@@ -315,7 +332,7 @@ def build_smt2(props_path: Path) -> tuple[Path, str]:
     extra_srcs = [SRC_DIR / name for name in EXTRA_SRCS.get(target_module, [])]
     target_src = dbg_copy_path if dbg_copy_path else find_module_file(target_module)
 
-    all_srcs = [ISA_DEFS] + extra_srcs + [target_src, props_path, wrapper_path]
+    all_srcs = [ISA_DEFS] + extra_srcs + [target_src, strip_bind(props_path), wrapper_path]
     smt2_path = SCRATCH_DIR / f"{wrapper_name}.smt2"
 
     src_args = " ".join(str(p) for p in all_srcs)
