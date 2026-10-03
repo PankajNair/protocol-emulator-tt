@@ -113,6 +113,7 @@ def init_board(tb, nets_pullup: int = 0):
         getattr(tb, f"ext_in_{s}").value = 0
         getattr(tb, f"map_{s}").value = 0xFFFF_FFFF
     tb.net_pullup.value = nets_pullup
+    _EXT[id(tb)] = [0, 0]
     tb.net_ext_oe.value = 0
     tb.net_ext_val.value = 0
     tb.contention_seen.value = 0
@@ -126,14 +127,24 @@ def net(tb, n: int):
     return int(c) if c in "01" else "x"
 
 
+_EXT: dict = {}  # id(tb) -> [oe, val]: shadow of net_ext_oe / net_ext_val
+
+
 def drive_net(tb, n: int, level):
-    """External driver on net n: 0/1 drives, None releases."""
-    oe, val = int(tb.net_ext_oe.value), int(tb.net_ext_val.value)
+    """External driver on net n: 0/1 drives, None releases.
+
+    Read-modify-write against a Python shadow, never the signals: cocotb
+    applies writes at the end of the time step, so reading net_ext_* back
+    after a write in the same step returns the stale value and a second
+    drive_net call that step (SDA and SCL changing together) would
+    silently undo the first. Found by the I2C slave model."""
+    oe, val = _EXT.setdefault(id(tb), [0, 0])
     if level is None:
         oe &= ~(1 << n)
     else:
         oe |= 1 << n
         val = (val & ~(1 << n)) | ((level & 1) << n)
+    _EXT[id(tb)] = [oe, val]
     tb.net_ext_val.value = val
     tb.net_ext_oe.value = oe
 

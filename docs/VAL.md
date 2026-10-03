@@ -345,4 +345,27 @@ run changed frequency. `board.Chip.start_clock` now stops the previous
 Clock object (cancelling the wrapper task isn't enough), and rounds the
 period to an even ps (cocotb rejects odd periods).
 
-Planned next on the board: I2C (open-drain, clock stretching).
+I2C (`firmware/protocols/i2c.asm`, `test/test_i2c.py`): chip A's SDA/SCL
+on two pulled-up nets with an independent I2C slave model that only ever
+pulls low or releases. The model decodes the bus cycle by cycle, ACKs its
+own address, can NACK a chosen byte, stretch the clock or hold SCL low
+forever, and checks the master against the I2C spec minimums for the
+mode (SCL low/high time, data setup, START hold) and against
+START/STOP inside a byte. Seven cases pass:
+- write and read at 100 kHz; write then read back-to-back at 400 kHz
+  (master ACKs all read bytes but the last);
+- address NACK (status 1, STOP, bus released, no HOST_ERROR);
+- data NACK on the 2nd byte (statuses 0,0,1, master stops there);
+- 1500-cycle clock stretch after every byte, both directions;
+- SCL held low forever: stretch timeout, status 3, HOST_ERROR, no hang.
+
+Measured minimums at 100 kHz: SCL low 250 / high 247 / data setup 241 /
+START hold 256 cycles (spec 235 / 200 / 13 / 200); at 400 kHz 70 / 52 /
+61 / 61 (spec 65 / 30 / 5 / 30). Checked the timing checks can fail: an
+SCL low of 150 cycles is rejected (`SCL low 150 < tLOW 235`).
+
+Found while building it: `board.drive_net` did a read-modify-write of the
+external-driver registers, and cocotb applies writes at the end of the
+time step, so a second call in the same cycle (the slave driving SDA and
+stretching SCL together) silently undid the first. It now keeps a Python
+shadow of the driver state.

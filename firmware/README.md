@@ -26,8 +26,17 @@ the brief.
   check. Verified on the board testbench (`test/test_uart_selftest.py`),
   including that a missing jumper and a stuck-high RX are reported as
   failures.
-- `protocols/spi.asm`, `i2c.asm` -- not written yet.
+- `protocols/i2c.asm` -- I2C master, 7-bit addressing, read and write,
+  host-driven through a lockstep protocol (address/len in, a status byte
+  after the address and after each written byte, read data out; master
+  ACKs every read byte but the last). SDA = pin 0, SCL = pin 1,
+  open-drain. Handles clock stretching (`WAIT SCL,1,timeout`); a stuck
+  SCL times out, reports status 3 and raises HOST_ERROR instead of
+  hanging. 100 kHz by default, 400 kHz with `-D SCL_LOW=70 -D
+  SCL_HIGH=55`. Verified on the board testbench against an independent
+  I2C slave model (`test/test_i2c.py`).
+- `protocols/spi.asm` -- not written yet.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →
-spi.asm → i2c.asm → stretch goals.
+i2c.asm (done) → spi.asm → stretch goals.
