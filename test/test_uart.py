@@ -151,3 +151,122 @@ async def test_uart_tx_9600(dut):
     """9600 baud: decoded bytes match; edge deviation within the
     0.23%/bit docs/protocol_timing.md predicts."""
     await run_uart(dut, *BAUDS[2])
+
+
+# ---------------------------------------------------------------------------
+# UART RX: firmware/protocols/uart_rx.asm, driven by a transmitter model.
+# ---------------------------------------------------------------------------
+
+UART_RX_ASM = Path(__file__).resolve().parents[1] / "firmware" / "protocols" / "uart_rx.asm"
+RX_PIN = 1
+HOST_ERROR_BIT = 6
+
+
+class UioBus:
+    """uio_in is one 8-bit port shared by the transmitter model (RX pin)
+    and the host (HOST_GO): each sets its own bit without clobbering the
+    other's."""
+
+    def __init__(self, dut, initial: int):
+        self.dut, self.val = dut, initial
+
+    def set(self, bit: int, level: int):
+        self.val = (self.val & ~(1 << bit)) | ((level & 1) << bit)
+        self.dut.uio_in.value = self.val
+
+
+async def uart_send(dut, bus: UioBus, frames, period: float):
+    """Transmit 8N1 frames back to back on RX. `frames`: list of
+    (byte, stop_bit). `period` may be fractional (a mismatched baud):
+    edges land at the nearest cycle to start + k*period."""
+    t = 0.0
+    now = 0
+
+    async def hold(level, bits):
+        nonlocal t, now
+        bus.set(RX_PIN, level)
+        t += bits * period
+        n = round(t) - now
+        now += n
+        await ClockCycles(dut.clk, n)
+
+    for byte, stop in frames:
+        await hold(0, 1)
+        for i in range(8):
+            await hold((byte >> i) & 1, 1)
+        await hold(stop, 1)
+        if stop == 0:
+            await hold(1, 3)  # line back to idle after a bad stop bit
+    bus.set(RX_PIN, 1)
+
+
+async def host_collect(dut, bus: UioBus, n: int, max_wait: int):
+    """Host side: keep a request (HOST_GO) raised ahead of each byte, read
+    it on HOST_STATUS, release -- the host-initiated OUT handshake."""
+    got = []
+    for _ in range(n):
+        bus.set(T.HOST_GO_BIT, 1)
+        await T.wait_host_status(dut, 1, max_cycles=max_wait, what="(byte ready)")
+        got.append(int(dut.uo_out.value))
+        bus.set(T.HOST_GO_BIT, 0)
+        await T.wait_host_status(dut, 0, max_cycles=max_wait, what="(byte released)")
+    return got
+
+
+def host_error(dut) -> int:
+    return (int(dut.uio_oe.value) >> HOST_ERROR_BIT) & (int(dut.uio_out.value) >> HOST_ERROR_BIT) & 1
+
+
+async def run_uart_rx(dut, bit_cycles: int, period: float, frames):
+    prog = assembler.assemble_file(UART_RX_ASM, {"BAUD_CYCLES": bit_cycles})
+    uio = await T.reset_and_boot(dut, prog.words)
+    bus = UioBus(dut, uio)
+    bus.set(RX_PIN, 1)  # idle line
+    await ClockCycles(dut.clk, 3 * bit_cycles)
+    assert (int(dut.uio_oe.value) >> RX_PIN) & 1 == 0, "RX pin must be an input"
+
+    sender = cocotb.start_soon(uart_send(dut, bus, frames, period))
+    got = await host_collect(dut, bus, len(frames), max_wait=int(14 * period) + 200)
+    await sender
+    return got
+
+
+RX_PAYLOAD = [0x55, 0xAA, 0x00, 0xFF, 0x3C, 0x81]
+
+
+@cocotb.test()
+async def test_uart_rx_115200(dut):
+    """115200 baud, back-to-back frames: every byte decoded, no framing error."""
+    got = await run_uart_rx(dut, 434, 434.0, [(b, 1) for b in RX_PAYLOAD])
+    assert got == RX_PAYLOAD, f"received {[hex(b) for b in got]}"
+    assert host_error(dut) == 0, "HOST_ERROR raised on clean frames"
+
+
+@cocotb.test()
+async def test_uart_rx_baud_tolerance(dut):
+    """The sender's clock is off by +-2% (a typical UART tolerance budget):
+    firmware built for 115200 still decodes every back-to-back frame --
+    proves the sample points sit near bit centres, not at an edge."""
+    for err in (+0.02, -0.02):
+        got = await run_uart_rx(dut, 434, 434.0 * (1 + err), [(b, 1) for b in RX_PAYLOAD])
+        assert got == RX_PAYLOAD, f"sender {err:+.0%}: received {[hex(b) for b in got]}"
+        assert host_error(dut) == 0, f"sender {err:+.0%}: spurious framing error"
+
+
+@cocotb.test()
+async def test_uart_rx_9600(dut):
+    """9600 baud (DELAY rounding in play): every byte decoded."""
+    got = await run_uart_rx(dut, 5208, 5208.0, [(b, 1) for b in RX_PAYLOAD[:3]])
+    assert got == RX_PAYLOAD[:3], f"received {[hex(b) for b in got]}"
+    assert host_error(dut) == 0
+
+
+@cocotb.test()
+async def test_uart_rx_framing_error(dut):
+    """A frame whose stop bit is 0: the byte is still delivered, HOST_ERROR
+    goes high and stays high, and the receiver resynchronizes on the next
+    good frame instead of misframing on the still-low line."""
+    frames = [(0x5A, 1), (0xC3, 0), (0x7E, 1)]
+    got = await run_uart_rx(dut, 434, 434.0, frames)
+    assert got == [0x5A, 0xC3, 0x7E], f"received {[hex(b) for b in got]}"
+    assert host_error(dut) == 1, "framing error should raise HOST_ERROR"

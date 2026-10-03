@@ -21,7 +21,7 @@ without adding checking power.
 | Suite | File | What it asks | Run |
 |---|---|---|---|
 | Directed | `test/test.py` (28 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
-| UART end-to-end | `test/test_uart.py` | Does the shipped UART firmware (`firmware/protocols/uart.asm`, assembled by `firmware/isa/asm.py`) transmit host bytes correctly on the real RTL? Independent receiver model on the TX pin (start-edge detect, centre sampling, stop-bit check, re-arm after the stop sample), 115200 / 57600 / 9600 baud, per-edge timing deviation measured against docs/protocol_timing.md. | part of `make -C test` |
+| UART end-to-end | `test/test_uart.py` | Does the shipped UART firmware (`firmware/protocols/uart.asm` TX, `uart_rx.asm` RX, assembled by `firmware/isa/asm.py`) move bytes correctly on the real RTL? TX: Independent receiver model on the TX pin (start-edge detect, centre sampling, stop-bit check, re-arm after the stop sample), 115200 / 57600 / 9600 baud, per-edge timing deviation measured against docs/protocol_timing.md. RX: transmitter model on the RX pin, back-to-back frames, sender baud error +-2%, framing error + resync. | part of `make -C test` |
 | Assembler | `test/test_assembler.py` (pytest) | Every mnemonic encodes identically to `isa_asm`; labels, `.equ`/`-D`, DELAY/WAIT cycle encoding, data region, error cases. | `pytest test/test_assembler.py` |
 | Random differential | `test/test_random.py` | Does every generated program agree with the golden model, instruction by instruction? | `make -C test random SEEDS=n` |
 | Golden self-check | `test/test_golden_model_selfcheck.py` | Does the golden model agree with the RTL-proven directed tests before being trusted as an oracle? | `pytest test/test_golden_model_selfcheck.py` |
@@ -281,5 +281,21 @@ timing table against the RTL instead of trusting it:
 Frames decode correctly at all three. Found while writing it: a receiver
 must re-arm right after the stop bit's centre sample, not after 10 full
 bit times -- at 9600 the transmitter runs 0.23% fast per bit, so the next
-start edge arrives inside a naive 10-bit window. Not yet covered: UART RX,
-SPI, I2C (firmware not written).
+start edge arrives inside a naive 10-bit window.
+
+UART RX (`firmware/protocols/uart_rx.asm`) is checked the other way
+round: a transmitter model drives the RX pin with back-to-back frames
+and the host collects bytes through the host-initiated OUT handshake.
+Decodes at 115200 and 9600; a stop bit of 0 raises HOST_ERROR and the
+receiver resynchronizes on the next frame. Measured sender-baud margin
+at 115200 (probe, not a CI test): slow sender OK to +5.5%, fails at +6%
+(stop sample leaves the stop bit -- matches the analytical ~5.3%); fast
+sender OK to -4%, loses frames at -4.5%. The fast side is tighter
+because a fast sender shortens the gap between the stop-bit sample and
+the next start edge, which the unbuffered hand-over must fit in. Both
+are well beyond the usual +-2% budget, which CI tests at both ends.
+Found while writing it: without an idle-wait (`WAIT RX,1`) before
+hunting for the start edge, the frame after a framing error is misframed
+(0x7E received as 0xF3) because the line is still low.
+
+Not yet covered: SPI, I2C (firmware not written).

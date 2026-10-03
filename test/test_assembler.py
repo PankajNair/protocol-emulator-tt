@@ -113,9 +113,10 @@ def test_program_too_long():
         asm.assemble("NOP\n" * 257)
 
 
-def test_uart_firmware_assembles():
+@pytest.mark.parametrize("name", ["uart.asm", "uart_rx.asm"])
+def test_shipped_firmware_assembles(name):
     """The shipped protocol firmware must always assemble cleanly at its
     default baud (115200 -- exact, no warnings)."""
-    p = asm.assemble_file(ROOT / "firmware" / "protocols" / "uart.asm")
+    p = asm.assemble_file(ROOT / "firmware" / "protocols" / name)
     assert not p.warnings
     assert len(p.words) <= asm.PROGRAM_WORDS
