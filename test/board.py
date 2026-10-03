@@ -152,3 +152,38 @@ def drive_net(tb, n: int, level):
 def contention_nets(tb) -> list[int]:
     v = tb.contention_seen.value
     return [n for n in range(8) if str(v)[7 - n] == "1"]
+
+
+class _UioBus:
+    """Sets one bit of a chip's ext_in without clobbering the others."""
+
+    def __init__(self, chip, initial: int):
+        self.chip, self.val = chip, initial
+
+    def set(self, bit: int, level: int):
+        self.val = (self.val & ~(1 << bit)) | ((level & 1) << bit)
+        self.chip.uio_in.value = self.val
+
+
+class HostPort:
+    """Host side of the lockstep IN / host-initiated OUT handshakes
+    (docs/architecture.md Host handshake) on one chip: send() a byte in,
+    recv() a byte out. Protocol firmwares build on these two."""
+
+    def __init__(self, chip, ext, max_wait=120_000):
+        self.chip, self.bus, self.max_wait = chip, _UioBus(chip, ext), max_wait
+
+    async def send(self, value):
+        self.chip.ui_in.value = value
+        self.bus.set(T.HOST_GO_BIT, 1)
+        await T.wait_host_status(self.chip, 1, max_cycles=self.max_wait, what="(IN ack)")
+        self.bus.set(T.HOST_GO_BIT, 0)
+        await T.wait_host_status(self.chip, 0, max_cycles=self.max_wait, what="(IN done)")
+
+    async def recv(self):
+        self.bus.set(T.HOST_GO_BIT, 1)
+        await T.wait_host_status(self.chip, 1, max_cycles=self.max_wait, what="(OUT ready)")
+        v = int(self.chip.uo_out.value)
+        self.bus.set(T.HOST_GO_BIT, 0)
+        await T.wait_host_status(self.chip, 0, max_cycles=self.max_wait, what="(OUT done)")
+        return v

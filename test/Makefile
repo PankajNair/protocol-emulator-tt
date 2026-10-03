@@ -80,4 +80,4 @@ random:
 # Board-level tests (tb_board.v): two chips on shared nets.
 .PHONY: board
 board:
-	$(MAKE) BOARD=yes COCOTB_TEST_MODULES=test_board,test_uart_selftest,test_uart_link,test_i2c
+	$(MAKE) BOARD=yes COCOTB_TEST_MODULES=test_board,test_uart_selftest,test_uart_link,test_i2c,test_spi

@@ -364,7 +364,22 @@ START hold 256 cycles (spec 235 / 200 / 13 / 200); at 400 kHz 70 / 52 /
 61 / 61 (spec 65 / 30 / 5 / 30). Checked the timing checks can fail: an
 SCL low of 150 cycles is rejected (`SCL low 150 < tLOW 235`).
 
-Found while building it: `board.drive_net` did a read-modify-write of the
+SPI (`firmware/protocols/spi.asm`, `test/test_spi.py`): mode 0, MSB
+first, full duplex, against an independent slave model selected by CS
+that samples MOSI on SCLK rise and shifts MISO on fall -- a master on the
+wrong edge or bit order gets the wrong bytes (checked: sampling MISO
+after the falling edge turns 0x10 0x02 0x7F 0xC3 0xA5 into 0x20 0x04 0xFF
+0x87 0x4B). The model also checks SCLK idle low at CS fall, no SCLK
+edges while CS is high, CS released only on byte boundaries, MOSI setup,
+and CS setup/hold. Four cases pass: single byte, 5 bytes in one
+transaction, two transactions, and the fastest SCLK (12-cycle halves,
+~2.08 MHz). Measured: SCLK halves exactly 25 (1 MHz) / 12 cycles, MOSI
+setup >= 19 / 6 cycles, CS setup >= 69 / 43, hold >= 53 / 40.
+
+All three baseline protocols (UART, I2C, SPI) now have firmware verified
+end to end on the RTL against independent models.
+
+Found while building I2C: `board.drive_net` did a read-modify-write of the
 external-driver registers, and cocotb applies writes at the end of the
 time step, so a second call in the same cycle (the slave driving SDA and
 stretching SCL together) silently undid the first. It now keeps a Python

@@ -24,7 +24,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 
 import test as T
 import test_uart as U
-from board import contention_nets, drive_net, init_board, net
+from board import HostPort, contention_nets, drive_net, init_board, net
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "firmware" / "isa"))
 import asm as assembler  # noqa: E402
@@ -185,26 +185,8 @@ class I2CSlave:
             prev_sda, prev_scl = sda, scl
 
 
-class Host:
-    """Host side of i2c.asm's lockstep protocol on chip A."""
-
-    def __init__(self, chip, ext, max_wait=120_000):
-        self.chip, self.bus, self.max_wait = chip, U.UioBus(chip, ext), max_wait
-
-    async def send(self, value):
-        self.chip.ui_in.value = value
-        self.bus.set(T.HOST_GO_BIT, 1)
-        await T.wait_host_status(self.chip, 1, max_cycles=self.max_wait, what="(IN ack)")
-        self.bus.set(T.HOST_GO_BIT, 0)
-        await T.wait_host_status(self.chip, 0, max_cycles=self.max_wait, what="(IN done)")
-
-    async def recv(self):
-        self.bus.set(T.HOST_GO_BIT, 1)
-        await T.wait_host_status(self.chip, 1, max_cycles=self.max_wait, what="(OUT ready)")
-        v = int(self.chip.uo_out.value)
-        self.bus.set(T.HOST_GO_BIT, 0)
-        await T.wait_host_status(self.chip, 0, max_cycles=self.max_wait, what="(OUT done)")
-        return v
+class Host(HostPort):
+    """i2c.asm's lockstep protocol on top of the shared host port."""
 
     async def write(self, addr7, data):
         """Returns per-step statuses: address, then one per data byte sent."""

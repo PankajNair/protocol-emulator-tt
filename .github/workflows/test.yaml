@@ -41,7 +41,7 @@ jobs:
           cd test
           python -m pytest test_golden_model_selfcheck.py test_assembler.py -q --junitxml=results_pytest.xml
 
-      - name: Board testbench (self-tests, UART loopback, two-chip UART link, I2C)
+      - name: Board testbench (self-tests, UART loopback, two-chip UART link, I2C, SPI)
         if: ${{ !cancelled() }}
         run: |
           cd test
