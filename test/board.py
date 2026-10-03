@@ -20,6 +20,7 @@ import test as T
 
 NONE = 0xF
 NOMINAL_PERIOD_PS = 20_000  # 50 MHz
+_CLOCKS: dict = {}  # chip name -> (start task, Clock) currently driving it
 
 
 class Chip:
@@ -40,14 +41,30 @@ class Chip:
     def start_clock(self, ppm: float = 0.0, phase_ps: int = 0):
         """Own clock: frequency `ppm` parts-per-million off nominal 50 MHz
         (positive = faster), first edge after `phase_ps`."""
-        period = round(NOMINAL_PERIOD_PS / (1 + ppm * 1e-6))
+        # cocotb's Clock needs an even period (equal high/low halves): nearest
+        # even ps, i.e. within 1 ps (50 ppm) of the requested frequency.
+        period = 2 * round(NOMINAL_PERIOD_PS / (1 + ppm * 1e-6) / 2)
         self.period_ps = period
+        # One clock per chip signal: re-starting (several runs inside one
+        # cocotb test) must stop the previous one, or two Clock tasks drive
+        # the same signal -- the leak fixed in test_random.py (0636edf),
+        # here producing garbage edges and phase-dependent failures.
+        # cocotb 2.0's Clock.start() hands off to a simulator-level clock and
+        # returns, so cancelling a wrapper task does NOT stop it -- the old
+        # Clock object itself must be stopped.
+        old = _CLOCKS.pop(self.name, None)
+        if old is not None:
+            task, clock = old
+            if not task.done():
+                task.cancel()
+            clock.stop()
+        clock = Clock(self.clk, period, unit="ps")
 
         async def run():
             if phase_ps:
                 await Timer(phase_ps, unit="ps")
-            await Clock(self.clk, period, unit="ps").start()
-        cocotb.start_soon(run())
+            clock.start()
+        _CLOCKS[self.name] = (cocotb.start_soon(run()), clock)
 
     def connect(self, pin_to_net: dict[int, int]):
         """Attach pins to nets; pins not listed are unmapped."""

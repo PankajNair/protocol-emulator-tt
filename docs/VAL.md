@@ -326,5 +326,23 @@ patterns and checks each comes back on the same bit grid. Passes at
 as failures (the stuck-high case shows the 0xFF received on uo_out). The
 image is also the bring-up test for real silicon with a TX-RX jumper.
 
-Planned next on the board: a two-chip UART link across skewed clocks,
-then I2C (open-drain, clock stretching).
+Two-chip UART link (`test/test_uart_link.py`): chip A runs `uart.asm`,
+chip B runs `uart_rx.asm`, A.TX and B.RX on one pulled-up net, each chip
+on its own clock. One host feeds A, another collects from B,
+concurrently. CI checks the baseline plus B's clock at +-1% and +-2% off
+A's, each at three phases: all 8 payload bytes cross, no framing error,
+no driver fight. Measured limit (probe, not CI): B +5% OK / +6% framing
+errors, B -4% OK / -5% frames lost, phase-independent -- matching the
+single-chip margin found with the Python transmitter model, now with two
+real asynchronous clock domains. This complements the independent
+receiver/transmitter models rather than replacing them: two copies of
+our own firmware could share a wrong assumption and still agree.
+
+Found while building it: cocotb 2.0's Clock runs at simulator level, so
+re-starting a chip's clock inside one test left the old one driving the
+same signal; it surfaced as a phase-dependent failure only when a later
+run changed frequency. `board.Chip.start_clock` now stops the previous
+Clock object (cancelling the wrapper task isn't enough), and rounds the
+period to an even ps (cocotb rejects odd periods).
+
+Planned next on the board: I2C (open-drain, clock stretching).
