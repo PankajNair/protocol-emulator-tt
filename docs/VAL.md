@@ -22,6 +22,7 @@ without adding checking power.
 |---|---|---|---|
 | Directed | `test/test.py` (28 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
 | UART end-to-end | `test/test_uart.py` | Does the shipped UART firmware (`firmware/protocols/uart.asm` TX, `uart_rx.asm` RX, assembled by `firmware/isa/asm.py`) move bytes correctly on the real RTL? TX: Independent receiver model on the TX pin (start-edge detect, centre sampling, stop-bit check, re-arm after the stop sample), 115200 / 57600 / 9600 baud, per-edge timing deviation measured against docs/protocol_timing.md. RX: transmitter model on the RX pin, back-to-back frames, sender baud error +-2%, framing error + resync. | part of `make -C test` |
+| Board self-tests | `test/test_board.py` on `tb_board.v` | Does the two-chip board testbench resolve nets like real wires (floating = x, pull-ups, wired-AND, contention flagged), wire loopback correctly, and run each chip on its own clock? Checked before anything is built on it. | `make -C test board` |
 | Assembler | `test/test_assembler.py` (pytest) | Every mnemonic encodes identically to `isa_asm`; labels, `.equ`/`-D`, DELAY/WAIT cycle encoding, data region, error cases. | `pytest test/test_assembler.py` |
 | Random differential | `test/test_random.py` | Does every generated program agree with the golden model, instruction by instruction? | `make -C test random SEEDS=n` |
 | Golden self-check | `test/test_golden_model_selfcheck.py` | Does the golden model agree with the RTL-proven directed tests before being trusted as an oracle? | `pytest test/test_golden_model_selfcheck.py` |
@@ -299,3 +300,25 @@ hunting for the start edge, the frame after a framing error is misframed
 (0x7E received as 0xF3) because the line is still low.
 
 Not yet covered: SPI, I2C (firmware not written).
+
+## 13. Board testbench (loopback and chip-to-chip)
+
+`test/tb_board.v` instantiates two chips (A, B), each with its own clock
+and reset, and lets cocotb attach any chip pin to one of 8 nets at
+runtime (`board.Chip.connect`). A net resolves like a real wire: a 0
+driver wins, else a 1 driver, else the pull-up if the net has one, else
+it floats (x). A 0 and a 1 at once is contention: the net reads x and is
+recorded in `contention_seen`, so a driver fight fails a test instead of
+passing as a silent wired-AND. Unmapped pins behave like a lone TT pad
+(the chip reads back what it drives, else what cocotb sets). The
+testbench can also drive any net itself, for bus models.
+
+Clocks are independent: `Chip.start_clock(ppm, phase_ps)` sets each
+chip's frequency offset (positive = faster) and phase.
+`test/test_board.py` checks all of this on its own first. The
+single-chip `tb.v` is unchanged, because the TinyTapeout gate-level flow
+depends on it; board tests run RTL only.
+
+Planned on top of it: a UART loopback self-test firmware (doubles as a
+silicon bring-up check with a TX-RX jumper), a two-chip UART link across
+skewed clocks, then I2C (open-drain, clock stretching).

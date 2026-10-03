@@ -49,9 +49,17 @@ ifeq ($(SIM),verilator)
 COMPILE_ARGS		+= --timing
 endif
 
-# Include the testbench sources:
+# Include the testbench sources. BOARD=yes builds the two-chip board
+# testbench (tb_board.v: loopback / chip-to-chip on shared nets) in its
+# own build dir; default is the single-chip TinyTapeout tb.v.
+ifeq ($(BOARD),yes)
+VERILOG_SOURCES += $(PWD)/tb_board.v
+TOPLEVEL = tb_board
+SIM_BUILD = sim_build/board
+else
 VERILOG_SOURCES += $(PWD)/tb.v
 TOPLEVEL = tb
+endif
 
 # List test modules to run, separated by commas and without the .py suffix:
 # test: directed RTL tests; test_uart: end-to-end UART firmware on the RTL
@@ -68,3 +76,8 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 .PHONY: random
 random:
 	$(MAKE) COCOTB_TEST_MODULES=test_random
+
+# Board-level tests (tb_board.v): two chips on shared nets.
+.PHONY: board
+board:
+	$(MAKE) BOARD=yes COCOTB_TEST_MODULES=test_board
