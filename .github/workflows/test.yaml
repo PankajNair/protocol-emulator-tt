@@ -26,7 +26,7 @@ jobs:
       # Every verification step runs even if an earlier one failed
       # (!cancelled()), so one run reports everything that's broken.
       # Each step saves its own results_<name>.xml for the summary.
-      - name: Directed tests
+      - name: Directed tests + UART end-to-end
         run: |
           cd test
           make clean
@@ -35,11 +35,11 @@ jobs:
           # make can succeed with a failing test, so check the results file
           ! grep failure results_directed.xml
 
-      - name: Golden-model self-check
+      - name: Python unit tests (golden-model self-check, assembler)
         if: ${{ !cancelled() }}
         run: |
           cd test
-          python -m pytest test_golden_model_selfcheck.py -q --junitxml=results_selfcheck.xml
+          python -m pytest test_golden_model_selfcheck.py test_assembler.py -q --junitxml=results_pytest.xml
 
       - name: Hierarchy smoke test
         if: ${{ !cancelled() }}

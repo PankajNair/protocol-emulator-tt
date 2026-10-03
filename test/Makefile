@@ -54,7 +54,8 @@ VERILOG_SOURCES += $(PWD)/tb.v
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:
-COCOTB_TEST_MODULES = test
+# test: directed RTL tests; test_uart: end-to-end UART firmware on the RTL
+COCOTB_TEST_MODULES = test,test_uart
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim

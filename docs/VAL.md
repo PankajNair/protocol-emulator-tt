@@ -21,6 +21,8 @@ without adding checking power.
 | Suite | File | What it asks | Run |
 |---|---|---|---|
 | Directed | `test/test.py` (28 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
+| UART end-to-end | `test/test_uart.py` | Does the shipped UART firmware (`firmware/protocols/uart.asm`, assembled by `firmware/isa/asm.py`) transmit host bytes correctly on the real RTL? Independent receiver model on the TX pin (start-edge detect, centre sampling, stop-bit check, re-arm after the stop sample), 115200 / 57600 / 9600 baud, per-edge timing deviation measured against docs/protocol_timing.md. | part of `make -C test` |
+| Assembler | `test/test_assembler.py` (pytest) | Every mnemonic encodes identically to `isa_asm`; labels, `.equ`/`-D`, DELAY/WAIT cycle encoding, data region, error cases. | `pytest test/test_assembler.py` |
 | Random differential | `test/test_random.py` | Does every generated program agree with the golden model, instruction by instruction? | `make -C test random SEEDS=n` |
 | Golden self-check | `test/test_golden_model_selfcheck.py` | Does the golden model agree with the RTL-proven directed tests before being trusted as an oracle? | `pytest test/test_golden_model_selfcheck.py` |
 | Hierarchy smoke | `test/test_hierarchy_smoke.py` | Does hierarchical signal access (the scoreboard's foundation) still work on this simulator? | `make -C test COCOTB_TEST_MODULES=test_hierarchy_smoke` |
@@ -261,3 +263,23 @@ isn't enabled on this repo; unrelated to the design.
 
 Not done: hardening runs only in the GDS workflow (dispatched manually),
 and the random/profile regressions don't run at gate level.
+
+## 12. Protocol-level verification
+
+`test/test_uart.py` runs the real UART transmitter firmware end to end:
+the host hands bytes over through the IN handshake, the firmware
+bit-bangs 8N1 frames on pin 0, and an independent receiver model decodes
+the pin as a real UART would. It also checks docs/protocol_timing.md's
+timing table against the RTL instead of trusting it:
+
+| Baud | Predicted per-bit error | Measured worst edge deviation |
+|---|---|---|
+| 115200 | 0 (exact) | 0.000% |
+| 57600 | 0.92% | 0.883% |
+| 9600 | 0.23% (data bits) | 0.288% (start bit carries -15 cycles) |
+
+Frames decode correctly at all three. Found while writing it: a receiver
+must re-arm right after the stop bit's centre sample, not after 10 full
+bit times -- at 9600 the transmitter runs 0.23% fast per bit, so the next
+start edge arrives inside a naive 10-bit window. Not yet covered: UART RX,
+SPI, I2C (firmware not written).

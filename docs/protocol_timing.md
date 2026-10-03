@@ -84,3 +84,12 @@ that's actually documented and it's what `src/config.json`'s
 flow-validation runs. Using anything higher here would be an
 unverified guess; if a specific chip run turns out to tolerate more,
 this budget only gets *more* comfortable, never less.
+
+## Measured on the RTL
+
+The UART rows above are now checked end to end, not just computed:
+`test/test_uart.py` runs `firmware/protocols/uart.asm` on the RTL and
+measures every TX edge against the ideal bit grid. 115200: exact (0.000%).
+57600: 0.883% worst edge deviation (predicted 0.92%). 9600: 0.288%
+(predicted 0.23% for data bits; the start bit's own DELAY rounding adds
+the difference). All within UART tolerance; frames decode correctly.
