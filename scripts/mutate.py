@@ -16,7 +16,8 @@ subagent: a subagent must never grade its own output.
 
 Per mutant: save original text, apply edits (all-or-nothing; a missing
 old_string = "error", never silently skipped), rebuild, run directed
-suite + <seeds> random differential seeds, classify killed/survived,
+suite + <seeds> random differential seeds + the board testbench
+(protocol firmware against slave models), classify killed/survived,
 then UNCONDITIONALLY restore in try/finally -- a crash mid-mutant must
 never leave src/ mutated. One final rebuild on the restored tree.
 
@@ -213,13 +214,22 @@ def rebuild() -> bool:
     return True
 
 
-def run_fast_sample(seeds: int) -> tuple[bool, str]:
+def run_fast_sample(seeds: int, board: bool = True) -> tuple[bool, str]:
+    """Directed (incl. UART end-to-end), random differential, and -- unless
+    board=False -- the board testbench (loopback self-test, two-chip UART
+    link, I2C, SPI against slave models). Each suite's verdict is
+    reported; a mutant survives only if all of them pass."""
+    results = {}
     d = _bash("rm -f results.xml && make")
-    directed_ok = not _failed(d)
+    results["directed"] = not _failed(d)
     r = _bash(f"rm -f results.xml && SEEDS={seeds} make random")
-    seeds_ok = not _failed(r)
-    detail = f"directed={'PASS' if directed_ok else 'FAIL'} seeds={'PASS' if seeds_ok else 'FAIL'}"
-    return directed_ok and seeds_ok, detail
+    results["seeds"] = not _failed(r)
+    if board:
+        # Separate toplevel and build dir: rebuild it from the (mutated) src.
+        b = _bash("rm -rf sim_build/board results.xml && make board")
+        results["board"] = not _failed(b)
+    detail = " ".join(f"{k}={'PASS' if v else 'FAIL'}" for k, v in results.items())
+    return all(results.values()), detail
 
 
 def apply_edits(path: Path, edits: list[tuple[str, str]]) -> tuple[bool, str]:
@@ -241,6 +251,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, default=DEFAULT_SEEDS)
     ap.add_argument("--only", type=str, default=None, help="comma-separated mutant ids")
+    ap.add_argument("--no-board", action="store_true",
+                    help="skip the board testbench suite (faster, weaker)")
     args = ap.parse_args()
     only = {int(x) for x in args.only.split(",")} if args.only else None
     mutants = [m for m in MUTANTS if only is None or m["id"] in only]
@@ -252,10 +264,11 @@ def main() -> int:
               "Commit or stash first.", file=sys.stderr)
         return 1
 
-    print(f"[mutate] baseline check (directed + SEEDS={args.seeds}) ...", flush=True)
+    suites = f"directed + SEEDS={args.seeds}" + ("" if args.no_board else " + board")
+    print(f"[mutate] baseline check ({suites}) ...", flush=True)
     if not rebuild():
         return 1
-    ok, detail = run_fast_sample(args.seeds)
+    ok, detail = run_fast_sample(args.seeds, board=not args.no_board)
     if not ok:
         print(f"ERROR: baseline fails ({detail}) -- aborting; every verdict would be "
               "meaningless against a failing baseline.", file=sys.stderr)
@@ -276,7 +289,7 @@ def main() -> int:
             if not rebuild():
                 results.append(_row(m, "error", "rebuild failed with mutant applied"))
                 continue
-            passed, detail = run_fast_sample(args.seeds)
+            passed, detail = run_fast_sample(args.seeds, board=not args.no_board)
             status = "survived" if passed else "killed"
             print(f"           -> {status.upper()} ({detail})", flush=True)
             results.append(_row(m, status, detail))

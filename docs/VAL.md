@@ -134,7 +134,18 @@ Runs in the parent session only, never delegated.
 | 16 | pin_ctrl.v | runtime SET HOST_STATUS never reaches pin | targeted hypothesis survivor |
 | 17 | pin_ctrl.v | `host_go_fall` misfires, boot ack drops early | blind-sample survivor |
 
-Each suite run has a 300s timeout (a hang counts as killed) and the script refuses to run on a dirty `src/`. Current score: 17/17. Mutants 1-14 were also 14/14 under each stimulus profile
+Suites per mutant: directed (incl. UART end-to-end), random
+differential, and the board testbench (loopback self-test, two-chip UART
+link, I2C, SPI against slave models; skip with `--no-board`). Each suite
+run has a 300s timeout (a hang counts as killed) and the script refuses
+to run on a dirty `src/`.
+
+Per-suite kills (17 mutants): directed 13, random 10, board 7 (#3, #7,
+#9, #14-17). No mutant is killed by the board suite alone -- today it is
+a second, protocol-level line of defense, not a gap-closer. #2 (one
+synchronizer flop dropped) passes the board suite: the protocol
+tests' timing margins absorb one extra cycle of input latency, and only
+the cycle-exact random scoreboard catches it. Current score: 17/17. Mutants 1-14 were also 14/14 under each stimulus profile
 (`STIM_PROFILE=x python3 scripts/mutate.py`).
 
 History worth keeping: the first run scored 11/13. Survivors #10 and #13
