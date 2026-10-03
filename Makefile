@@ -4,9 +4,17 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate
+.PHONY: formal vacuity coverage coverage-gate mutate signoff
 
 MUTATE_SEEDS ?= 50
+
+# ---------------------------------------------------------------------------
+# signoff: every gate (directed, pytest, board, coverage gates incl.
+#          profiles, determinism, formal, vacuity, mutation) -> one verdict
+#          and signoff_report.json. The definition of "stable": docs/VAL.md.
+# ---------------------------------------------------------------------------
+signoff:
+	python3 scripts/signoff.py --mutate-seeds $(MUTATE_SEEDS)
 
 # ---------------------------------------------------------------------------
 # mutate: mutation-testing gate (scripts/mutate.py) -- parent session only,

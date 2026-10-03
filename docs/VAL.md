@@ -407,3 +407,54 @@ external-driver registers, and cocotb applies writes at the end of the
 time step, so a second call in the same cycle (the slave driving SDA and
 stretching SCL together) silently undid the first. It now keeps a Python
 shadow of the driver state.
+
+## 14. Sign-off and the definition of "stable"
+
+`make signoff` (`scripts/signoff.py`) runs every gate and writes
+`signoff_report.json`; it exits non-zero if any gate fails.
+
+| Gate | Pass criterion |
+|---|---|
+| `directed` | `make -C test -B`: all directed + UART end-to-end tests pass |
+| `pytest` | golden-model self-check + assembler unit tests pass |
+| `board` | `make -C test board`: loopback, two-chip link, I2C, SPI pass |
+| `cov_default` | `make coverage-gate`, 100 seeds |
+| `cov_<profile>` | `make coverage-gate STIM_PROFILE=<profile>`, 50 seeds, each of the 4 profiles |
+| `determinism` | 25 random seeds run twice give byte-identical per-seed coverage JSON |
+| `formal` | `make formal`: every props file PASS |
+| `vacuity` | `make vacuity`: every cover reached |
+| `mutation` | `scripts/mutate.py` (directed + random + board), score >= threshold, nothing errored |
+
+The determinism gate exists because a failing random seed is only useful if
+it replays: anything that leaks wall-clock time, global RNG state or
+iteration-order dependence into stimulus shows up there first.
+
+The report says `STABLE` only when every gate ran and passed on a tree with
+no uncommitted changes under `src/ test/ scripts/ formal/ firmware/`.
+`--skip` is for iterating locally; a skipped gate makes the run partial,
+not a sign-off.
+
+**The environment counts as stable when all of these hold:**
+
+1. `make signoff` reports `STABLE` on 3 consecutive nightly runs
+   (`.github/workflows/nightly.yaml`) with no change to the gates in between.
+2. The per-push `test` workflow is green on the same commit.
+3. The `gds` workflow (hardening, precheck, gate-level test) is green on
+   the latest RTL change.
+4. No open harness or model bug from the scrub list.
+
+Any change to `src/` resets the count. New work that depends on stability
+(stretch protocols, a second N-version model) waits for it.
+
+Nightly: `.github/workflows/nightly.yaml` runs `make signoff` at 03:00 UTC
+and on manual dispatch, with OSS CAD Suite for yosys/yosys-smtbmc/z3, and
+uploads both JSON reports. On this fork, scheduled runs only fire once
+workflows are enabled in the repo's Actions tab; until then dispatch it
+with `gh workflow run nightly.yaml -R PankajNair/protocol-emulator-tt`.
+
+Scrub items cleared without a code change: `test.py`'s `_ensure_clock` was
+suspected of stacking clocks across tests like `fast_boot` and
+`board.start_clock` did. A probe showed 50 edges/us within a test after
+a second call, 0 edges/us at the start of the next test, and 49 after
+`_ensure_clock`. cocotb stops the clock between tests and the helper
+never starts a second one, so it does not stack.

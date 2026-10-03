@@ -1,0 +1,52 @@
+name: nightly-signoff
+# Every verification gate, including the ones too slow or tool-heavy for the
+# per-push test workflow (formal, vacuity, full mutation, determinism).
+# The pass criteria are scripts/signoff.py; "stable" is defined in
+# docs/VAL.md section 14.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  signoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install iverilog
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      # yosys, yosys-smtbmc and z3 for the formal and vacuity gates
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v3
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python packages
+        run: pip install -r test/requirements.txt
+
+      # OSS CAD Suite ships its own iverilog and python; pin the system ones
+      # first on PATH so cocotb builds against the interpreter it was
+      # installed into.
+      - name: Sign-off
+        run: |
+          export PATH="$(dirname "$(which python)"):/usr/bin:$PATH"
+          make signoff
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: signoff-report
+          path: |
+            signoff_report.json
+            mutation_results.json
+          if-no-files-found: warn

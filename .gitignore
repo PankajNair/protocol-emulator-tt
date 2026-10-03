@@ -15,4 +15,5 @@ test/regression_artifacts/
 __pycache__/
 .venv/
 mutation_results.json
+signoff_report.json
 test/results_*.xml

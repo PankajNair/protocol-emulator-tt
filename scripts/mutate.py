@@ -186,7 +186,10 @@ MUTANTS = [
 
 def _bash(cmd: str, timeout: int = SUITE_TIMEOUT_S) -> subprocess.CompletedProcess:
     # Own process group so a timeout kills make, vvp and all, not just bash.
-    pr = subprocess.Popen(["bash", "-c", f"source {VENV_BIN}/activate && {cmd}"], cwd=TEST_DIR,
+    # Use the local .venv when there is one (cocotb needs Python <= 3.13);
+    # in CI the tools are installed in the job's own Python instead.
+    activate = f"source {VENV_BIN}/activate && " if (VENV_BIN / "activate").exists() else ""
+    pr = subprocess.Popen(["bash", "-c", f"{activate}{cmd}"], cwd=TEST_DIR,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                           start_new_session=True)
     try:
