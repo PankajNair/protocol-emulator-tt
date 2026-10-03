@@ -19,6 +19,13 @@ the brief.
   receive buffer: on back-to-back frames the host must take each byte
   within ~0.4 bit. Verified by `test/test_uart.py` (115200, 9600, sender
   baud error +-2%, framing error + resync).
+- `protocols/uart_selftest.asm` -- UART loopback self-test: with TX
+  jumpered to RX, sends 8 patterns and checks each comes back (data and
+  stop bit) on the same bit grid. Pass: HOST_STATUS=1, uo_out=0xA5. Fail:
+  HOST_ERROR=1, uo_out = byte received. Doubles as the silicon bring-up
+  check. Verified on the board testbench (`test/test_uart_selftest.py`),
+  including that a missing jumper and a stuck-high RX are reported as
+  failures.
 - `protocols/spi.asm`, `i2c.asm` -- not written yet.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 

@@ -319,6 +319,12 @@ chip's frequency offset (positive = faster) and phase.
 single-chip `tb.v` is unchanged, because the TinyTapeout gate-level flow
 depends on it; board tests run RTL only.
 
-Planned on top of it: a UART loopback self-test firmware (doubles as a
-silicon bring-up check with a TX-RX jumper), a two-chip UART link across
-skewed clocks, then I2C (open-drain, clock stretching).
+Loopback self-test (`firmware/protocols/uart_selftest.asm`,
+`test/test_uart_selftest.py`): one chip, TX and RX on one net, sends 8
+patterns and checks each comes back on the same bit grid. Passes at
+115200 and 57600; a missing jumper and an RX stuck high are both reported
+as failures (the stuck-high case shows the 0xFF received on uo_out). The
+image is also the bring-up test for real silicon with a TX-RX jumper.
+
+Planned next on the board: a two-chip UART link across skewed clocks,
+then I2C (open-drain, clock stretching).

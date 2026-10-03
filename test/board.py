@@ -59,10 +59,12 @@ class Chip:
     def pin_driven(self, pin: int) -> int:
         return (int(self.uio_oe.value) >> pin) & 1
 
-    async def boot(self, words, ui_in_for_run=None) -> int:
+    async def boot(self, words=None, ui_in_for_run=None, image=None) -> int:
         """Reset + LOAD-mode boot + START pulse, same sequence as
-        test.reset_and_boot but on this chip's own clock. Returns the
-        ext_in state (HOST_GO/START low)."""
+        test.reset_and_boot but on this chip's own clock. Pass program
+        `words`, or a full boot `image` (bytes, e.g. asm.Program.image()
+        including the data region). Returns the ext_in state
+        (HOST_GO/START low)."""
         self.ui_in.value = 0
         self.uio_in.value = 0
         self.rst_n.value = 0
@@ -70,7 +72,7 @@ class Chip:
         self.rst_n.value = 1
         await ClockCycles(self.clk, 5)
         ext = 0
-        for b in T.asm.to_bytes(words):
+        for b in (image if image is not None else T.asm.to_bytes(words)):
             ext = await T.load_byte(self, b, ext)
         if ui_in_for_run is not None:
             self.ui_in.value = ui_in_for_run

@@ -113,7 +113,7 @@ def test_program_too_long():
         asm.assemble("NOP\n" * 257)
 
 
-@pytest.mark.parametrize("name", ["uart.asm", "uart_rx.asm"])
+@pytest.mark.parametrize("name", ["uart.asm", "uart_rx.asm", "uart_selftest.asm"])
 def test_shipped_firmware_assembles(name):
     """The shipped protocol firmware must always assemble cleanly at its
     default baud (115200 -- exact, no warnings)."""
