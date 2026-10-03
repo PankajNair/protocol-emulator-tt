@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger
 
 MUTATE_SEEDS ?= 50
 
@@ -15,6 +15,12 @@ MUTATE_SEEDS ?= 50
 # ---------------------------------------------------------------------------
 signoff:
 	python3 scripts/signoff.py --mutate-seeds $(MUTATE_SEEDS)
+
+# ledger: per-agent run counts, acceptance, scope violations, bugs found
+#         (ledger/runs.jsonl; workflow in docs/VAL.md section 15)
+ledger:
+	python3 scripts/ledger.py stats
+	python3 scripts/ledger.py show -n 10
 
 # ---------------------------------------------------------------------------
 # mutate: mutation-testing gate (scripts/mutate.py) -- parent session only,

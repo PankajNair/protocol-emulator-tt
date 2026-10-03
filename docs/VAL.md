@@ -458,3 +458,57 @@ suspected of stacking clocks across tests like `fast_boot` and
 a second call, 0 edges/us at the start of the next test, and 49 after
 `_ensure_clock`. cocotb stops the clock between tests and the helper
 never starts a second one, so it does not stack.
+
+## 15. Agent run ledger
+
+`ledger/runs.jsonl` is the append-only record of every agent run, written by
+`scripts/ledger.py` from the parent session (agents never write it). It is
+what the agent metrics are computed from, and it turns "the gates passed"
+from a claim in a commit message into recorded exit codes.
+
+```
+RUN=$(python3 scripts/ledger.py start --agent stimulus-gen \
+        --contract test/stim/AGENT_CONTRACT.md --task "..." [--prompt-file p.md])
+# ... run the agent ...
+python3 scripts/ledger.py gate $RUN --name seeds -- \
+        bash -c 'make -C test random SEEDS=200 && ! grep -q failure test/results.xml'
+python3 scripts/ledger.py gate $RUN --signoff        # after make signoff
+python3 scripts/ledger.py finish $RUN --verdict accepted|rejected --reason "..." \
+        [--commit SHA] [--bugs-found "..."]
+make ledger                                          # stats + recent runs
+```
+
+Each record holds:
+- the agent, plus hashes of its definition (`~/.claude/agents/<agent>.md`)
+  and of its contract, so results can be split by prompt version;
+- the task, plus the full prompt when `--prompt-file` is given (copied to
+  `ledger/prompts/`);
+- the base commit and the files the run changed;
+- any scope violations, the gates with their real exit codes, the verdict
+  and reason, the commit and the bugs found.
+
+`start` snapshots the working tree, so files that were already dirty
+don't count against the agent unless they change again.
+
+`finish` refuses `accepted` when:
+- no gate was recorded;
+- any gate failed;
+- a changed file is outside the contract's `write_scope` or under
+  `protected_paths`.
+
+`--override REASON` records a deliberate exception instead. `gate --signoff`
+refuses a `signoff_report.json` older than the run's start.
+
+cocotb's `make` can exit 0 with failing tests, so a simulation gate must
+also check `results.xml`, as in the example above.
+
+Backfill: the 11 agent commits made before the ledger existed are recorded
+with `"source": "backfill"`:
+- 4 stimulus-gen;
+- 1 coverage-closure;
+- 6 assertion-formal.
+
+They are reconstructed from git: verdict `accepted`, no gate records, no
+per-file scope check (those commits mix agent output with parent wiring).
+Rejected attempts from that period weren't kept, so the acceptance rates
+in `make ledger` only mean something for live runs.
