@@ -44,6 +44,14 @@ elaborated on this yosys build).
   own header and `formal/AGENT_CONTRACT.md` for the discipline this
   followed.
 
+- **`pin_ctrl.v` synchronizer depth -- done, proven.**
+  `agent_pin_ctrl_sync_depth_props.v` (assertion-formal agent, ledger run
+  20261004-092239): every consumer of ui_in/uio_in sees exactly the
+  2-cycle-old value -- `ui_in_sync`, the `pin_read` tap (WAIT/INB), the
+  START/HOST_GO edge outputs -- plus the post-reset window. 66/66
+  covers. Fails on a 1-flop `pin_read` tap and on an extra flop in both
+  paths (the common-mode change a sim-calibrated `SYNC_DELAY` can't see).
+
 - **`pin_ctrl.v` pin direction + uio[6] contention gate -- done, proven.**
   `agent_pin_ctrl_direction_props.v` (assertion-formal agent, gated in
   the parent session): no uio[6] drive in LOAD or before a real START

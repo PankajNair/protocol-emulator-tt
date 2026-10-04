@@ -183,6 +183,7 @@ docstring.
 | `agent_core_reset_props.v` | `protocol_cpu_core`: known state on the first cycle after any (incl. mid-trace) reset; nothing executes, drives pins or writes memory before START except host boot writes; first fetch byte 0; no leakage from a DELAY, blocked WAIT, FETCH_HI or pending LOAD/LOADX writeback interrupted by reset (a cover per scenario) | proven, 22/22 covers. Scratch mutants (dropped reset, surviving writeback, reset into FETCH_LO, regfile without reset) each fail |
 | `agent_core_illegal_opcode_props.v` | `protocol_cpu_core`: illegal_op_flag rises only after a reserved-opcode commit, always rises after one, sticky until reset; reserved opcode is a true NOP (no mem/pin/regfile write, PC+1, other state unchanged). Opcode taken from `mem_rdata` at FETCH_HI->EXECUTE, not core.v's decode | proven, 9/9 covers. Agent scratch mutants (#8, flag never set, LDI also sets) each fail |
 | `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model; output VALUES: `uio_out[5]` always the last value written to pin 5 (LOAD ack and runtime), `uio_out[6]` the latched HOST_ERROR once its gate opens, protocol pins drive their last written value (0 in open-drain) | proven, 47/47 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
+| `agent_pin_ctrl_sync_depth_props.v` | `pin_ctrl`: every consumer of an external input sees exactly the value from 2 cycles earlier (expected values rebuilt from ports only): all 8 `ui_in_sync` bits, the `pin_read` tap feeding WAIT/INB (pin_index taken in the current cycle), the START/HOST_GO edge outputs with their `mode_load` gating, and the post-reset window while the flops still hold 0 | proven, 66/66 covers. Agent mutants (pin_read on ff1, extra flop on both paths, edge detectors on ff1, ui_in_sync on ff1) each fail, also with the reset-phase asserts removed; parent re-ran the first two independently on full-repo copies |
 
 ## 7. Golden model
 
@@ -612,7 +613,15 @@ The round found two real gaps in the live environment:
   both. Fixed: `test_shift_vacated_bit_is_zero` (RTL) and
   `test_shift_vacated_bit_is_zero_not_rotated` (model). The model test
   fails against the planted rotating model.
-- `SYNC_DELAY` is calibrated from simulation, so a change that shifted
-  *both* synchronizer paths equally would be absorbed silently. Open;
-  a directed or formal check of absolute synchronizer depth would close
-  it.
+- `SYNC_DELAY` was calibrated from simulation, so nothing pinned the
+  absolute synchronizer depth. A mutant with an extra flop on both paths
+  and `SYNC_DELAY` recalibrated to 4 did fail the random regression, but
+  only incidentally, through `fast_boot`'s fixed START hold window and
+  then cycle counts. Closed with two independent checks:
+  - The directed test `test_sync_depth_matches_harness_sync_delay`
+    measures the port's own lag (1) and the synchronized lag (3) under
+    the harness's read pattern. It asserts a depth of exactly 2 on the
+    ui and uio paths and that `SYNC_DELAY` equals the measured lag. It
+    fails on both the `SYNC_DELAY=2` mutant and the common-mode mutant.
+  - `formal/agent_pin_ctrl_sync_depth_props.v` proves the 2-cycle depth
+    for every consumer, including the `pin_read` tap.

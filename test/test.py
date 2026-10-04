@@ -465,6 +465,62 @@ async def test_shift_vacated_bit_is_zero(dut):
     dut._log.info("SHIFT fills the vacated bit with 0 in both directions")
 
 
+@cocotb.test(skip=GL)  # reads the synchronizer flops directly
+async def test_sync_depth_matches_harness_sync_delay(dut):
+    """Pins io_stimulus.SYNC_DELAY to the RTL's synchronizer depth.
+
+    SYNC_DELAY (3) is measured, not derived: 2 flops (docs/architecture.md
+    Pin map) plus 1 cycle from how cocotb lands a write made right after
+    RisingEdge. Calibrated alone, it would silently follow a change that
+    altered BOTH synchronizer paths. Here each lag is measured with the
+    harness's own pattern (drive right after RisingEdge, read right after
+    each later RisingEdge), and the raw port's own lag is measured the
+    same way, so the difference is the flop depth with the cocotb
+    offset cancelled out:
+      lag(sync) - lag(port) == 2   (absolute depth, both ui and uio)
+      lag(sync) == SYNC_DELAY      (the harness constant matches it)
+    The formal props in formal/agent_pin_ctrl_sync_depth_props.v prove
+    the same depth for every consumer, pin_read included."""
+    from io_stimulus import SYNC_DELAY
+
+    _ensure_clock(dut)
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
+    pc = dut.user_project.u_pin_ctrl
+
+    async def lag(drive, read, value):
+        await RisingEdge(dut.clk)
+        drive(value)
+        for k in range(10):
+            if k and int(read()) == value:
+                return k
+            await RisingEdge(dut.clk)
+        assert False, f"{value:#x} never appeared"
+
+    def set_ui(v):
+        dut.ui_in.value = v
+
+    def set_uio(v):
+        dut.uio_in.value = v
+
+    # uio values keep bits 4 (HOST_GO) and 6 (START) low
+    port_ui = await lag(set_ui, lambda: dut.ui_in.value, 0xA5)
+    sync_ui = await lag(set_ui, lambda: pc.ui_in_ff2.value, 0x5A)
+    port_uio = await lag(set_uio, lambda: dut.uio_in.value, 0xA5)
+    sync_uio = await lag(set_uio, lambda: pc.uio_in_ff2.value, 0x8A)
+    dut._log.info(f"lags: ui port={port_ui} sync={sync_ui}; uio port={port_uio} sync={sync_uio}; "
+                  f"SYNC_DELAY={SYNC_DELAY}")
+    assert sync_ui - port_ui == 2, f"ui_in synchronizer depth {sync_ui - port_ui}, spec says 2"
+    assert sync_uio - port_uio == 2, f"uio_in synchronizer depth {sync_uio - port_uio}, spec says 2"
+    assert sync_ui == sync_uio == SYNC_DELAY, (
+        f"io_stimulus.SYNC_DELAY={SYNC_DELAY} but measured lag ui={sync_ui} uio={sync_uio}")
+
+
 @cocotb.test()
 async def test_testbit(dut):
     """TEST-bit reads a register bit into the shared flag; a following
