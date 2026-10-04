@@ -88,7 +88,8 @@ def tree_snapshot(tree: Path) -> dict[str, str | None]:
     repo, e.g. a benchmark case), hashed -- no git needed."""
     return {str(f.relative_to(tree)): sha256(f) for f in sorted(tree.rglob("*"))
             if f.is_file() and not (set(f.relative_to(tree).parts) & TREE_SKIP)
-            and f.suffix not in (".fst", ".vcd") and not f.name.startswith("results")}
+            and f.suffix not in (".fst", ".vcd") and not f.name.startswith("results")
+            and f.name != ".triage.lock"}
 
 
 def parse_contract(path: Path) -> dict:

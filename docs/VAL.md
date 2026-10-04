@@ -586,4 +586,33 @@ round also found:
   (fixed with `--exclude-commit` and `--tree`).
 
 That round ran before the comment scrub, so treat it as an upper bound.
-The next round runs on scrubbed trees.
+
+Round 2 (2026-10-04, scrubbed trees, ledger in `--tree` mode): again
+7/7 classification, 7/7 culprit file, all at high confidence, every
+replay reproduced, no scope violations. Each verdict rests on
+discriminating evidence rather than comments:
+- INB: a bit-0 control on the same pin and cycle passes.
+- SHIFT: the golden model run alone gives 0x01 -> 128.
+- DELAY: `DELAY 0` correct, `DELAY 1` +1, in an IO-free program.
+- Synchronizer: the ui path validates `SYNC_DELAY` while the uio path is
+  one cycle fast. Both cycle counts are hand-derived from the raw
+  stimulus.
+- SYNC_DELAY: the IN value equals raw(t-3) against an exact 2-flop RTL.
+
+Honest limit: this repo records correct values in several places
+(`docs/VAL.md`, the stim contract, formal props headers, the model's
+docstring). So the DELAY and SYNC_DELAY cases still measure *regression*
+triage: code contradicting its own docs, which is also what a real
+revert looks like. The INB, CMP and SHIFT cases have no history
+anywhere and measure reasoning from the spec alone.
+
+The round found two real gaps in the live environment:
+- The golden-model self-check and the directed `test_shift` only
+  shifted values whose vacated bit was 0, so a rotating SHIFT passed
+  both. Fixed: `test_shift_vacated_bit_is_zero` (RTL) and
+  `test_shift_vacated_bit_is_zero_not_rotated` (model). The model test
+  fails against the planted rotating model.
+- `SYNC_DELAY` is calibrated from simulation, so a change that shifted
+  *both* synchronizer paths equally would be absorbed silently. Open;
+  a directed or formal check of absolute synchronizer depth would close
+  it.

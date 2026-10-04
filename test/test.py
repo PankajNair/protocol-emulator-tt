@@ -446,6 +446,26 @@ async def test_shift(dut):
 
 
 @cocotb.test()
+async def test_shift_vacated_bit_is_zero(dut):
+    """isa.md SHIFT row: the vacated bit is always 0 (no rotate). The
+    values in test_shift shift out a 0, so a rotate would pass there;
+    0x81 shifts out a 1 in both directions."""
+    prog = [
+        asm.ldi(0, 0x81),
+        asm.shift(0, asm.SHIFT_RIGHT),
+        asm.out(0),                      # expect 0x40, a rotate gives 0xC0
+        asm.ldi(1, 0x81),
+        asm.shift(1, asm.SHIFT_LEFT),
+        asm.out(1),                      # expect 0x02, a rotate gives 0x03
+        asm.halt(),
+    ]
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x40)
+    await run_to_value(dut, 0x02)
+    dut._log.info("SHIFT fills the vacated bit with 0 in both directions")
+
+
+@cocotb.test()
 async def test_testbit(dut):
     """TEST-bit reads a register bit into the shared flag; a following
     BEQ consumes it."""

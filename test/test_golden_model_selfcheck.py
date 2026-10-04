@@ -177,6 +177,20 @@ def test_shift_left_then_right_matches_directed_rtl_test():
     assert state.regs[1] == 64
 
 
+def test_shift_vacated_bit_is_zero_not_rotated():
+    """isa.md SHIFT row: vacated bit always 0, no rotate. 0x80 >> 1 and
+    0b11 << 1 can't tell a rotate from a shift (the bit shifted out is 0);
+    0x81 can -- a rotating model passed the test above (found by the
+    triage-debug agent on a planted model bug, docs/VAL.md section 16)."""
+    state = SequencerState.reset()
+    state, _ = step(state, asm.ldi(0, 0x81))
+    state, _ = step(state, asm.shift(0, asm.SHIFT_RIGHT))
+    assert state.regs[0] == 0x40
+    state, _ = step(state, asm.ldi(1, 0x81))
+    state, _ = step(state, asm.shift(1, asm.SHIFT_LEFT))
+    assert state.regs[1] == 0x02
+
+
 def test_testbit_matches_directed_rtl_test():
     """Ports test.py's test_testbit."""
     state = SequencerState.reset()
