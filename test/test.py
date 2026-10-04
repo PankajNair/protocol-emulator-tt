@@ -47,19 +47,28 @@ async def wait_host_status(dut, level: int, max_cycles: int = 200, what: str = "
     assert False, f"HOST_STATUS never reached {level} within {max_cycles} cycles {what}".rstrip()
 
 
-async def load_byte(dut, byte_val, uio_in_state):
+async def load_byte(dut, byte_val, uio_in_state, expect_echo=None):
     """One LOAD-mode boot write: host asserts HOST_GO, waits for the
     HOST_STATUS ack, then releases and waits for the ack to clear
     (docs/architecture.md Pipeline LOAD section's write-commit
     handshake) -- not a fixed cycle count, just level transitions.
     The ack must also HOLD until the host drops HOST_GO: the host is
     entitled to sample it late (architecture.md), so an ack that
-    withdraws early is a protocol violation, checked here."""
+    withdraws early is a protocol violation, checked here.
+
+    `expect_echo`: the uo_out address echo the spec says is "now
+    guaranteed valid" the moment the ack rises (architecture.md LOAD
+    section) -- checked right there, not after the handshake. An echo
+    that lagged the ack by one pulse passed every gate until the
+    red-team agent found it (docs/VAL.md section 17)."""
     dut.ui_in.value = byte_val
     uio_in_state |= 1 << HOST_GO_BIT
     dut.uio_in.value = uio_in_state
 
     await wait_host_status(dut, 1, what="(boot write ack)")
+    if expect_echo is not None:
+        echo = int(dut.uo_out.value)
+        assert echo == expect_echo, f"boot echo {echo:#x} at the ack, spec says {expect_echo:#x}"
     for _ in range(4):  # host deliberately slow to react; ack must persist
         await RisingEdge(dut.clk)
         assert host_status(dut) == 1, "boot write ack dropped while HOST_GO still high"
@@ -112,8 +121,9 @@ async def reset_and_boot(dut, words, ui_in_for_run=None):
     await ClockCycles(dut.clk, 5)
 
     uio_in_state = 0
-    for b in asm.to_bytes(words):
-        uio_in_state = await load_byte(dut, b, uio_in_state)
+    for k, b in enumerate(asm.to_bytes(words), start=1):
+        # echo = post-increment counter's low 8 bits (images < 1024 bytes)
+        uio_in_state = await load_byte(dut, b, uio_in_state, expect_echo=k & 0xFF)
 
     if ui_in_for_run is not None:
         dut.ui_in.value = ui_in_for_run
@@ -463,6 +473,33 @@ async def test_shift_vacated_bit_is_zero(dut):
     await run_to_value(dut, 0x40)
     await run_to_value(dut, 0x02)
     dut._log.info("SHIFT fills the vacated bit with 0 in both directions")
+
+
+@cocotb.test()
+async def test_delay_exp3_full_counter_width(dut):
+    """DELAY at its largest reach: 511 << 15 = 16,744,448 cycles (isa.md
+    DELAY row, "exponent=3 -> up to ~16.7M"). Until this test nothing
+    used an exponent-3 mantissa above 1, so a counter sized for WAIT's
+    smaller reach (20 bits) passed every gate -- found by the red-team
+    agent (docs/VAL.md section 17).
+    Two checks: the counter's first value after load is exactly N-1
+    (a one-cycle, width-independent check of the whole 24-bit range;
+    RTL only), and the DELAY hasn't ended 100k cycles in (pins only, so
+    it also runs on the gate-level netlist)."""
+    n = 511 << 15
+    prog = [asm.ldi(0, 0x11), asm.out(0), asm.delay(511, 3), asm.ldi(0, 0x22), asm.out(0), asm.halt()]
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x11, max_cycles=60)
+    if not GL:
+        cnt = dut.user_project.u_core.u_cycle_counter.count
+        for _ in range(20):
+            await RisingEdge(dut.clk)
+            if int(cnt.value) != 0:
+                break
+        assert int(cnt.value) == n - 1, f"counter loaded {int(cnt.value)}, expected {n - 1}"
+    for _ in range(10):
+        await ClockCycles(dut.clk, 10_000)
+        assert int(dut.uo_out.value) == 0x11, f"DELAY of {n} cycles ended within 100,000 cycles"
 
 
 @cocotb.test(skip=GL)  # reads the synchronizer flops directly

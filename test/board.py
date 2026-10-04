@@ -89,8 +89,8 @@ class Chip:
         self.rst_n.value = 1
         await ClockCycles(self.clk, 5)
         ext = 0
-        for b in (image if image is not None else T.asm.to_bytes(words)):
-            ext = await T.load_byte(self, b, ext)
+        for k, b in enumerate(image if image is not None else T.asm.to_bytes(words), start=1):
+            ext = await T.load_byte(self, b, ext, expect_echo=k & 0xFF)
         if ui_in_for_run is not None:
             self.ui_in.value = ui_in_for_run
         ext |= 1 << T.START_BIT

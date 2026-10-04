@@ -1,0 +1,14 @@
+{
+  "id": "rt01_counter_width",
+  "file": "io/cycle_counter.v",
+  "edits": [["reg [23:0] count;", "reg [19:0] count;"]],
+  "claim": "Shared DELAY/WAIT countdown counter sized for WAIT's max reach (~1,015,808 cycles fits 20 bits) instead of DELAY's: DELAY exponent=3 with mantissa >= 32 silently truncates and ends ~1M cycles early.",
+  "spec_ref": "docs/isa.md:Opcode table, DELAY row -- \"cycles = mantissa << (exponent*5) ... exponent=3 -> up to ~16.7M (~335ms @ 50MHz)\"",
+  "why_survives": {
+    "directed": "test_delay_timing uses only DELAY mantissa 0 and 6 at exponent 0.",
+    "random": "Default generator clamps DELAY to exponent 0/1 (mantissa <= 63 / <= 15). wide_timing (--full) emits exponent-3 DELAY only with mantissa 1 (32768 cycles, fits 20 bits) and exponent-2 with mantissa 1..4. WAIT's max timeout (31<<15) fits 20 bits, and wide WAITs resolve in a few cycles under the stimulus anyway.",
+    "board": "Protocol firmware uses exponent-0 DELAYs (<= ~250) and the I2C clock-stretch WAIT timeout 1<<15 = 32768, both fit 20 bits.",
+    "formal": "cycle_counter_timing_props catches early expiry only within BMC depth 20; truncated counts are always >= 32767 so expired never asserts early inside the window. core reset props 4b likewise only check DELAY occupancy within depth."
+  },
+  "witness": {"cocotb_test": "witness_rt01_counter_width.py", "board": false}
+}

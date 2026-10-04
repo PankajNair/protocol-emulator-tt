@@ -1,0 +1,19 @@
+{
+  "id": "rt02_echo_late",
+  "file": "cpu/core.v",
+  "edits": [
+    ["            boot_addr  <= boot_addr_next;\n            uo_out_reg <= boot_addr_next[7:0];\n            load_ack   <= 1'b1;",
+     "            boot_addr  <= boot_addr_next;\n            load_ack   <= 1'b1;"],
+    ["if (host_go_fall) load_ack <= 1'b0;",
+     "if (host_go_fall) begin\n              load_ack   <= 1'b0;\n              uo_out_reg <= boot_addr[7:0];\n            end"]
+  ],
+  "claim": "Boot address echo is updated when the write handshake completes (HOST_GO fall) instead of with the write, so while HOST_STATUS acks the k-th byte uo_out still shows k-1.",
+  "spec_ref": "docs/architecture.md:Pipeline/LOAD (boot) -- \"chip: (internally) sync HOST_GO, write byte, increment counter, update the uo_out echo, THEN assert HOST_STATUS / host: wait for HOST_STATUS=1 ... -> read uo_out, now guaranteed valid -> lower HOST_GO\"",
+  "why_survives": {
+    "directed": "test_boot_echo_and_saturation reads uo_out only after load_byte returns, i.e. after the ack has cleared, by which time the late echo has landed; every other directed test ignores the echo and uo_out is re-cleared at START.",
+    "random": "fast_boot pokes SRAM directly and never runs the per-byte LOAD handshake (out of the golden model's scope).",
+    "board": "Chip.boot uses the same load_byte helper and never reads the echo.",
+    "formal": "No props file constrains uo_out during LOAD; reset props check uo_out only at reset and after leaving LOAD."
+  },
+  "witness": {"cocotb_test": "witness_rt02_echo_late.py", "board": false}
+}

@@ -13,8 +13,8 @@ budget: "at most 8 candidates evaluated per invocation; run one eval at a time"
 Project notes (quirks a generic subagent can't know on its own):
 
 - **What already exists, so don't resubmit it.** Read
-  `scripts/mutate.py` MUTANTS: there are 17 curated mutants and all of
-  them are killed. `docs/VAL.md` section 5 also records a blind-mutation
+  `scripts/mutate.py` MUTANTS: there are 19 curated mutants (#18-19 came
+  from the first red-team pass) and all of them are killed. `docs/VAL.md` section 5 also records a blind-mutation
   sample.
 - **What the gates are.** `redteam_eval.py` runs these on a copy with the
   mutant applied:

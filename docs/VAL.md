@@ -145,7 +145,9 @@ Per-suite kills (17 mutants): directed 13, random 10, board 7 (#3, #7,
 a second, protocol-level line of defense, not a gap-closer. #2 (one
 synchronizer flop dropped) passes the board suite: the protocol
 tests' timing margins absorb one extra cycle of input latency, and only
-the cycle-exact random scoreboard catches it. Current score: 17/17. Mutants 1-14 were also 14/14 under each stimulus profile
+the cycle-exact random scoreboard catches it. Current score: 19/19:
+#18 and #19 are the red-team agent's first two survivors (section 17),
+killed by the tests added for them. Mutants 1-14 were also 14/14 under each stimulus profile
 (`STIM_PROFILE=x python3 scripts/mutate.py`).
 
 History worth keeping: the first run scored 11/13. Survivors #10 and #13
@@ -625,3 +627,73 @@ The round found two real gaps in the live environment:
     fails on both the `SYNC_DELAY=2` mutant and the common-mode mutant.
   - `formal/agent_pin_ctrl_sync_depth_props.v` proves the 2-cycle depth
     for every consumer, including the `pin_read` tap.
+
+## 17. Red team
+
+The red-team agent attacks the verification environment itself. It
+proposes small, realistic RTL mutants that change spec-defined
+behaviour and that it argues every gate misses. Each mutant comes with a
+witness: a test that does catch it, which proves the mutant is not an
+equivalent rewrite.
+
+**Tooling: `scripts/redteam_eval.py CANDIDATE.json [--full]`.**
+1. Apply the mutant to a scratch copy of the repo (this repo's `src/` is
+   never touched).
+2. Run every gate on the copy: directed, 200 random seeds, board, and
+   formal. `--full` adds the 4 stimulus profiles. Any failing gate
+   means the mutant is KILLED.
+3. If every gate passes, check the witness. It must FAIL on the mutant
+   and PASS on a clean copy.
+
+Witnesses come in two forms:
+- a random-harness program, replayed with `triage.py`;
+- a cocotb test module, for behaviour the golden model doesn't cover
+  (boot, host pins, unbounded WAIT).
+
+Verdicts: KILLED, SURVIVED_WITNESSED (a real gap), SURVIVED_NO_WITNESS
+(possibly equivalent, so not a finding), INVALID. The agent may
+pre-screen with this tool. The parent re-runs it with `--full` as the
+gate and trusts only that run.
+
+**Agent.** The agent definition is `~/.claude/agents/red-team.md`; the
+contract is `redteam/AGENT_CONTRACT.md`. The agent writes only
+`redteam/candidates/` and evaluates at most 8 candidates per run. It
+must:
+- map what each gate checks and what it can't see before proposing
+  anything;
+- quote the spec text each mutant violates;
+- keep witnesses to spec-defined behaviour.
+
+**First pass (2026-10-04, ledger 20261004-094108).** 2 candidates
+evaluated, both SURVIVED_WITNESSED on the parent's `--full` re-run. The
+agent rejected 6 more ideas itself before evaluation, as already covered
+or equivalent.
+
+- **rt01: counter 20 bits wide instead of 24.**
+  - Spec: isa.md says DELAY reaches about 16.7M cycles at exponent 3.
+  - Why every gate missed it: no test, generator profile or board
+    firmware used an exponent-3 mantissa above 1, and every WAIT
+    timeout fits in 20 bits. Formal at depth 20 can't see a count that
+    ends early but still exceeds 32767.
+  - Killed by `test_delay_exp3_full_counter_width`, which runs DELAY
+    511 at exponent 3. It checks that the counter loads exactly N-1 (a
+    one-cycle check, independent of width) and that the DELAY hasn't
+    ended after 100k cycles.
+- **rt02: boot echo updated on the HOST_GO fall instead of with the
+  write.**
+  - Spec: architecture.md's LOAD handshake says the echo is "now
+    guaranteed valid" when HOST_STATUS rises.
+  - Why every gate missed it: every test read the echo only after the
+    handshake had finished. Random boots by poking SRAM, and no formal
+    property looks at `uo_out` in LOAD.
+  - Killed by `load_byte(..., expect_echo=)`. Both boot paths
+    (`reset_and_boot` and the board's `Chip.boot`) now check the echo
+    at the ack, so every booting test exercises it.
+
+Both are now mutants #18 and #19 in `scripts/mutate.py`, killed.
+
+**Open spec question raised by the agent.** After the boot counter
+saturates, each further HOST_GO pulse still writes `ui_in` to byte 1023
+(`mem_we = host_go_rise && !load_ack`). architecture.md calls further
+pulses "harmless no-ops", while the directed test's comment accepts
+rewriting byte 1023. The spec needs to say which one is meant.

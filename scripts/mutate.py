@@ -181,6 +181,23 @@ MUTANTS = [
         edits=[("assign host_go_fall = mode_load && !uio_in_ff2[4] &&  host_go_prev;",
                 "assign host_go_fall = mode_load && !uio_in_ff2[4] ||  host_go_prev;")],
     ),
+    dict(
+        id=18, file="io/cycle_counter.v",
+        desc="DELAY/WAIT counter sized 20 bits (WAIT's reach) instead of 24 (DELAY's)",
+        hazard="DELAY exponent 3 with mantissa >= 32 wraps and ends ~1M cycles early",
+        bug_ref="red-team agent survivor rt01 (ledger 20261004-094108)",
+        edits=[("reg [23:0] count;", "reg [19:0] count;")],
+    ),
+    dict(
+        id=19, file="cpu/core.v",
+        desc="LOAD boot echo updated on HOST_GO fall instead of with the write",
+        hazard="echo lags the HOST_STATUS ack the spec says it is valid at",
+        bug_ref="red-team agent survivor rt02 (ledger 20261004-094108)",
+        edits=[("            boot_addr  <= boot_addr_next;\n            uo_out_reg <= boot_addr_next[7:0];\n            load_ack   <= 1'b1;",
+                "            boot_addr  <= boot_addr_next;\n            load_ack   <= 1'b1;"),
+               ("if (host_go_fall) load_ack <= 1'b0;",
+                "if (host_go_fall) begin\n              load_ack   <= 1'b0;\n              uo_out_reg <= boot_addr[7:0];\n            end")],
+    ),
 ]
 
 
