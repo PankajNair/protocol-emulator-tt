@@ -80,6 +80,17 @@ def snapshot() -> dict[str, str | None]:
     return {f: sha256(ROOT / f) for f in sorted(dirty_files())}
 
 
+TREE_SKIP = {".git", ".venv", "sim_build", "__pycache__", "regression_artifacts"}
+
+
+def tree_snapshot(tree: Path) -> dict[str, str | None]:
+    """Every file in an agent's own working tree (a copy outside this
+    repo, e.g. a benchmark case), hashed -- no git needed."""
+    return {str(f.relative_to(tree)): sha256(f) for f in sorted(tree.rglob("*"))
+            if f.is_file() and not (set(f.relative_to(tree).parts) & TREE_SKIP)
+            and f.suffix not in (".fst", ".vcd") and not f.name.startswith("results")}
+
+
 def parse_contract(path: Path) -> dict:
     """Read the YAML-ish frontmatter of an AGENT_CONTRACT.md (flat keys,
     flow-style lists) without needing PyYAML."""
@@ -137,7 +148,8 @@ def cmd_start(a) -> None:
         "base_commit": git("rev-parse", "--short", "HEAD").strip(),
         "started": now(),
         "started_epoch": time.time(),
-        "snapshot": snapshot(),
+        "tree": str(Path(a.tree).resolve()) if a.tree else None,
+        "snapshot": tree_snapshot(Path(a.tree)) if a.tree else snapshot(),
         "gates": [],
     }
     if a.prompt_file:
@@ -149,7 +161,7 @@ def cmd_start(a) -> None:
     (OPEN_DIR / f"{run_id}.json").write_text(json.dumps(rec, indent=2))
     pre = len(rec["snapshot"])
     print(run_id)
-    if pre:
+    if pre and not a.tree:
         print(f"[ledger] note: {pre} file(s) already dirty at start; only further changes count", file=sys.stderr)
 
 
@@ -185,9 +197,15 @@ def cmd_gate(a) -> None:
 
 
 # -------------------------------------------------------------------- finish
-def changed_since(rec: dict) -> list[str]:
-    # files changed by commits made since start, plus the working tree
-    committed = set(git("diff", "--name-only", rec["base_commit"], "HEAD").split())
+def changed_since(rec: dict, exclude_commits: list[str]) -> list[str]:
+    # files changed by commits made since start, plus the working tree;
+    # commits the parent made itself during the run are excluded by
+    # name (--exclude-commit) -- the ledger can't tell who wrote a commit
+    committed = set()
+    for sha in git("rev-list", f"{rec['base_commit']}..HEAD").split():
+        if any(sha.startswith(x) for x in exclude_commits):
+            continue
+        committed |= set(git("show", "--name-only", "--format=", sha).split())
     candidates = committed | dirty_files() | set(rec["snapshot"])
     changed = []
     for f in sorted(candidates):
@@ -202,7 +220,12 @@ def changed_since(rec: dict) -> list[str]:
 def cmd_finish(a) -> None:
     p = open_path(a.run_id)
     rec = json.loads(p.read_text())
-    files = changed_since(rec)
+    if rec.get("tree"):
+        now_snap = tree_snapshot(Path(rec["tree"]))
+        files = sorted(f for f in set(now_snap) | set(rec["snapshot"])
+                       if now_snap.get(f) != rec["snapshot"].get(f))
+    else:
+        files = changed_since(rec, a.exclude_commit)
     scope = rec.get("write_scope")
     outside = [f for f in files if scope and not under(f, [scope])]
     protected = [f for f in files if under(f, rec.get("protected_paths", []))]
@@ -222,7 +245,7 @@ def cmd_finish(a) -> None:
     entry = {
         "id": rec["id"], "source": "live", "agent": rec["agent"],
         "agent_def_sha": rec["agent_def_sha"], "contract": rec["contract"],
-        "contract_sha": rec["contract_sha"], "task": rec["task"],
+        "contract_sha": rec["contract_sha"], "task": rec["task"], "tree": rec.get("tree"),
         "prompt": rec.get("prompt"), "base_commit": rec["base_commit"],
         "started": rec["started"], "finished": now(),
         "minutes": round((time.time() - rec["started_epoch"]) / 60, 1),
@@ -230,6 +253,7 @@ def cmd_finish(a) -> None:
         "gates": rec["gates"], "gates_passed": gates_ok,
         "verdict": a.verdict, "reason": a.reason, "override": a.override,
         "commit": a.commit, "bugs_found": a.bugs_found,
+        "excluded_parent_commits": a.exclude_commit,
     }
     LEDGER_DIR.mkdir(exist_ok=True)
     with LEDGER.open("a") as f:
@@ -279,6 +303,7 @@ def main() -> None:
     s.add_argument("--contract", required=True, help="repo-relative AGENT_CONTRACT.md")
     s.add_argument("--task", required=True)
     s.add_argument("--prompt-file")
+    s.add_argument("--tree", help="agent works in this directory (outside the repo); scope-check it instead of git")
     s.set_defaults(fn=cmd_start)
 
     g = sub.add_parser("gate")
@@ -294,6 +319,8 @@ def main() -> None:
     f.add_argument("--reason", required=True)
     f.add_argument("--commit")
     f.add_argument("--bugs-found", action="append", default=[], help="repeatable: short description of a real bug the run found")
+    f.add_argument("--exclude-commit", action="append", default=[],
+                   help="repeatable: a commit made by the parent during the run, not by the agent")
     f.add_argument("--override", help="reason for accepting despite failing gates / scope violation")
     f.set_defaults(fn=cmd_finish)
 

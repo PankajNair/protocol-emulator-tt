@@ -18,3 +18,4 @@ mutation_results.json
 signoff_report.json
 test/results_*.xml
 ledger/.open/
+test/.triage.lock

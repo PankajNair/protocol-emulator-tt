@@ -300,13 +300,50 @@ _OPCODE_NAMES = {
 
 
 def disassemble(word: int) -> str:
-    """Coarse debug-only disassembly (opcode name + raw operand field
-    bits) -- not a real disassembler, just enough for failure-artifact
-    dumps and the CLI below to be human-scannable."""
+    """Field-level disassembly for failure artifacts and triage. Field
+    positions are the inverse of isa_asm.py's encoders (deliberately not
+    golden_model._decode, so a decode bug in the model can't hide in its
+    own trace). Reserved opcodes show as ILLEGAL(n)."""
     opcode = (word >> 11) & 0x1F
-    name = _OPCODE_NAMES.get(opcode, f"ILLEGAL({opcode})")
-    operand = word & 0x7FF
-    return f"{name} operand={operand:#05x}"
+    rest = word & 0x7FF
+    name = _OPCODE_NAMES.get(opcode)
+    if name is None:
+        return f"ILLEGAL({opcode}) operand={rest:#05x}"
+    rd = (rest >> 9) & 0x3
+    pin = (rest >> 6) & 0x7
+    bit5 = (rest >> 5) & 0x1
+    if opcode in (asm.OP_NOP, asm.OP_HALT, asm.OP_RET):
+        return name if rest == 0 else f"{name} operand={rest:#05x}"
+    if opcode == asm.OP_BRANCH:
+        cond = ("JMP", "BEQ", "BNE", "CALL")[rest & 0x3]
+        return f"{cond} {(rest >> 2) & 0x1FF}"
+    if opcode == asm.OP_LDI:
+        return f"LDI R{rd}, {rest & 0xFF:#04x}"
+    if opcode == asm.OP_SET:
+        mode = ("leave", "pp", "od", "in")[rd]
+        return f"SET pin{pin}, {mode}, {bit5}"
+    if opcode in (asm.OP_OUT, asm.OP_IN):
+        return f"{name} R{rd}"
+    if opcode == asm.OP_SHIFT:
+        return f"SHIFT R{rd}, {'R' if rest & 1 else 'L'}"
+    if opcode == asm.OP_DELAY:
+        m = rest & 0x1FF
+        return f"DELAY {m}<<{rd * 5} (={m << (rd * 5)} cycles)"
+    if opcode == asm.OP_WAIT:
+        m = rest & 0x1F
+        timeout = "none" if m == 0 else f"{m}<<{rd * 5}={m << (rd * 5)}"
+        return f"WAIT pin{pin}=={bit5}, timeout {timeout}"
+    if opcode == asm.OP_TESTBIT:
+        return f"TESTBIT R{rd}, bit{rest & 0x7}"
+    if opcode in (asm.OP_OUTB, asm.OP_INB):
+        return f"{name} R{rd}, pin{pin}, bit{7 if bit5 else 0}"
+    if opcode in (asm.OP_LOAD, asm.OP_STORE):
+        return f"{name} R{rd}, [{rest & 0x1FF}]"
+    if opcode == asm.OP_LOOP:
+        return f"LOOP {(rest >> 2) & 0x1FF}, R{rest & 0x3}"
+    if opcode in (asm.OP_CMP, asm.OP_LOADX):
+        return f"{name} R{rd}, R{(rest >> 7) & 0x3}"
+    return f"{name} operand={rest:#05x}"
 
 
 def words_to_text(words: list[int]) -> str:

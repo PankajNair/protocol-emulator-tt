@@ -474,7 +474,7 @@ python3 scripts/ledger.py gate $RUN --name seeds -- \
         bash -c 'make -C test random SEEDS=200 && ! grep -q failure test/results.xml'
 python3 scripts/ledger.py gate $RUN --signoff        # after make signoff
 python3 scripts/ledger.py finish $RUN --verdict accepted|rejected --reason "..." \
-        [--commit SHA] [--bugs-found "..."]
+        [--commit SHA] [--bugs-found "..."] [--exclude-commit SHA]
 make ledger                                          # stats + recent runs
 ```
 
@@ -488,7 +488,11 @@ Each record holds:
   and reason, the commit and the bugs found.
 
 `start` snapshots the working tree, so files that were already dirty
-don't count against the agent unless they change again.
+don't count against the agent unless they change again. An agent
+working in its own copy outside the repo is started with `--tree DIR`,
+and the scope check then hashes that tree. Commits the parent itself
+makes while a run is open are excluded with `--exclude-commit`, since
+the ledger can't tell who wrote a commit.
 
 `finish` refuses `accepted` when:
 - no gate was recorded;
@@ -512,3 +516,74 @@ They are reconstructed from git: verdict `accepted`, no gate records, no
 per-file scope check (those commits mix agent output with parent wiring).
 Rejected attempts from that period weren't kept, so the acceptance rates
 in `make ledger` only mean something for live runs.
+
+## 16. Failure triage
+
+A failing seed becomes a classified, minimized, evidence-backed verdict
+through three parts:
+- deterministic tooling owned by this session;
+- the user-level `triage-debug` agent, under `triage/AGENT_CONTRACT.md`;
+- a planted-bug benchmark that measures the agent.
+
+**Harness support (`test/test_random.py`).** `PROGRAM_FILE` runs a given
+program instead of generating one; pin stimulus still comes from the
+seed. Every failure writes `regression_artifacts/seed_N/failure.json`
+with:
+- the failing check and the RTL and golden values;
+- the instruction index and cycle;
+- the last 16 commits, each with its disassembly and the RTL and golden
+  cycle counts;
+- the golden state after the failing instruction.
+
+`random_gen.disassemble` decodes every field. It is derived from the
+assembler's encoders, not from the golden model's decoder, so a decode
+bug in the model can't hide in its own trace.
+
+**`scripts/triage.py`:**
+- `replay` runs one seed, or a program file, and prints the failure
+  record.
+- `minimize` is a ddmin over instructions. It replaces instructions with
+  NOP so addresses stay put, and keeps a candidate only if it still
+  fails the same check. The golden model pre-screens candidates that
+  would not halt, so those are never simulated. Typical result: 72
+  instructions down to 2-4 in 35-45 simulations, about 1.5 minutes.
+- `bisect` keeps today's harness and model, swaps in `src/` from each
+  commit, and finds the first RTL commit that fails. It runs in a
+  throwaway worktree.
+- Runs in one tree hold a lock. Two overlapping minimizer runs in one
+  tree once produced a "minimal" program that then passed.
+
+**Agent.** `~/.claude/agents/triage-debug.md` is generic. The contract
+gives the classes (DUT, REFERENCE_MODEL, HARNESS, SPEC_AMBIGUITY,
+NOT_REPRODUCIBLE) and the verdict JSON format. The spec is the referee:
+the agent derives the correct value by hand, then decides which side
+departs from it. It never fixes anything. The verdict JSON goes in
+`triage/reports/<id>/`. The write-up comes back as text, because the
+harness blocks subagent report files.
+
+**Benchmark (`scripts/triage_bench.py`).** Seven planted bugs:
+- 3 in the DUT;
+- 3 in the reference model;
+- 1 in the harness.
+
+Each is planted in a standalone copy of the repo. The copy has no git
+history, no copy of the bench file, and has comments that would narrate
+the fix scrubbed. Two pairs share a symptom but have different owners,
+and only discriminating evidence separates them. `score` checks the
+classification and the culprit file against ground truth. Each run is
+recorded in the ledger with `start --tree <copy>`, so the scope check
+covers the agent's own tree.
+
+First round (2026-10-04): 7/7 classified correctly, 7/7 right culprit
+file, all at high confidence, and every stated replay reproduced. The
+round also found:
+- the overlapping-run minimizer bug (reported by the agent; fixed with
+  the lock);
+- two answer leaks through code comments (now scrubbed);
+- harness-blocked report files (contract changed);
+- a grader regex bug;
+- the ledger blaming the parent's own mid-run commits on the agent
+  (fixed with `--exclude-commit` and `--tree`).
+
+That round ran before the comment scrub, so treat it as an upper bound.
+The next round runs on scrubbed trees.

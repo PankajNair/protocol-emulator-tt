@@ -31,14 +31,21 @@ Env vars (matching test/Makefile's existing SIM ?= convention):
     MAX_WAIT_EXP0   WAIT mantissa clamp at exponent=0 (default 31)
     MAX_WAIT_EXP1   WAIT mantissa clamp at exponent=1 (default 15)
     STIM_PROFILE    stimulus profile test/stim/profile_<name>.py (default: none)
+    PROGRAM_FILE    run this program instead of generating one (one word per
+                    line, either bare hex or random_gen.words_to_text's
+                    "NNN: 0xWWWW ..." format; '#' comments). Pin stimulus
+                    still comes from the seed. Used by scripts/triage.py.
     COV_DIR         coverage JSON output dir (default /tmp/seq_coverage)
 
 Run: make -C test COCOTB_TEST_MODULES=test_random SEEDS=200
      (or the `make -C test random` convenience target)
 """
 
+import collections
 import importlib
+import json
 import os
+import re
 
 import cocotb
 from cocotb.clock import Clock
@@ -133,7 +140,22 @@ async def fast_boot(dut, words):
     return boot_exit_cycle
 
 
-def _dump_artifacts(seed, words, report):
+def load_program_file(path):
+    """Inverse of random_gen.words_to_text (bare hex lines also accepted)."""
+    words = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            m = re.match(r"(?:\d+:\s*)?(0x[0-9a-fA-F]+|[0-9a-fA-F]+)\b", line)
+            if not m:
+                raise ValueError(f"{path}: can't parse program line {line!r}")
+            words.append(int(m.group(1), 16))
+    return words
+
+
+def _dump_artifacts(seed, words, report, failure=None):
     seed_dir = os.path.join(ARTIFACT_DIR, f"seed_{seed}")
     os.makedirs(seed_dir, exist_ok=True)
     with open(os.path.join(seed_dir, "program.txt"), "w") as fh:
@@ -142,10 +164,19 @@ def _dump_artifacts(seed, words, report):
         fh.write("\n")
     with open(os.path.join(seed_dir, "failure.txt"), "w") as fh:
         fh.write(report + "\n")
+    # Machine-readable form for scripts/triage.py and the triage agent.
+    if failure is not None:
+        with open(os.path.join(seed_dir, "failure.json"), "w") as fh:
+            json.dump(failure, fh, indent=2)
+            fh.write("\n")
 
 
 async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_mantissa, gen_program, make_stimulus):
-    words = gen_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=max_wait_mantissa)
+    program_file = os.environ.get("PROGRAM_FILE", "")
+    if program_file:
+        words = load_program_file(program_file)
+    else:
+        words = gen_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=max_wait_mantissa)
     boot_exit_cycle = await fast_boot(dut, words)
     # Margin beyond max_cycles: a WAIT's own lookahead can probe a few
     # cycles past the program's eventual hard-failure point before that
@@ -170,16 +201,32 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
     instr_index = 0
     opcode_counts: dict[int, int] = {}
     cov = SeqCoverage(seed)
+    # Last committed instructions, for failure.json (what led up to it).
+    trace = collections.deque(maxlen=16)
 
-    def fail(msg):
+    def fail(msg, check_name="max_cycles", rtl_value=None, golden_value=None):
         report = f"seed={seed} instr={instr_index} pc={golden.pc}\n{msg}"
-        _dump_artifacts(seed, words, report)
+        failure = {
+            "seed": seed, "profile": os.environ.get("STIM_PROFILE", "") or None,
+            "program_file": program_file or None, "program_words": len(words),
+            "check": check_name, "rtl": rtl_value, "golden": golden_value,
+            "instr_index": instr_index, "cycle": cycle, "golden_pc_after": golden.pc,
+            "last_commits": list(trace),
+            "golden_state_after": {
+                "pc": golden.pc, "regs": list(golden.regs), "flag": int(golden.flag),
+                "retaddr": golden.retaddr, "return_valid": int(golden.return_valid),
+                "halted": int(golden.halted), "pin_mode": list(golden.pin_mode),
+                "pin_drv": list(golden.pin_drv), "uo_out": golden.uo_out,
+            },
+            "message": msg,
+        }
+        _dump_artifacts(seed, words, report, failure)
         cov.write()  # reported even on a failing seed, same as the RISC-V env
         assert False, report
 
     def check(name, rtl_value, golden_value):
         if rtl_value != golden_value:
-            fail(f"{name} mismatch: RTL={rtl_value!r} golden={golden_value!r}")
+            fail(f"{name} mismatch: RTL={rtl_value!r} golden={golden_value!r}", name, rtl_value, golden_value)
 
     while True:
         await RisingEdge(dut.clk)
@@ -235,6 +282,9 @@ async def run_one_seed(dut, seed, max_cycles, max_delay_mantissa, max_wait_manti
         golden, expected_cycles = step(golden, word, io_read=stim.io_read, abs_cycle=abs_cycle)
         instr_index += 1
         cov.sample(pre_golden, golden, word, expected_cycles)
+        trace.append({"instr": instr_index, "pc": pre_step_pc, "word": f"{word:#06x}",
+                      "asm": random_gen.disassemble(word), "fetch_cycle": instr_fetch_lo_cycle,
+                      "cycles_rtl": cycles_used, "cycles_golden": expected_cycles})
 
         check("fetched instruction (ir)", rtl_ir, word)
         check("cycles used", cycles_used, expected_cycles)
