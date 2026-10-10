@@ -1,0 +1,17 @@
+{
+  "id": "rt05_boot_last_byte_dropped",
+  "file": "cpu/core.v",
+  "edits": [
+    ["        mem_we_c    = host_go_rise && !load_ack;",
+     "        mem_we_c    = host_go_rise && !load_ack && (boot_addr != 10'd1023);"]
+  ],
+  "claim": "Boot-counter saturation is implemented by suppressing the write once the counter sits at 1023, an off-by-one that also drops the legitimate 1024th byte (address 1023): it is acked and echoed but never written.",
+  "spec_ref": "docs/architecture.md:Pipeline/LOAD (boot) -- \"each pulse writes ui_in to the SRAM at an internal byte-address counter, then increments it (0-1023, the macro's full byte range)\" and \"A HOST_GO pulse at address 1023 writes/echoes that byte and stops advancing\"; docs/isa.md:Data memory -- \"It already streams the full 1024 bytes sequentially into the SRAM ... the second half is simply treated as data\"",
+  "why_survives": {
+    "directed": "test_boot_echo_and_saturation streams 1026 bytes and checks the echo and that address 0 is not overwritten, but never reads data byte 1023 back; every other boot is a short program.",
+    "random": "fast_boot pokes the SRAM image directly; the per-byte LOAD handshake is out of the golden model's scope.",
+    "board": "Board images (program + .data) are far shorter than 1024 bytes, so address 1023 is never booted.",
+    "formal": "No props file constrains LOAD-mode SRAM writes; core_reset_props only allows host boot writes, it does not require them."
+  },
+  "witness": {"cocotb_test": "witness_rt05_boot_last_byte_dropped.py", "board": false}
+}

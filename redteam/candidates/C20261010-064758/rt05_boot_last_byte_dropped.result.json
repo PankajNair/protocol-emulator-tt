@@ -1,0 +1,22 @@
+{
+  "id": "rt05_boot_last_byte_dropped",
+  "file": "cpu/core.v",
+  "seeds": 200,
+  "full": true,
+  "gates": {
+    "directed": "PASS",
+    "random": "PASS",
+    "random:protocol_pins": "PASS",
+    "random:wide_timing": "PASS",
+    "random:illegal_mix": "PASS",
+    "random:nested_flow": "PASS",
+    "board": "PASS",
+    "formal": "PASS"
+  },
+  "witness": {
+    "on_mutant": "FAIL",
+    "on_clean": "PASS"
+  },
+  "verdict": "SURVIVED_WITNESSED",
+  "seconds": 228
+}

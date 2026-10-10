@@ -129,7 +129,10 @@ def stage_signoff(s: dict) -> None:
         shutil.rmtree(root / "test" / "regression_artifacts", ignore_errors=True)
         skip = s["opts"]["signoff_skip"]
         log(s, f"signoff: running (skip={skip or 'none'})")
-        sh(f"python3 scripts/signoff.py {('--skip ' + skip) if skip else ''}", root)
+        # caffeinate: the first real cycle's mutation gate took 14.5 h of
+        # wall time because the laptop slept through it
+        awake = "caffeinate -i " if shutil.which("caffeinate") else ""
+        sh(f"{awake}python3 scripts/signoff.py {('--skip ' + skip) if skip else ''}", root)
         r = json.loads(report.read_text())
     s["signoff"] = {k: r[k] for k in ("commit", "dirty", "passed", "complete")}
     s["signoff"]["failed"] = [g for g, v in r["gates"].items() if v["verdict"] == "FAIL"]

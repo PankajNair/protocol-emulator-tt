@@ -198,6 +198,31 @@ MUTANTS = [
                ("if (host_go_fall) load_ack <= 1'b0;",
                 "if (host_go_fall) begin\n              load_ack   <= 1'b0;\n              uo_out_reg <= boot_addr[7:0];\n            end")],
     ),
+    dict(
+        id=20, file="cpu/core.v",
+        desc="WAIT has-timeout computed in 16 bits",
+        hazard="WAIT exponent 3 with an even mantissa becomes unbounded",
+        bug_ref="red-team survivor rt03 (orchestrator cycle C20261010-064758)",
+        edits=[("  wire        wait_has_timeout   = (w_wait_mant != 5'd0);",
+                "  wire [15:0] wait_timeout_cycles = {11'd0, w_wait_mant} << (w_exponent * `TIMEOUT_SHIFT);\n"
+                "  wire        wait_has_timeout   = (wait_timeout_cycles != 16'd0);")],
+    ),
+    dict(
+        id=21, file="io/cycle_counter.v",
+        desc="expired compares count[19:0] instead of all 24 bits",
+        hazard="DELAY exponent 3 with mantissa >= 32 ends ~1M cycles early",
+        bug_ref="red-team survivor rt04 (orchestrator cycle C20261010-064758)",
+        edits=[("  assign expired = load ? (shifted == 24'd0) : (count == 24'd0);",
+                "  assign expired = load ? (shifted == 24'd0) : (count[19:0] == 20'd0);")],
+    ),
+    dict(
+        id=22, file="cpu/core.v",
+        desc="boot write dropped at address 1023",
+        hazard="the 1024th boot byte is acked and echoed but never written",
+        bug_ref="red-team survivor rt05 (orchestrator cycle C20261010-064758)",
+        edits=[("        mem_we_c    = host_go_rise && !load_ack;",
+                "        mem_we_c    = host_go_rise && !load_ack && (boot_addr != 10'd1023);")],
+    ),
 ]
 
 

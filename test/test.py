@@ -502,6 +502,58 @@ async def test_delay_exp3_full_counter_width(dut):
         assert int(dut.uo_out.value) == 0x11, f"DELAY of {n} cycles ended within 100,000 cycles"
 
 
+@cocotb.test()
+async def test_wait_timeout_exp3_even_mantissa(dut):
+    """WAIT with exponent 3 and an even mantissa times out after exactly
+    mantissa << 15 cycles (isa.md WAIT row: only a computed timeout of 0
+    is unbounded). 2 << 15 = 65,536 has its low 16 bits all 0, so a
+    timeout check computed in 16 bits made this WAIT unbounded and
+    passed every gate (red-team rt03, docs/VAL.md section 17); the only
+    expiring wide WAIT anywhere was the board's 1 << 15."""
+    prog = asm.assemble([
+        (None, lambda L: asm.wait_(0, 1, mantissa=2, exponent=3)),  # pin 0 never driven high
+        (None, lambda L: asm.beq(L["timed_out"])),
+        (None, lambda L: asm.ldi(0, 0xAA)),
+        (None, lambda L: asm.out(0)),
+        (None, lambda L: asm.halt()),
+        ("timed_out", lambda L: asm.ldi(0, 0xCC)),
+        (None, lambda L: asm.out(0)),
+        (None, lambda L: asm.halt()),
+    ])
+    await reset_and_boot(dut, prog)
+    c = await run_to_value(dut, 0xCC, max_cycles=70_000)
+    assert 2 << 15 <= c <= (2 << 15) + 40, f"WAIT 2<<15 timed out after {c} cycles"
+
+
+@cocotb.test(skip=GL)  # deposits into the counter register
+async def test_delay_counter_expires_only_at_zero(dut):
+    """The counter must expire only when it reaches 0, whatever bit is
+    set. A comparator on count[19:0] passed every gate (red-team rt04):
+    a long DELAY only exits early once the low bits roll to 0, ~1M cycles
+    in. Instead of waiting for that, set the counter to each
+    power-of-two from bit 8 to bit 23 (low bits all 0; small values would
+    legitimately reach 0 within the check) in the middle of
+    a long DELAY and check the DELAY is still running, so a narrow
+    compare of any width fails within a cycle."""
+    prog = [asm.ldi(0, 0x11), asm.out(0), asm.delay(511, 3), asm.ldi(0, 0x22), asm.out(0), asm.halt()]
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x11, max_cycles=60)
+    cnt = dut.user_project.u_core.u_cycle_counter.count
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        if int(cnt.value) != 0:
+            break
+    for b in range(8, 24):
+        await RisingEdge(dut.clk)
+        cnt.value = 1 << b
+        for _ in range(3):
+            await RisingEdge(dut.clk)
+        assert int(dut.uo_out.value) == 0x11, f"DELAY ended early with count = 1 << {b}"
+        # still counting down from the deposited value (the write lands
+        # within a cycle, so allow a small window)
+        assert (1 << b) - 4 <= int(cnt.value) < (1 << b), f"count after 1 << {b}: {int(cnt.value)}"
+
+
 @cocotb.test(skip=GL)  # reads the synchronizer flops directly
 async def test_sync_depth_matches_harness_sync_delay(dut):
     """Pins io_stimulus.SYNC_DELAY to the RTL's synchronizer depth.
@@ -792,6 +844,34 @@ async def test_boot_echo_and_saturation(dut):
     dut.uio_in.value = uio_in_state & ~(1 << START_BIT)
     await run_to_value(dut, 0x3C)
     dut._log.info("boot echo correct for all 1026 pulses; counter saturated, instruction 0 intact")
+
+
+@cocotb.test()
+async def test_boot_writes_last_byte(dut):
+    """The 1024th boot pulse writes address 1023 (architecture.md LOAD:
+    "A HOST_GO pulse at address 1023 writes/echoes that byte"). Nothing
+    read that byte back, so dropping the last write -- an off-by-one in
+    implementing saturation -- passed every gate (red-team rt05,
+    docs/VAL.md section 17). Exactly 1024 pulses, then LOAD it back."""
+    _ensure_clock(dut)
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
+    image = asm.to_bytes([asm.load(0, 511), asm.out(0), asm.halt()])  # data[511] = byte 1023
+    image += [0] * (1024 - len(image))
+    image[1023] = 0x5A
+    uio_in_state = 0
+    for k, b in enumerate(image, start=1):
+        uio_in_state = await load_byte(dut, b, uio_in_state, expect_echo=min(k, 1023) & 0xFF)
+    uio_in_state |= 1 << START_BIT
+    dut.uio_in.value = uio_in_state
+    await ClockCycles(dut.clk, 4)
+    dut.uio_in.value = uio_in_state & ~(1 << START_BIT)
+    await run_to_value(dut, 0x5A, max_cycles=100)
 
 
 @cocotb.test()

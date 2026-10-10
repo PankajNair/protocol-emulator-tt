@@ -1,0 +1,22 @@
+{
+  "id": "rt04_expired_compare_width",
+  "file": "io/cycle_counter.v",
+  "seeds": 200,
+  "full": true,
+  "gates": {
+    "directed": "PASS",
+    "random": "PASS",
+    "random:protocol_pins": "PASS",
+    "random:wide_timing": "PASS",
+    "random:illegal_mix": "PASS",
+    "random:nested_flow": "PASS",
+    "board": "PASS",
+    "formal": "PASS"
+  },
+  "witness": {
+    "on_mutant": "FAIL",
+    "on_clean": "PASS"
+  },
+  "verdict": "SURVIVED_WITNESSED",
+  "seconds": 231
+}

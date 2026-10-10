@@ -1,0 +1,17 @@
+{
+  "id": "rt04_expired_compare_width",
+  "file": "io/cycle_counter.v",
+  "edits": [
+    ["  assign expired = load ? (shifted == 24'd0) : (count == 24'd0);",
+     "  assign expired = load ? (shifted == 24'd0) : (count[19:0] == 20'd0);"]
+  ],
+  "claim": "The counter register is 24 bits but the expiry comparator only looks at the low 20 bits (WAIT's reach), so an exponent-3 DELAY with mantissa >= 32 ends early, the first time the count passes a multiple of 2^20.",
+  "spec_ref": "docs/isa.md:Opcode table, DELAY row -- \"cycles = mantissa << (exponent*5) ... exponent=3 -> up to ~16.7M (~335ms @ 50MHz)\"; docs/architecture.md:Pipeline -- \"DELAY stays in EXECUTE decrementing it until it hits zero (3+N cycles, N from the immediate)\"",
+  "why_survives": {
+    "directed": "test_delay_exp3_full_counter_width (the rt01 fix) checks that the 24-bit count register loads N-1 and that DELAY 511<<15 has not ended within 100,000 cycles. Under the mutant the count loads correctly; DELAY 511<<15 (count 0xFF7FFF, low 20 bits 0xF7FFF) only ends early after ~1,015,807 cycles, beyond the 100k window. test_delay_timing uses exponent 0.",
+    "random": "Default DELAY is exponent 0/1 (<= 480 cycles); wide_timing's exponent-3 DELAY uses mantissa 1 (32768, fits 20 bits) and exponent-2 mantissa 1..4 (<= 4096).",
+    "board": "Firmware DELAYs and the I2C T_STRETCH timeout (32768) all fit 20 bits.",
+    "formal": "cycle_counter_timing_props is BMC depth 20; the first wrong expiry is >= 32768 cycles after load."
+  },
+  "witness": {"cocotb_test": "witness_rt04_expired_compare_width.py", "board": false}
+}

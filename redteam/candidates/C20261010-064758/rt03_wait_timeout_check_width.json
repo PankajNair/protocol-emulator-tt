@@ -1,0 +1,17 @@
+{
+  "id": "rt03_wait_timeout_check_width",
+  "file": "cpu/core.v",
+  "edits": [
+    ["  wire        wait_has_timeout   = (w_wait_mant != 5'd0);",
+     "  wire [15:0] wait_timeout_cycles = {11'd0, w_wait_mant} << (w_exponent * `TIMEOUT_SHIFT);\n  wire        wait_has_timeout   = (wait_timeout_cycles != 16'd0);"]
+  ],
+  "claim": "WAIT's 'computed cycles == 0 means unbounded' rule is implemented literally on a 16-bit computed timeout, so exponent=3 with an even mantissa (cycles >= 65536, low 16 bits all 0) is treated as an unbounded WAIT and never times out.",
+  "spec_ref": "docs/isa.md:Opcode table, WAIT row -- \"cycles = mantissa << (exponent*5); any encoding whose computed cycles is 0 ... means no timeout ... Otherwise max reach ~1,015,808 cycles (~20.3ms @ 50MHz)\" and \"Every WAIT writes the shared flag on exit ... 1 if it timed out\"",
+  "why_survives": {
+    "directed": "Only exponent-0 WAIT timeouts (test_wait_timeout mantissa 5); every other directed WAIT is unbounded (mantissa 0, exponent 0).",
+    "random": "Default generator draws WAIT exponent 0/1 only. wide_timing (--full) rewrites some WAITs to exponent 2/3 with mantissa 1..31, but under its default 50/50 stimulus every such WAIT is met within a few cycles, so whether a 65536+ cycle timeout is armed is never observed; protocol_pins keeps exponent 0/1.",
+    "board": "The only timed WAIT in board firmware is i2c.asm's WAIT SCL,1,T_STRETCH with T_STRETCH = 32768 = 1<<15 (odd mantissa 1), which still fits 16 bits, so the hold_scl_forever timeout still fires.",
+    "formal": "core_wait_props models the timeout correctly, but at BMC depth 20 a timeout target >= 65536 can never be reached, so 'mutant never times out' and 'spec times out at k=65536' are indistinguishable inside the window."
+  },
+  "witness": {"cocotb_test": "witness_rt03_wait_timeout_check_width.py", "board": false}
+}

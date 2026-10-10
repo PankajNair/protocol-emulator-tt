@@ -145,9 +145,9 @@ Per-suite kills (17 mutants): directed 13, random 10, board 7 (#3, #7,
 a second, protocol-level line of defense, not a gap-closer. #2 (one
 synchronizer flop dropped) passes the board suite: the protocol
 tests' timing margins absorb one extra cycle of input latency, and only
-the cycle-exact random scoreboard catches it. Current score: 19/19:
-#18 and #19 are the red-team agent's first two survivors (section 17),
-killed by the tests added for them. Mutants 1-14 were also 14/14 under each stimulus profile
+the cycle-exact random scoreboard catches it. Current score: 22/22:
+#18-22 are red-team survivors (section 17), killed by the tests added
+for them. Mutants 1-14 were also 14/14 under each stimulus profile
 (`STIM_PROFILE=x python3 scripts/mutate.py`).
 
 History worth keeping: the first run scored 11/13. Survivors #10 and #13
@@ -691,6 +691,32 @@ or equivalent.
     at the ack, so every booting test exercises it.
 
 Both are now mutants #18 and #19 in `scripts/mutate.py`, killed.
+
+**Second pass, the orchestrator's first real cycle (C20261010-064758,
+ledger 20261010-211840).** Signoff was clean at 64dcc61. 3 candidates
+were evaluated, and all 3 were SURVIVED_WITNESSED on the parent's
+`--full` re-run, so the cycle halted as designed.
+
+- **rt03: WAIT's has-timeout check computed in 16 bits.**
+  - Effect: WAIT with exponent 3 and an even mantissa (2 << 15 has
+    zero low bits) becomes unbounded.
+  - Why every gate missed it: the only expiring wide WAIT anywhere was
+    the board's 1 << 15.
+  - Killed by `test_wait_timeout_exp3_even_mantissa`, which checks
+    that the timeout fires within the exact cycle window.
+- **rt04: `expired` compares `count[19:0]`.**
+  - Effect: DELAY exponent 3 ends about 1M cycles early. rt01's fix
+    pinned only the counter register, not its comparator.
+  - Killed by `test_delay_counter_expires_only_at_zero`. It sets the
+    counter to each power of two from bit 8 to bit 23 in the middle of
+    a long DELAY and checks the DELAY keeps running, so a narrow
+    comparator of any width fails within a cycle.
+- **rt05: boot write dropped at address 1023.** This is the off-by-one
+  that "saturate, then no-op" invites.
+  - Killed by `test_boot_writes_last_byte`: exactly 1024 boot pulses,
+    then LOAD byte 1023 back.
+
+All three are now mutants #20-22, killed. The mutation gate is 22/22.
 
 **Open spec question raised by the agent.** After the boot counter
 saturates, each further HOST_GO pulse still writes `ui_in` to byte 1023
