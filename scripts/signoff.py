@@ -143,8 +143,12 @@ def main() -> int:
         ("mutation", lambda: gate_mutation(args.mutate_seeds, 5400)),
     ]
 
-    git = sh("git rev-parse --short HEAD && git status --porcelain -- src test scripts formal firmware", 30)[1].split("\n")
-    report = {"commit": git[0].strip(), "dirty": any(l.strip() for l in git[1:]), "gates": {}}
+    rc, gitout = sh("git rev-parse --short HEAD && git status --porcelain -- src test scripts formal firmware", 30)
+    git = gitout.split("\n")
+    if rc != 0:  # a copy without history (e.g. a triage benchmark tree): never a sign-off
+        report = {"commit": "no-git", "dirty": True, "gates": {}}
+    else:
+        report = {"commit": git[0].strip(), "dirty": any(l.strip() for l in git[1:]), "gates": {}}
     for name, fn in gates:
         if name in skip:
             report["gates"][name] = {"verdict": "SKIPPED"}

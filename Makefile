@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate
 
 MUTATE_SEEDS ?= 50
 
@@ -21,6 +21,11 @@ signoff:
 ledger:
 	python3 scripts/ledger.py stats
 	python3 scripts/ledger.py show -n 10
+
+# orchestrate: start one agentic DV cycle (signoff -> triage -> red-team ->
+#              close); docs/VAL.md section 18 for the ticket workflow
+orchestrate:
+	python3 scripts/orchestrate.py start
 
 # ---------------------------------------------------------------------------
 # mutate: mutation-testing gate (scripts/mutate.py) -- parent session only,

@@ -697,3 +697,46 @@ saturates, each further HOST_GO pulse still writes `ui_in` to byte 1023
 (`mem_we = host_go_rise && !load_ack`). architecture.md calls further
 pulses "harmless no-ops", while the directed test's comment accepts
 rewriting byte 1023. The spec needs to say which one is meant.
+
+## 18. Orchestrator
+
+`scripts/orchestrate.py` (`make orchestrate`) runs the agentic DV
+pipeline as a resumable state machine. Its state is kept in
+`orchestrate_state.json` (gitignored), and each finished cycle is
+appended to `ledger/cycles.jsonl`.
+
+| Stage | Who | What | Gate (run by the script, recorded in the ledger) |
+|---|---|---|---|
+| signoff | script | `scripts/signoff.py`, every gate (§14) | the report itself |
+| triage | `triage-debug` agent, one ticket per failing random seed | classify a failure as DUT, model or harness (§16) | verdict schema; the replay command reproduces the stated check; the culprit lines exist |
+| redteam | `red-team` agent, only after a clean signoff | propose surviving, witnessed mutants (§17) | `redteam_eval.py --full` on each candidate |
+| close | script | cycle summary | -- |
+
+**Tickets.** A stage that needs an agent does three things, then
+pauses:
+1. opens a ledger run (with `--tree` when the cycle runs on another
+   tree);
+2. writes a ticket holding the agent type and the full prompt;
+3. stops.
+
+The parent session then:
+1. runs `orchestrate.py ticket` to read the ticket;
+2. launches that agent with that prompt, unchanged;
+3. runs `orchestrate.py complete T<n>`.
+
+`complete` runs the stage's gates, records `accepted` or `rejected` in
+the ledger, and advances the cycle. The agent never sees or runs a gate.
+
+**Stop rules.** The cycle halts and waits for a human. It never fixes
+anything. It halts when:
+- `src/` is dirty at start (the cycle refuses to begin);
+- a triage verdict is accepted, i.e. a confirmed bug that needs a
+  human fix;
+- a non-random gate fails (directed, board, formal or vacuity);
+- a red-team candidate is confirmed as SURVIVED_WITNESSED;
+- an agent ticket is rejected;
+- the ticket budget (`--max-tickets`, default 3) runs out.
+
+`--root DIR` runs a cycle against another tree, such as a triage
+benchmark copy. `--signoff-skip` and `--reuse-signoff` are for testing
+and for re-entering a cycle.
