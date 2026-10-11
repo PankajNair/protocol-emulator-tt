@@ -814,10 +814,12 @@ async def test_boot_echo_and_saturation(dut):
     """LOAD-mode boot stream over-run (docs/architecture.md Pipeline LOAD):
     uo_out echoes the post-increment byte address mod 256 after every
     HOST_GO pulse, and the counter SATURATES at 1023 rather than
-    wrapping. Streams a full 1024-byte image plus 2 extra bytes encoding
-    HALT -- a wrapping counter would write them to addresses 0/1,
-    replacing instruction 0 with HALT so the marker never appears; a
-    saturating one just rewrites byte 1023 (last data byte, harmless)."""
+    wrapping. Streams a full 1024-byte image (byte 1023 = 0x5A) plus 2
+    extra bytes encoding HALT. Over-run pulses must be no-ops
+    (architecture.md LOAD): a wrapping counter would write them to
+    addresses 0/1 (instruction 0 becomes HALT, nothing is printed), and
+    one that kept writing at the saturated address would overwrite byte
+    1023 (the program prints 0x08, not 0x5A)."""
     _ensure_clock(dut)
     dut.ena.value = 1
     dut.ui_in.value = 0
@@ -827,8 +829,9 @@ async def test_boot_echo_and_saturation(dut):
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 5)
 
-    image = asm.to_bytes([asm.ldi(0, 0x3C), asm.out(0), asm.halt()])
+    image = asm.to_bytes([asm.load(0, 511), asm.out(0), asm.halt()])  # data[511] = byte 1023
     image += [0] * (1024 - len(image))
+    image[1023] = 0x5A
     image += asm.to_bytes([asm.halt()])  # 2 over-run bytes
 
     uio_in_state = 0
@@ -842,8 +845,8 @@ async def test_boot_echo_and_saturation(dut):
     dut.uio_in.value = uio_in_state
     await ClockCycles(dut.clk, 4)
     dut.uio_in.value = uio_in_state & ~(1 << START_BIT)
-    await run_to_value(dut, 0x3C)
-    dut._log.info("boot echo correct for all 1026 pulses; counter saturated, instruction 0 intact")
+    await run_to_value(dut, 0x5A)
+    dut._log.info("boot echo correct for all 1026 pulses; saturated, over-run pulses wrote nothing")
 
 
 @cocotb.test()

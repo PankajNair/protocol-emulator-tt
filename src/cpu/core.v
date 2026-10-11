@@ -107,6 +107,12 @@ module protocol_cpu_core (
                        // external reset (docs/isa.md HALT row)
 
   reg [9:0]  boot_addr;
+  // Set by the boot write to address 1023 (the 1024th pulse). Over-run
+  // pulses after that are acked and echoed but write nothing --
+  // docs/architecture.md LOAD: "further pulses are harmless no-ops".
+  // Gating on boot_addr == 1023 alone would also drop that last real
+  // write (red-team rt05), since the saturated counter stays at 1023.
+  reg        boot_full;
   reg        load_ack;
 
   reg [7:0]  uo_out_reg;
@@ -278,7 +284,7 @@ module protocol_cpu_core (
     case (state)
       S_LOAD: begin
         mem_addr_c  = boot_addr;
-        mem_we_c    = host_go_rise && !load_ack;
+        mem_we_c    = host_go_rise && !load_ack && !boot_full;
         mem_wdata_c = ui_in_sync;
       end
       S_FETCH_LO: mem_addr_c = {pc, 1'b0};
@@ -338,6 +344,7 @@ module protocol_cpu_core (
       illegal_op_flag       <= 1'b0;
       call_ret_misuse_flag  <= 1'b0;
       boot_addr             <= 10'd0;
+      boot_full             <= 1'b0;
       load_ack              <= 1'b0;
       uo_out_reg            <= 8'd0;
       pending_lx_writeback  <= 1'b0;
@@ -355,6 +362,7 @@ module protocol_cpu_core (
             if (host_go_fall) load_ack <= 1'b0;
           end else if (host_go_rise) begin
             boot_addr  <= boot_addr_next;
+            if (boot_addr == 10'd1023) boot_full <= 1'b1;
             uo_out_reg <= boot_addr_next[7:0];
             load_ack   <= 1'b1;
           end

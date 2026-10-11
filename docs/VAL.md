@@ -718,11 +718,25 @@ were evaluated, and all 3 were SURVIVED_WITNESSED on the parent's
 
 All three are now mutants #20-22, killed. The mutation gate is 22/22.
 
-**Open spec question raised by the agent.** After the boot counter
-saturates, each further HOST_GO pulse still writes `ui_in` to byte 1023
-(`mem_we = host_go_rise && !load_ack`). architecture.md calls further
-pulses "harmless no-ops", while the directed test's comment accepts
-rewriting byte 1023. The spec needs to say which one is meant.
+**Spec deviation raised by the agent: resolved (RTL fix, signed off
+2026-10-11).** After the boot counter saturated, every over-run HOST_GO
+pulse still rewrote byte 1023 (`mem_we = host_go_rise && !load_ack`).
+architecture.md says over-run pulses are "harmless no-ops", which is
+also the industry convention for loaders and FIFOs: drop the write and
+keep the data already written. Wrapping and rewriting the last location
+are the other two conventions, and the spec rejects both.
+
+The fix adds a 1-bit `boot_full` register to `core.v`. The write to
+address 1023 sets it, reset clears it, and once it is set boot writes
+stop. Over-run pulses are still acked and echoed (the echo holds at
+0xFF), so the host never hangs and can see the counter has stopped
+advancing. Gating on `boot_addr == 1023` instead would have dropped the
+1024th byte (rt05), which `test_boot_writes_last_byte` and mutant #22
+now catch.
+
+`test_boot_echo_and_saturation` now puts 0x5A at byte 1023 and checks
+that it survives the over-run pulses. Mutant #23 removes the gate and is
+killed.
 
 ## 18. Orchestrator
 

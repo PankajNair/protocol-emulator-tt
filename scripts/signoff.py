@@ -115,8 +115,9 @@ def gate_vacuity(timeout):
 
 
 def gate_mutation(seeds, timeout):
-    rc, out = sh(f"python3 scripts/mutate.py --seeds {seeds}", timeout)
     rep = ROOT / "mutation_results.json"
+    rep.unlink(missing_ok=True)  # never report a previous run's numbers
+    rc, out = sh(f"python3 scripts/mutate.py --seeds {seeds}", timeout)
     info = {}
     if rep.exists():
         r = json.loads(rep.read_text())

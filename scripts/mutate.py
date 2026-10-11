@@ -193,8 +193,8 @@ MUTANTS = [
         desc="LOAD boot echo updated on HOST_GO fall instead of with the write",
         hazard="echo lags the HOST_STATUS ack the spec says it is valid at",
         bug_ref="red-team agent survivor rt02 (ledger 20261004-094108)",
-        edits=[("            boot_addr  <= boot_addr_next;\n            uo_out_reg <= boot_addr_next[7:0];\n            load_ack   <= 1'b1;",
-                "            boot_addr  <= boot_addr_next;\n            load_ack   <= 1'b1;"),
+        edits=[("            uo_out_reg <= boot_addr_next[7:0];\n            load_ack   <= 1'b1;",
+                "            load_ack   <= 1'b1;"),
                ("if (host_go_fall) load_ack <= 1'b0;",
                 "if (host_go_fall) begin\n              load_ack   <= 1'b0;\n              uo_out_reg <= boot_addr[7:0];\n            end")],
     ),
@@ -220,8 +220,16 @@ MUTANTS = [
         desc="boot write dropped at address 1023",
         hazard="the 1024th boot byte is acked and echoed but never written",
         bug_ref="red-team survivor rt05 (orchestrator cycle C20261010-064758)",
-        edits=[("        mem_we_c    = host_go_rise && !load_ack;",
+        edits=[("        mem_we_c    = host_go_rise && !load_ack && !boot_full;",
                 "        mem_we_c    = host_go_rise && !load_ack && (boot_addr != 10'd1023);")],
+    ),
+    dict(
+        id=23, file="cpu/core.v",
+        desc="over-run boot pulses still write (boot_full gate removed)",
+        hazard="pulses after saturation rewrite byte 1023 instead of being no-ops",
+        bug_ref="spec deviation raised by the red-team agent; RTL fixed with boot_full",
+        edits=[("        mem_we_c    = host_go_rise && !load_ack && !boot_full;",
+                "        mem_we_c    = host_go_rise && !load_ack;")],
     ),
 ]
 
