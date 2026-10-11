@@ -20,3 +20,5 @@ test/results_*.xml
 ledger/.open/
 test/.triage.lock
 orchestrate_state.json
+nversion_out/
+model_rs/target/

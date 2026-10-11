@@ -72,7 +72,7 @@ defines them:
 | `call_ret_misuse_flag` | 0/1 |
 | `halted` | 0/1 |
 | `uo_out` | int |
-| `pin_mode` | list of 8 ints, using the spec's 2-bit SET mode encoding |
+| `pin_mode` | list of 8 ints, using the spec's 2-bit SET mode encoding. Entries 4/5/6 (pins with a fixed role) are not compared, because their direction isn't configurable and so their stored mode isn't observable; report anything |
 | `pin_drv` | list of 8 ints (0/1), the value each pin drives / last driven |
 
 `data_mem` (final only) is the 512-byte data region.

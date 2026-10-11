@@ -33,6 +33,10 @@ jobs:
       - name: Install Python packages
         run: pip install -r test/requirements.txt
 
+      # model_rs/ (the spec-only N-version model) for the nversion gate
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       # OSS CAD Suite ships its own iverilog and python; pin the system ones
       # first on PATH so cocotb builds against the interpreter it was
       # installed into.

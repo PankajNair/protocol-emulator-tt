@@ -426,6 +426,7 @@ shadow of the driver state.
 | `determinism` | 25 random seeds run twice give byte-identical per-seed coverage JSON |
 | `formal` | `make formal`: every props file PASS |
 | `vacuity` | `make vacuity`: every cover reached |
+| `nversion` | the spec-only Rust model agrees with `golden_model.py` on 5000 generated programs (section 20) |
 | `mutation` | `scripts/mutate.py` (directed + random + board), score >= threshold, nothing errored |
 
 The determinism gate exists because a failing random seed is only useful if
@@ -831,3 +832,72 @@ Caveats:
 - Every red-team survivor so far is a width or long-range timing gap.
   When the yield drops, that class has been worked out.
 - Token cost per run isn't recorded yet. The ledger has no field for it.
+
+## 20. N-version model
+
+The project's golden model (`test/golden_model.py`) is only as good as
+its author's reading of the spec. When the model and the harness agree
+with each other but are both wrong, nothing in sections 1-17 can see
+it. So a second ISA model exists:
+- written in Rust (`model_rs/`);
+- by the user-level `model-builder` agent;
+- from `docs/isa.md` and `docs/architecture.md` **only**.
+
+The agent worked in a sandbox containing just those two documents plus
+`model_rs/INTERFACE.md` and the contract, so it physically could not
+read the Python model, the RTL or the tests. It reported the files it
+read, and its one stray command (a relative path that resolved to the
+real repo) was blocked by the `src/` deny rule.
+
+`model_rs/INTERFACE.md` (written by the parent) fixes only the I/O
+format and how the synchronized pin-stimulus arrays are indexed by
+cycle. Everything else comes from the spec. `model_rs/SPEC_NOTES.md`
+lists every ambiguity the agent had to resolve.
+
+**Differential fuzz: `scripts/nversion.py`.**
+- Programs come from the project's generator (or a stimulus profile).
+  Stimulus is per-seed: random toggling mixed with long held levels.
+- Both models run the same inputs. Every commit's pc, word, cycle count
+  and architectural state is compared, then final data memory and the
+  halt/timeout outcome.
+- No simulator is involved, so this compares instruction semantics.
+  The RTL is checked against the Python model separately, by
+  `test_random.py`.
+- The `nversion` signoff gate builds the crate and fuzzes 5000
+  programs, about 2 minutes.
+
+**Comparison scope.** Only architecturally observable state is
+compared:
+- `pin_mode` for the fixed-role pins 4/5/6 is not compared (their
+  direction isn't configurable).
+- `pin_drv` for a protocol pin is compared only while it is push-pull or
+  open-drain, and never for pin 4 (hardwired input).
+
+The spec says SET's value is ignored in input mode and that OUTB on an
+input pin is a no-op. The RTL and the Python model still latch the
+value, while the Rust model doesn't. Every path back to an output
+writes a fresh value, so that latch never reaches a pad.
+
+**First result (2026-10-12):**
+1. The first run gave 17 divergence signatures from two root causes.
+   One was a **real spec gap**: isa.md never said where SET/OUTB/INB
+   sub-fields sit inside `imm`. The agent read them as low-justified,
+   following the LDI/SHIFT precedents, while the RTL and assembler use
+   `imm[8:6]`/`imm[5]`. A firmware author could have made the same
+   mistake. isa.md now states the positions, and the agent revised its
+   model from the clarified text without seeing the other model. The
+   other root cause was the unobservable-state differences above.
+2. After that: **0 divergences**, with 2,527,124 commits compared on
+   20,000 default programs and 3,053,938 on 3,000 nested_flow programs.
+3. **The zero is meaningful.** The same fuzzer flags each of the
+   triage benchmark's planted model bugs (CMP `>=`, SHIFT rotate,
+   DELAY 2+N) within 300 programs.
+
+Ledger run 20261011-181342-model-builder records the gates.
+
+**Next (RustDV pilot, not started).** A Rust testbench (rustdv,
+https://github.com/teabone113/rustdv) would drive the same programs on
+Icarus with its own pin driver and sampling. That makes the harness
+independent too, not just the model, which is the class of error
+SYNC_DELAY was. Pilot it on one seed loop before relying on it, since
+rustdv is v0.2.

@@ -15,6 +15,8 @@ Gates:
   formal        make formal, every props file PASS
   vacuity       make vacuity, 100% of covers reached
   mutation      scripts/mutate.py, score >= threshold, nothing errored
+  nversion      the spec-only Rust model (model_rs/) agrees with
+                golden_model.py on 5000 generated programs (section 20)
 
 Not covered here (run separately, recorded in docs/VAL.md): GDS hardening,
 precheck and gate-level simulation (the TinyTapeout `gds` workflow).
@@ -114,6 +116,14 @@ def gate_vacuity(timeout):
     return ok, {"covers": f"{reached}/{total}"}, out
 
 
+def gate_nversion(timeout):
+    rc, out = sh("cd model_rs && cargo build --release -q && cd .. && "
+                 "python3 scripts/nversion.py --programs 5000 --out /tmp/signoff_nversion", timeout)
+    m = re.search(r"(\d+) programs, (\d+) commits compared, (\d+) distinct", out)
+    info = {"programs": int(m.group(1)), "commits": int(m.group(2)), "divergences": int(m.group(3))} if m else {}
+    return rc == 0 and bool(m) and info["divergences"] == 0, info, out
+
+
 def gate_mutation(seeds, timeout):
     rep = ROOT / "mutation_results.json"
     rep.unlink(missing_ok=True)  # never report a previous run's numbers
@@ -141,6 +151,7 @@ def main() -> int:
         ("determinism", lambda: gate_determinism(900)),
         ("formal", lambda: gate_formal(1800)),
         ("vacuity", lambda: gate_vacuity(1800)),
+        ("nversion", lambda: gate_nversion(1800)),
         ("mutation", lambda: gate_mutation(args.mutate_seeds, 5400)),
     ]
 

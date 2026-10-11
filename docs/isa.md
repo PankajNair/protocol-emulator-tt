@@ -105,6 +105,24 @@ author needs the exact bit positions, not just the field widths -- there
 was no single place that said so before an adversarial review caught
 the gap.
 
+**The same MSB-first rule applies to sub-fields inside `imm(9)`.** An
+opcode row that splits `imm` packs its sub-fields from `imm[8]` downward,
+in the order listed:
+- **SET / OUTB / INB:** `pin_index(3)` is `imm[8:6]`, and
+  `value`/`bit_select(1)` is `imm[5]`. `imm[4:0]` is unused.
+- **WAIT:** `pin_index(3)` is `imm[8:6]`, `level(1)` is `imm[5]` and
+  `timeout_mantissa(5)` is `imm[4:0]`. All three pin-addressing opcodes
+  share one pin_index position.
+
+Single-value immediates keep the low bits their rows name: LDI
+`imm(7:0)`, SHIFT `imm(0)`, TEST-bit `imm(2:0)`. The rest use the whole
+field: DELAY's mantissa, and LOAD/STORE's address.
+
+This also was only implicit, in the RTL and the assembler. An
+independent spec-only model (docs/VAL.md section 20) read these
+sub-fields as low-justified, following the LDI/SHIFT precedents, and
+the differential fuzz caught the disagreement.
+
 **Byte order matches the boot stream's own convention** ("low byte of
 instruction 0 first", Pipeline's `LOAD` section): `word[7:0]` is the
 low byte, fetched first (`FETCH_LO`, address `PC*2`); `word[15:8]` is
