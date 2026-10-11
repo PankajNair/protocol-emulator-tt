@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics
 
 MUTATE_SEEDS ?= 50
 
@@ -26,6 +26,11 @@ ledger:
 #              close); docs/VAL.md section 18 for the ticket workflow
 orchestrate:
 	python3 scripts/orchestrate.py start
+
+# metrics: agent and pipeline metrics derived from the ledger (nothing
+#          stored); docs/VAL.md section 19
+metrics:
+	python3 scripts/metrics.py
 
 # ---------------------------------------------------------------------------
 # mutate: mutation-testing gate (scripts/mutate.py) -- parent session only,

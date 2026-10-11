@@ -780,3 +780,54 @@ anything. It halts when:
 `--root DIR` runs a cycle against another tree, such as a triage
 benchmark copy. `--signoff-skip` and `--reuse-signoff` are for testing
 and for re-entering a cycle.
+
+## 19. Agent metrics
+
+`make metrics` (`scripts/metrics.py`, `--json` for machine-readable
+output) derives every number on demand from data the ledger already
+holds:
+- `ledger/runs.jsonl`;
+- `ledger/cycles.jsonl`;
+- `scripts/mutate.py` MUTANTS;
+- `redteam/candidates/`.
+
+Nothing extra is stored, so the metrics can't drift from their sources.
+
+| Group | Metric | Definition |
+|---|---|---|
+| per agent | acceptance | accepted / live runs. Backfilled runs only record accepted work, so they are excluded from rates. |
+| | first-pass | every gate passed on its first attempt: no override, no re-run gate |
+| | overrides, scope flags | raw counts. A flag with an override was a deliberate exception, and its reason is in the ledger. |
+| | median minutes, findings | findings = `bugs_found` entries plus parent-confirmed red-team survivors |
+| triage | benchmark | bench-score gate passes per round |
+| | replay reproduced | the agent's stated replay command reproduced its stated check |
+| red team | yield | parent-confirmed survivors / candidates the parent evaluated |
+| | precision | parent-confirmed / agent-claimed survivors |
+| | in mutation gate | confirmed survivors now in MUTANTS |
+| environment | mutants by origin, cycle outcomes | origin parsed from each mutant's `bug_ref` |
+
+Snapshot (2026-10-11):
+- **triage-debug:** 15 live runs, 100% accepted, 73% first-pass.
+  - The 4 that weren't first-pass are all from round 1: 3 ledger scope
+    false positives (the parent's own mid-run commits, before `--tree`
+    and `--exclude-commit` existed), and 1 grader regex bug.
+  - Benchmark 7/7 in both rounds. Replay reproduced 14/15; the
+    exception is the grader-bug run, which reproduced on re-run.
+- **red-team:** 2 passes. 5/5 candidates were confirmed survivors, so
+  yield and precision are both 100%. All 5 are now mutation-gate
+  entries (#18-22).
+- **Mutation gate (23 entries):**
+  - 13 curated;
+  - 6 from the red-team agent (#18-23, counting the spec deviation it
+    raised);
+  - 2 past real bugs;
+  - 2 blind-mutation survivors.
+- **Orchestrator:** 1 real cycle (halted on red-team survivors), plus 1
+  end-to-end test cycle.
+
+Caveats:
+- The samples are small. A 100% red-team yield on 5 candidates says the
+  agent pre-screens well, not that every pass will find gaps.
+- Every red-team survivor so far is a width or long-range timing gap.
+  When the yield drops, that class has been worked out.
+- Token cost per run isn't recorded yet. The ledger has no field for it.

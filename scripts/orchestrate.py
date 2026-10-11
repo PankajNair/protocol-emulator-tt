@@ -284,8 +284,11 @@ def cmd_complete(a) -> None:
         sys.exit(f"[orch] no dispatched ticket {a.ticket}")
     ok, summary = complete_triage(s, t) if t["kind"] == "triage" else complete_redteam(s, t)
     verdict = "accepted" if ok else "rejected"
+    found = []
+    for c in t.get("survivors") or []:  # confirmed red-team survivors are findings
+        found += ["--bugs-found", f"verification gap: red-team survivor {c} (cycle {s['cycle']})"]
     rc, out = ledger("finish", t["ledger_run"], "--verdict", verdict,
-                     "--reason", f"orchestrator {s['cycle']} {t['id']}: {summary}")
+                     "--reason", f"orchestrator {s['cycle']} {t['id']}: {summary}", *found)
     if rc != 0:  # e.g. scope violation refused 'accepted'
         verdict = "rejected"
         ledger("finish", t["ledger_run"], "--verdict", "rejected",
