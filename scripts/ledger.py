@@ -80,7 +80,7 @@ def snapshot() -> dict[str, str | None]:
     return {f: sha256(ROOT / f) for f in sorted(dirty_files())}
 
 
-TREE_SKIP = {".git", ".venv", "sim_build", "__pycache__", "regression_artifacts"}
+TREE_SKIP = {".git", ".venv", "sim_build", "__pycache__", "regression_artifacts", "target"}  # target: cargo output
 
 
 def tree_snapshot(tree: Path) -> dict[str, str | None]:
@@ -224,7 +224,7 @@ def cmd_finish(a) -> None:
     if rec.get("tree"):
         now_snap = tree_snapshot(Path(rec["tree"]))
         files = sorted(f for f in set(now_snap) | set(rec["snapshot"])
-                       if now_snap.get(f) != rec["snapshot"].get(f))
+                       if now_snap.get(f) != rec["snapshot"].get(f) and f not in a.exclude_file)
     else:
         files = changed_since(rec, a.exclude_commit)
     scope = rec.get("write_scope")
@@ -322,6 +322,8 @@ def main() -> None:
     f.add_argument("--bugs-found", action="append", default=[], help="repeatable: short description of a real bug the run found")
     f.add_argument("--exclude-commit", action="append", default=[],
                    help="repeatable: a commit made by the parent during the run, not by the agent")
+    f.add_argument("--exclude-file", action="append", default=[],
+                   help="repeatable (--tree runs): a file the parent itself put into the agent's tree")
     f.add_argument("--override", help="reason for accepting despite failing gates / scope violation")
     f.set_defaults(fn=cmd_finish)
 

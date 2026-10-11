@@ -496,7 +496,9 @@ don't count against the agent unless they change again. An agent
 working in its own copy outside the repo is started with `--tree DIR`,
 and the scope check then hashes that tree. Commits the parent itself
 makes while a run is open are excluded with `--exclude-commit`, since
-the ledger can't tell who wrote a commit.
+the ledger can't tell who wrote a commit. Likewise, in tree mode,
+`--exclude-file` excludes files the parent itself put into the agent's
+tree. Tree mode skips build output (`sim_build/`, `target/`).
 
 `finish` refuses `accepted` when:
 - no gate was recorded;
@@ -893,7 +895,12 @@ writes a fresh value, so that latch never reaches a pad.
    triage benchmark's planted model bugs (CMP `>=`, SHIFT rotate,
    DELAY 2+N) within 300 programs.
 
-Ledger run 20261011-181342-model-builder records the gates.
+Ledger run 20261011-181342-model-builder records the gates. Its
+SCOPE-VIOLATION flag is a false positive. It counted `docs/isa.md`,
+which the parent synced into the sandbox with the spec clarification,
+and 362 `target/` build files. Both tree-mode gaps are now closed
+(`--exclude-file`, `target/` skipped). The ledger is append-only, so
+the record stands with this note.
 
 **Next (RustDV pilot, not started).** A Rust testbench (rustdv,
 https://github.com/teabone113/rustdv) would drive the same programs on
