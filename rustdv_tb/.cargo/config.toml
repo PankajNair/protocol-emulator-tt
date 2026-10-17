@@ -1,0 +1,8 @@
+# macOS: the testbench cdylib references vpi_* symbols that the simulator
+# provides at load time; Mach-O linkers reject undefined symbols unless told
+# to resolve them dynamically (same flags cocotb and the rustdv repo use).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

@@ -22,3 +22,5 @@ test/.triage.lock
 orchestrate_state.json
 nversion_out/
 model_rs/target/
+rustdv_tb/target/
+rustdv_tb/sim_build/

@@ -908,3 +908,45 @@ Icarus with its own pin driver and sampling. That makes the harness
 independent too, not just the model, which is the class of error
 SYNC_DELAY was. Pilot it on one seed loop before relying on it, since
 rustdv is v0.2.
+
+## 21. RustDV pilot
+
+[rustdv](https://github.com/teabone113/rustdv) (v0.2.0, crates.io) is a
+Rust verification framework. The testbench compiles to a VPI module
+that Icarus loads, with no Python in the loop. The pilot asks whether it
+can host a second, independent harness, so that the stimulus timing and
+the sampling stop sharing code with the cocotb environment. That shared
+code is where the SYNC_DELAY class of error lives (section 16).
+
+**Phase A (2026-10-17): feasibility, done.**
+- **Setup:** the rustdv repo's own smoke test and TinyALU regression
+  pass on this Mac (arm64, Icarus 13).
+- **The test:** `rustdv_tb/` is a crate with one directed test on
+  `test/tb.v`. It is written from the spec, sharing nothing with the
+  cocotb harness: its own encoders, its own LOAD-handshake host and its
+  own sampling convention (drive and sample on falling edges). It boots
+  a program over the real handshake, checks the address echo at every
+  ack, pulses START and waits for the marker on `uo_out`.
+- **Result:** passes on the real RTL. A full rebuild and run takes
+  2.7 s.
+- **Proof it can fail:** mutant #19 (echo lags the ack), on a scratch
+  copy via `RTL_SRC=`, fails it with "boot echo 0x0 at byte 0".
+- **Run:** `rustdv_tb/run.sh` (`RTL_SRC=DIR` for a modified copy of
+  `src/`).
+
+What the pilot ran into:
+- macOS needs `-undefined dynamic_lookup` link flags (`rustdv_tb/.cargo/config.toml`).
+- The crates.io 0.2.0 release lags the repo's HEAD: `check!` is missing
+  from its prelude.
+- The repo pins rustc 1.97, but the crate builds with 1.96.
+
+**Phase B (not started): an independent black-box differential.**
+1. Run the generator's programs on the RTL from the Rust testbench.
+2. Drive raw pins so that the core sees the stimulus arrays, using a
+   pin-to-core latency the testbench derives from the spec itself.
+3. Compare the observable pin trace (`uo_out` and `uio_oe`/`uio_out`
+   values, and the cycle of each change) against `model_rs`.
+
+This is weaker than the cocotb full-state scoreboard on internal
+state. In exchange it is independent end to end: generator aside, no
+shared stimulus, sampling or model code.
