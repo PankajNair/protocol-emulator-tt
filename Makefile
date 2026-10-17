@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove
 
 MUTATE_SEEDS ?= 50
 
@@ -76,6 +76,16 @@ ifdef TARGET_PROPS
 	python3 formal/scripts/run_formal.py $(TARGET_PROPS)
 else
 	python3 formal/scripts/run_formal.py --all
+endif
+
+# prove: BMC base case plus K-step induction (unbounded proof) per props
+#        file; PROVEN only if both pass. K defaults to the BMC depth.
+PROVE_K ?= 20
+prove:
+ifdef TARGET_PROPS
+	python3 formal/scripts/run_formal.py --induct $(PROVE_K) $(TARGET_PROPS)
+else
+	python3 formal/scripts/run_formal.py --induct $(PROVE_K) --all
 endif
 
 # ---------------------------------------------------------------------------

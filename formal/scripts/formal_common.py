@@ -353,11 +353,17 @@ def build_smt2(props_path: Path) -> tuple[Path, str]:
     return smt2_path, wrapper_name
 
 
-def run_smtbmc(smt2_path: Path, depth: int, cover_mode: bool) -> tuple[bool, str]:
-    """Returns (status_passed, full_output_text)."""
+def run_smtbmc(smt2_path: Path, depth: int, cover_mode: bool, induction: bool = False) -> tuple[bool, str]:
+    """Returns (status_passed, full_output_text). induction=True runs the
+    k-induction step (`-i`): assume every assert holds for `depth`
+    consecutive cycles from an ARBITRARY state, prove it holds on the
+    next. Together with a passing depth-`depth` BMC base case that proves
+    the asserts for all time, not just within the bound."""
     cmd = ["yosys-smtbmc", "-s", "z3", "-t", str(depth)]
     if cover_mode:
         cmd.append("-c")
+    elif induction:
+        cmd.append("-i")
     else:
         cmd.append("--presat")
     cmd.append(str(smt2_path))
