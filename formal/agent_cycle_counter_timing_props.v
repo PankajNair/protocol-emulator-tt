@@ -56,11 +56,11 @@
 // bug the weaker property alone would miss). Both get their own
 // `cover` so vacuity-checking treats them as distinct antecedents.
 //
-// Scope: bounded-depth BMC (formal/scripts/formal_common.py
-// DEFAULT_DEPTH), not an unbounded inductive proof -- a `target` value
-// larger than the BMC depth is never actually reached to `expired==1`
-// within a single trace, so this only exercises small target values
-// directly. `mantissa`/`exponent` are otherwise fully free/unconstrained
+// Scope: BMC alone (DEFAULT_DEPTH) only reaches small targets; the
+// unbounded result comes from `make prove` (k-induction, passes at
+// k>=2), made inductive by the ghost<->count invariants at the bottom
+// of this file, which observe the DUT's internal `count` through
+// formal_common.DEBUG_PORTS. `mantissa`/`exponent` are otherwise fully free/unconstrained
 // primary inputs (this checker imposes no `assume` narrowing them), so
 // small-target coverage is still adversarially chosen by the solver,
 // not a hand-picked test vector.
@@ -74,7 +74,11 @@ module cycle_counter_timing_props (
     input wire        load,
     input wire [8:0]  mantissa,
     input wire [1:0]  exponent,
-    input wire        expired
+    input wire        expired,
+    // DUT-internal `count`, observed via formal_common.DEBUG_PORTS
+    // (dbg_count) -- used ONLY by the induction-strengthening invariants
+    // at the bottom of this file, never by the ghost model itself.
+    input wire [23:0] count
 );
 
   // ======================================================================
@@ -112,7 +116,14 @@ module cycle_counter_timing_props (
       target  <= target_next;
       elapsed <= 24'd1;  // by the next cycle, exactly 1 cycle has passed since load
       armed   <= 1'b1;
-    end else if (armed) begin
+    end else if (armed && elapsed != 24'hFFFFFF) begin
+      // Saturating, not wrapping: a wrapping 24-bit `elapsed` returns to
+      // 0 after 2^24 cycles without a reload, at which point Properties
+      // 1/2 below would fire FALSELY against a correct DUT (count held at
+      // 0, expired=1, but dist_now=0 < target). Reachable, just beyond
+      // any BMC depth -- induction finds it. Saturating at 2^24-1 keeps
+      // `dist_now >= target_now` true forever once reached, since every
+      // 24-bit target is <= 2^24-1 (max real target is 511<<15).
       elapsed <= elapsed + 24'd1;
     end
   end
@@ -148,6 +159,35 @@ module cycle_counter_timing_props (
     end
   end
 
+  // ======================================================================
+  // Induction-strengthening invariants (each one is itself proven).
+  // k-induction fails from unreachable states where the ghost model and
+  // the DUT's real `count` disagree; these tie them together exactly:
+  //   I1: never armed since reset -> count is still its reset value 0
+  //       (only `load` ever moves it off 0, and `load` arms the ghost).
+  //   I2: armed -> count == max(target - elapsed, 0). True on the cycle
+  //       after load (target=T, elapsed=1, count = T ? T-1 : 0), and
+  //       preserved each later non-load cycle: below target both sides
+  //       drop by 1; at/after target both sit at 0 (elapsed saturates,
+  //       staying >= target, see ghost model).
+  // Together with `expired = (count == 0)` on non-load cycles these make
+  // Properties 1/2 1-inductive. They are also exact spec checks in their
+  // own right: a 20-bit count, a missing pre-decrement, or a stuck count
+  // each violates I2 at a reachable state.
+  // ======================================================================
+  wire [23:0] count_model = (elapsed >= target) ? 24'd0 : (target - elapsed);
+
+  always @(posedge clk) begin
+    if (rst_n && !armed) begin
+      cover (!load);
+      assert (count == 24'd0);
+    end
+    if (rst_n && armed) begin
+      cover (count != 24'd0);
+      assert (count == count_model);
+    end
+  end
+
 endmodule
 
 bind cycle_counter cycle_counter_timing_props u_cycle_counter_timing_props (
@@ -156,5 +196,6 @@ bind cycle_counter cycle_counter_timing_props u_cycle_counter_timing_props (
     .load    (load),
     .mantissa(mantissa),
     .exponent(exponent),
-    .expired (expired)
+    .expired (expired),
+    .count   (count)
 );

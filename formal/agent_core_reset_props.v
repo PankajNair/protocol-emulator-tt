@@ -75,7 +75,14 @@ module core_reset_props (
     input wire [1:0]  reg_a_sel,             // DEBUG_PORTS
     input wire [1:0]  reg_b_sel,             // DEBUG_PORTS
     input wire [7:0]  ra_data,               // DEBUG_PORTS
-    input wire [7:0]  rb_data                // DEBUG_PORTS
+    input wire [7:0]  rb_data,               // DEBUG_PORTS
+    // k-induction auxiliary-invariant observation only (asserted on,
+    // never used to identify an instruction or decide a check):
+    input wire [15:0] ir,                    // DEBUG_PORTS
+    input wire [7:0]  ir_lo,                 // DEBUG_PORTS
+    input wire        entering_execute,      // DEBUG_PORTS
+    input wire [23:0] cnt_count,             // DEBUG_PORTS (child u_cycle_counter.count)
+    input wire [31:0] rf_regs                // DEBUG_PORTS (child u_regfile.regs, {R3,R2,R1,R0})
 );
 
   // FSM encoding per docs/architecture.md's state order.
@@ -335,6 +342,73 @@ module core_reset_props (
     end
   end
 
+  // ======================================================================
+  // Auxiliary invariants for k-induction (make prove). Each links the
+  // post-reset ghost trackers to the core's real state and is itself
+  // proven. Without them induction starts from unreachable states: an
+  // unwritten-since-reset register that is nonzero but simply not
+  // selected by either read port, a stale `seen_*`/`exec_seen` tracker
+  // vs the FSM, or a DELAY window whose shared countdown counter holds a
+  // value unrelated to dl_idx.
+  // Counter timing (cycle_counter.v): loaded on the DELAY's first cycle
+  // with S-1, decrements every cycle, expired = (count == 0); dl_on /
+  // dl_idx describe the PREVIOUS cycle, so while dl_idx < S the count
+  // now is S - dl_idx - 1.
+  // ======================================================================
+  wire [23:0] ir_S = {15'd0, ir[8:0]} << (ir[10:9] * 5);
+
+  always @(posedge clk) begin
+    if (rst_n) begin
+      cover (exec_seen && written == 4'd0);
+      // Registers not written since reset still hold their reset 0 --
+      // all four, not just the two the read ports select.
+      assert (written[0] || rf_regs[7:0]   == 8'd0);
+      assert (written[1] || rf_regs[15:8]  == 8'd0);
+      assert (written[2] || rf_regs[23:16] == 8'd0);
+      assert (written[3] || rf_regs[31:24] == 8'd0);
+      // g_lo and core's ir_lo both capture mem_rdata in FETCH_HI.
+      assert (ir_lo == g_lo);
+      // HALT only freezes in EXECUTE, after clearing entering_execute.
+      assert (!halted || state == S_EXECUTE);
+      assert (!halted || !entering_execute);
+      assert (!entering_execute || state == S_EXECUTE);
+      // LOAD is left only on START, and only reset re-enters it.
+      assert (!seen_start || state != S_LOAD);
+      // Before the first FETCH_LO: PC still 0, FSM in LOAD or FETCH_LO.
+      if (!seen_flo) assert (pc == 9'd0 && (state == S_LOAD || state == S_FETCH_LO));
+    end
+    if (chk && state == S_EXECUTE) begin
+      cover (entering_execute);
+      // core's first-EXECUTE-cycle marker == checker's FETCH_HI->EXECUTE step.
+      assert (entering_execute == (p_state == S_FETCH_HI));
+    end
+    // Nothing has committed since reset (includes the entering cycle,
+    // which the `fresh` window excludes): every architectural flag is
+    // still at its reset value.
+    if (rst_n && !exec_seen) begin
+      cover (entering);
+      assert (state != S_EXECUTE || (p_valid && p_state == S_FETCH_HI));
+      assert (flag == 1'b0);
+      assert (!return_valid && retaddr == 9'd0);
+      assert (!illegal_op_flag && !call_ret_misuse_flag);
+      assert (!halted && !pending_lx_writeback);
+      if (state != S_LOAD) assert (pc == 9'd0 && uo_out == 8'd0);
+    end
+    // DELAY window: the core is executing this same DELAY, and the
+    // shared counter holds exactly the remaining extra cycles.
+    if (rst_n && dl_on) begin
+      cover (dl_idx_w < dl_S && dl_S >= 24'd4);
+      assert (p_valid && p_state == S_EXECUTE);
+    end
+    if (rst_n && dl_on && dl_idx != 6'd63 && dl_idx_w < dl_S) begin
+      cover (dl_idx >= 6'd3);
+      assert (!entering_execute && !halted);
+      assert (ir[15:11] == OP_DELAY);
+      assert (ir_S == dl_S);
+      assert (cnt_count == dl_S - dl_idx_w - 24'd1);
+    end
+  end
+
 endmodule
 
 bind protocol_cpu_core core_reset_props u_core_reset_props (
@@ -365,5 +439,10 @@ bind protocol_cpu_core core_reset_props u_core_reset_props (
     .reg_a_sel           (reg_a_sel),
     .reg_b_sel           (reg_b_sel),
     .ra_data             (ra_data),
-    .rb_data             (rb_data)
+    .rb_data             (rb_data),
+    .ir                  (ir),
+    .ir_lo               (ir_lo),
+    .entering_execute    (entering_execute),
+    .cnt_count           (u_cycle_counter.count),
+    .rf_regs             (u_regfile.regs)
 );

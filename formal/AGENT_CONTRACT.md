@@ -3,8 +3,8 @@ role: assertion-formal
 write_scope: formal
 protected_paths: [src, test]
 read_context: [src, docs/isa.md, docs/architecture.md, formal/agent_cycle_counter_timing_props.v]
-gate_command: "make vacuity TARGET_PROPS=formal/<your_file>.v && make formal TARGET_PROPS=formal/<your_file>.v"
-gate_threshold: "vacuity: 100% of your cover statements reached; formal: every assert Status PASSED, at the toolchain's default BMC depth (20, see formal/scripts/formal_common.py -- raise it only if a specific property genuinely needs more depth to say anything meaningful)"
+gate_command: "make vacuity TARGET_PROPS=formal/<your_file>.v && make prove TARGET_PROPS=formal/<your_file>.v && python3 scripts/assert_superset.py HEAD formal/<your_file>.v"
+gate_threshold: "vacuity: 100% of your cover statements reached; prove: BMC Status PASSED and k-induction PROVEN (unbounded) -- strengthen with auxiliary invariant asserts, never by weakening (assert_superset must pass: no existing assert/assume removed or edited, no new assume); formal: every assert Status PASSED, at the toolchain's default BMC depth (20, see formal/scripts/formal_common.py -- raise it only if a specific property genuinely needs more depth to say anything meaningful)"
 output_naming: "agent_<target>_<hazard_or_property>_props.v"
 assertion_language: "Plain immediate assertions inside always @(posedge clk) blocks ONLY -- this project's yosys build (plain read_verilog -sv, no SymbiYosys/Verific) cannot parse concurrent SVA (`assert property`, `|->`, `##N`). Bind externally via a `bind <target_module> <props_module> u_<props_module> (...)` statement at the bottom of your file -- never write properties inline into src/ source."
 existing_examples: [formal/agent_cycle_counter_timing_props.v]

@@ -12,7 +12,7 @@ Gates:
   cov_default   make coverage-gate (100 seeds), default generator closure
   cov_<profile> make coverage-gate per stimulus profile (50 seeds)
   determinism   same random seeds twice -> byte-identical coverage results
-  formal        make formal, every props file PASS
+  formal        make prove: every props file PROVEN (BMC + k-induction)
   vacuity       make vacuity, 100% of covers reached
   mutation      scripts/mutate.py, score >= threshold, nothing errored
 
@@ -100,9 +100,12 @@ def gate_determinism(timeout):
 
 
 def gate_formal(timeout):
-    rc, out = sh("make formal", timeout)
-    m = re.search(r"\[run_formal\] (PASS|FAIL) \((\d+) props file", out)
-    return rc == 0 and m is not None and m.group(1) == "PASS", {"files": int(m.group(2)) if m else 0}, out
+    # make prove: BMC base case + k-induction, so every props file must be
+    # proven for all time, not just within the BMC depth (section 6)
+    rc, out = sh("make prove", timeout)
+    m = re.search(r"\[run_formal\] PROVEN (\d+)/(\d+)", out)
+    info = {"proven": f"{m.group(1)}/{m.group(2)}" if m else None}
+    return rc == 0 and m is not None and m.group(1) == m.group(2), info, out
 
 
 def gate_vacuity(timeout):

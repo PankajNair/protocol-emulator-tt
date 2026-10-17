@@ -59,7 +59,14 @@ module core_loop_flag_props (
     input wire [1:0]  reg_a_sel,   // DEBUG_PORTS
     input wire [1:0]  reg_b_sel,   // DEBUG_PORTS
     input wire [7:0]  ra_data,     // DEBUG_PORTS
-    input wire [7:0]  rb_data      // DEBUG_PORTS
+    input wire [7:0]  rb_data,     // DEBUG_PORTS
+    // k-induction auxiliary-invariant observation only (asserted on,
+    // never used to identify an instruction):
+    input wire        halted,           // DEBUG_PORTS
+    input wire [15:0] ir,               // DEBUG_PORTS
+    input wire [7:0]  ir_lo,            // DEBUG_PORTS
+    input wire        entering_execute, // DEBUG_PORTS
+    input wire [31:0] rf_regs           // DEBUG_PORTS (child u_regfile.regs, {R3,R2,R1,R0})
 );
 
   localparam S_FETCH_LO = 2'd1;
@@ -269,6 +276,43 @@ module core_loop_flag_props (
     end
   end
 
+  // ======================================================================
+  // Auxiliary invariants for k-induction (make prove). Each links ghost
+  // state to the core's real state; every one is itself proven. They are
+  // what rules out the unreachable induction start states (ghost regfile
+  // entry that disagrees with an unread real register, a stale cur_op_r /
+  // cur_lvl_r vs the latched instruction word, ...).
+  // ======================================================================
+  always @(posedge clk) begin
+    if (rst_n) begin
+      cover (in_exec && !entering && cur_op_r == OP_WAIT);
+      // Ghost regfile == real regfile, all four entries (not just the two
+      // the read ports happen to select).
+      assert (rf_regs == {g_rf[3], g_rf[2], g_rf[1], g_rf[0]});
+      // g_lo and core's ir_lo both capture mem_rdata in FETCH_HI.
+      assert (ir_lo == g_lo);
+      // HALT only freezes in EXECUTE, after clearing entering_execute.
+      assert (!halted || state == S_EXECUTE);
+      assert (!halted || !entering_execute);
+      assert (!entering_execute || state == S_EXECUTE);
+      // First cycle after reset is LOAD.
+      assert (p_valid || state == 2'd0);
+    end
+    if (chk && state == S_EXECUTE) begin
+      cover (entering_execute);
+      // core's first-EXECUTE-cycle marker == checker's FETCH_HI->EXECUTE step.
+      assert (entering_execute == (p_state == S_FETCH_HI));
+      // PC is the address fetched in FETCH_HI for the whole EXECUTE.
+      assert (pc == g_fpc);
+    end
+    if (in_exec && !entering) begin
+      cover (cur_op_r == OP_WAIT && cur_lvl_r);
+      // Latched word's opcode / WAIT level == the checker's own copy.
+      assert (ir[15:11] == cur_op_r);
+      assert (ir[5] == cur_lvl_r);
+    end
+  end
+
 endmodule
 
 bind protocol_cpu_core core_loop_flag_props u_core_loop_flag_props (
@@ -286,5 +330,10 @@ bind protocol_cpu_core core_loop_flag_props u_core_loop_flag_props (
     .reg_a_sel(reg_a_sel),
     .reg_b_sel(reg_b_sel),
     .ra_data  (ra_data),
-    .rb_data  (rb_data)
+    .rb_data  (rb_data),
+    .halted   (halted),
+    .ir       (ir),
+    .ir_lo    (ir_lo),
+    .entering_execute(entering_execute),
+    .rf_regs  (u_regfile.regs)
 );

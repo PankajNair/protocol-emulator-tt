@@ -107,12 +107,86 @@ DEBUG_PORTS = {
         "ra_data":              ("logic [7:0]", None),
         "rb_data":              ("logic [7:0]", None),
         "pending_lx_writeback": ("logic", None),
+        # Added for k-induction auxiliary invariants (agent_core_wait /
+        # loop_flag / reset props): the latched instruction word, the
+        # captured low byte and the first-EXECUTE-cycle marker. Only
+        # ever asserted on (ghost == real), never used to identify an
+        # instruction.
+        "ir":                   ("logic [15:0]", None),
+        "ir_lo":                ("logic [7:0]", None),
+        "entering_execute":     ("logic", None),
+    },
+    # Added for agent_cycle_counter_timing_props.v's induction-
+    # strengthening invariants (ghost model <-> real count), assert-only.
+    "cycle_counter": {
+        "count": ("logic [23:0]", None),
     },
     "pin_ctrl": {
         "mode": ("logic [7:0][1:0]", 8),
         "drv":  ("logic [7:0]", 8),
+        # Added for agent_pin_ctrl_direction_props.v's k-induction
+        # strengthening: asserted equal to the checker's own ghost
+        # synchronizer / seen-fall latch (never used to derive an
+        # expected value).
+        "uio_in_ff1":      ("logic [7:0]", None),
+        "uio_in_ff2":      ("logic [7:0]", None),
+        "start_prev":      ("logic", None),
+        "seen_start_fall": ("logic", None),
     },
 }
+
+
+# Debug ports on a CHILD instance's internal state (yosys's
+# read_verilog frontend has no hierarchical references, so the child's
+# source is copied with a dbg_<sig> output port added and the parent's
+# debug copy threads it out as dbg_<name>).
+# {target: {name: (inst, child_module, child_sig, packed_type, n_elems)}}
+CHILD_DEBUG_PORTS = {
+    "protocol_cpu_core": {
+        "rf_regs":   ("u_regfile", "regfile", "regs", "logic [3:0][7:0]", 4),
+        "cnt_count": ("u_cycle_counter", "cycle_counter", "count", "logic [23:0]", None),
+    },
+}
+
+
+def generate_child_copies(target_module, used):
+    """Scratch copies of each child module used, with dbg_<sig> outputs added.
+    Returns {child_module: copy_path}. Never touches src/."""
+    by_child = {}
+    for name, (inst, child, sig, ty, n) in used.items():
+        by_child.setdefault(child, []).append((name, inst, sig, ty, n))
+    paths = {}
+    for child, entries in by_child.items():
+        text = _strip_comments(find_module_file(child).read_text())
+        _o, close_idx = _find_port_list_span(text, child)
+        ports = ",\n".join(f"    output {ty} dbg_{sig}" for _nm, _i, sig, ty, _n in entries)
+        text = text[:close_idx] + ",\n" + ports + "\n" + text[close_idx:]
+        lines = []
+        for _nm, _i, sig, _ty, n in entries:
+            if n is None:
+                lines.append(f"    assign dbg_{sig} = {sig};")
+            else:
+                lines += [f"    assign dbg_{sig}[{i}] = {sig}[{i}];" for i in range(n)]
+        e = text.rindex("endmodule")
+        text = text[:e] + "\n".join(lines) + "\n\n" + text[e:]
+        SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        out = SCRATCH_DIR / f"{target_module}__{child}_dbgcopy.v"  # distinct from a standalone-target copy
+        out.write_text(text)
+        paths[child] = out
+    return paths
+
+
+def patch_parent_for_children(path, target_module, used):
+    text = path.read_text()
+    _o, close_idx = _find_port_list_span(text, target_module)
+    ports = ",\n".join(f"    output {ty} dbg_{name}" for name, (_i, _c, _s, ty, _n) in used.items())
+    text = text[:close_idx] + ",\n" + ports + "\n" + text[close_idx:]
+    for name, (inst, _c, sig, _ty, _n) in used.items():
+        m = re.search(r"\b" + re.escape(inst) + r"\s*\(", text)
+        if not m:
+            raise FormalError(f"instance {inst} not found in {target_module}")
+        text = text[:m.end()] + f"\n      .dbg_{sig}(dbg_{name})," + text[m.end():]
+    path.write_text(text)
 
 
 class FormalError(Exception):
@@ -323,13 +397,26 @@ def build_smt2(props_path: Path) -> tuple[Path, str]:
     debug_ports = DEBUG_PORTS.get(target_module, {})
     used_debug_ports = {n: t for n, t in debug_ports.items() if n in ports}
 
+    child_ports = CHILD_DEBUG_PORTS.get(target_module, {})
+    used_child = {n: v for n, v in child_ports.items() if n in ports}
+
     dbg_copy_path = None
-    if used_debug_ports:
+    if used_debug_ports or used_child:
         dbg_copy_path = generate_debug_copy(target_module, used_debug_ports)
+    child_copies = {}
+    if used_child:
+        child_copies = generate_child_copies(target_module, used_child)
+        patch_parent_for_children(dbg_copy_path, target_module, used_child)
 
-    wrapper_path, wrapper_name = generate_wrapper(checker_name, target_module, ports, used_debug_ports)
+    all_dbg = dict(used_debug_ports)
+    all_dbg.update({n: (v[3], v[4]) for n, v in used_child.items()})
+    wrapper_path, wrapper_name = generate_wrapper(checker_name, target_module, ports, all_dbg)
 
-    extra_srcs = [SRC_DIR / name for name in EXTRA_SRCS.get(target_module, [])]
+    extra_srcs = []
+    for name in EXTRA_SRCS.get(target_module, []):
+        p = SRC_DIR / name
+        child_mod = next((c for c, cp in child_copies.items() if re.search(r"\bmodule\s+" + c + r"\b", p.read_text())), None)
+        extra_srcs.append(child_copies[child_mod] if child_mod else p)
     target_src = dbg_copy_path if dbg_copy_path else find_module_file(target_module)
 
     all_srcs = [ISA_DEFS] + extra_srcs + [target_src, strip_bind(props_path), wrapper_path]

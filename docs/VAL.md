@@ -172,20 +172,45 @@ unbounded wait), which is why waits are now bounded.
 Plain `yosys` + `yosys-smtbmc` + `z3`, no SymbiYosys. Immediate
 assertions in `always @(posedge clk)` blocks only (this yosys build
 can't parse concurrent SVA); every assert has a companion cover. `make
-formal [TARGET_PROPS=...]` runs BMC at depth 20; `make vacuity` requires
+formal [TARGET_PROPS=...]` runs BMC at depth 20, `make prove` adds k-induction
+(k=20) so a file holds for all time, not just 20 cycles; `make vacuity` requires
 100% of covers reached. Toolchain details: `formal/scripts/formal_common.py`
 docstring.
 
 | Props file | Target | Status |
 |---|---|---|
-| `agent_cycle_counter_timing_props.v` | DELAY/WAIT counter: no undercount + exact timing | proven, 2/2 covers |
-| `agent_core_wait_props.v` | `protocol_cpu_core`: WAIT leaves EXECUTE on exactly the first k where the pin matches or the spec-computed timeout expires; tie clears the flag; mantissa 0 never times out; no side effects while waiting; exit fetches PC+1 | proven, 16/16 covers (timeout exit reached for exponent 0 only). Scratch mutants (#6, timeout from exponent, #1 in cycle_counter.v, inverted level) each fail |
-| `agent_core_loop_flag_props.v` | `protocol_cpu_core`: ghost regfile (from the write port) matches both read ports every cycle; only CMP/TEST-bit/WAIT change the flag; LOOP writes Rd-1 mod 256 and branches iff nonzero (wrap covered); CMP/TEST-bit/WAIT write the specified value | proven, 22/22 covers. Scratch mutants (#11, SHIFT writes flag, LOOP taken iff flag, decrement by 2, CMP inverted) each fail |
-| `agent_core_call_ret_misuse_props.v` | `protocol_cpu_core`: ghost `return_valid`/`retaddr` from identified CALL/RET commits match the core every cycle; misuse flag rises only after a nested CALL or orphan RET, always after one, sticky until reset; CALL saves PC+1 and jumps, RET (orphan included) jumps to `retaddr` | proven, 17/17 covers. Scratch mutants (#4, #5, RET not clearing return_valid, CALL saving PC) each fail |
-| `agent_core_reset_props.v` | `protocol_cpu_core`: known state on the first cycle after any (incl. mid-trace) reset; nothing executes, drives pins or writes memory before START except host boot writes; first fetch byte 0; no leakage from a DELAY, blocked WAIT, FETCH_HI or pending LOAD/LOADX writeback interrupted by reset (a cover per scenario) | proven, 22/22 covers. Scratch mutants (dropped reset, surviving writeback, reset into FETCH_LO, regfile without reset) each fail |
-| `agent_core_illegal_opcode_props.v` | `protocol_cpu_core`: illegal_op_flag rises only after a reserved-opcode commit, always rises after one, sticky until reset; reserved opcode is a true NOP (no mem/pin/regfile write, PC+1, other state unchanged). Opcode taken from `mem_rdata` at FETCH_HI->EXECUTE, not core.v's decode | proven, 9/9 covers. Agent scratch mutants (#8, flag never set, LDI also sets) each fail |
-| `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model; output VALUES: `uio_out[5]` always the last value written to pin 5 (LOAD ack and runtime), `uio_out[6]` the latched HOST_ERROR once its gate opens, protocol pins drive their last written value (0 in open-drain) | proven, 47/47 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
-| `agent_pin_ctrl_sync_depth_props.v` | `pin_ctrl`: every consumer of an external input sees exactly the value from 2 cycles earlier (expected values rebuilt from ports only): all 8 `ui_in_sync` bits, the `pin_read` tap feeding WAIT/INB (pin_index taken in the current cycle), the START/HOST_GO edge outputs with their `mode_load` gating, and the post-reset window while the flops still hold 0 | proven, 66/66 covers. Agent mutants (pin_read on ff1, extra flop on both paths, edge detectors on ff1, ui_in_sync on ff1) each fail, also with the reset-phase asserts removed; parent re-ran the first two independently on full-repo copies |
+| `agent_cycle_counter_timing_props.v` | DELAY/WAIT counter: no undercount + exact timing | proven unbounded (k-induction), 2/2 covers |
+| `agent_core_wait_props.v` | `protocol_cpu_core`: WAIT leaves EXECUTE on exactly the first k where the pin matches or the spec-computed timeout expires; tie clears the flag; mantissa 0 never times out; no side effects while waiting; exit fetches PC+1 | proven unbounded (k-induction), 16/16 covers (timeout exit reached for exponent 0 only). Scratch mutants (#6, timeout from exponent, #1 in cycle_counter.v, inverted level) each fail |
+| `agent_core_loop_flag_props.v` | `protocol_cpu_core`: ghost regfile (from the write port) matches both read ports every cycle; only CMP/TEST-bit/WAIT change the flag; LOOP writes Rd-1 mod 256 and branches iff nonzero (wrap covered); CMP/TEST-bit/WAIT write the specified value | proven unbounded (k-induction), 22/22 covers. Scratch mutants (#11, SHIFT writes flag, LOOP taken iff flag, decrement by 2, CMP inverted) each fail |
+| `agent_core_call_ret_misuse_props.v` | `protocol_cpu_core`: ghost `return_valid`/`retaddr` from identified CALL/RET commits match the core every cycle; misuse flag rises only after a nested CALL or orphan RET, always after one, sticky until reset; CALL saves PC+1 and jumps, RET (orphan included) jumps to `retaddr` | proven unbounded (k-induction), 17/17 covers. Scratch mutants (#4, #5, RET not clearing return_valid, CALL saving PC) each fail |
+| `agent_core_reset_props.v` | `protocol_cpu_core`: known state on the first cycle after any (incl. mid-trace) reset; nothing executes, drives pins or writes memory before START except host boot writes; first fetch byte 0; no leakage from a DELAY, blocked WAIT, FETCH_HI or pending LOAD/LOADX writeback interrupted by reset (a cover per scenario) | proven unbounded (k-induction), 22/22 covers. Scratch mutants (dropped reset, surviving writeback, reset into FETCH_LO, regfile without reset) each fail |
+| `agent_core_illegal_opcode_props.v` | `protocol_cpu_core`: illegal_op_flag rises only after a reserved-opcode commit, always rises after one, sticky until reset; reserved opcode is a true NOP (no mem/pin/regfile write, PC+1, other state unchanged). Opcode taken from `mem_rdata` at FETCH_HI->EXECUTE, not core.v's decode | proven unbounded (k-induction), 9/9 covers. Agent scratch mutants (#8, flag never set, LDI also sets) each fail |
+| `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model; output VALUES: `uio_out[5]` always the last value written to pin 5 (LOAD ack and runtime), `uio_out[6]` the latched HOST_ERROR once its gate opens, protocol pins drive their last written value (0 in open-drain) | proven unbounded (k-induction), 47/47 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
+| `agent_pin_ctrl_sync_depth_props.v` | `pin_ctrl`: every consumer of an external input sees exactly the value from 2 cycles earlier (expected values rebuilt from ports only): all 8 `ui_in_sync` bits, the `pin_read` tap feeding WAIT/INB (pin_index taken in the current cycle), the START/HOST_GO edge outputs with their `mode_load` gating, and the post-reset window while the flops still hold 0 | proven unbounded (k-induction), 66/66 covers. Agent mutants (pin_read on ff1, extra flop on both paths, edge detectors on ff1, ui_in_sync on ff1) each fail, also with the reset-phase asserts removed; parent re-ran the first two independently on full-repo copies |
+
+**k-induction (2026-10-17).** Every props file proves unbounded with
+`make prove`, which the sign-off formal gate now runs.
+- **As written:** 3 of the 8 files proved directly.
+- **The other 5:** the assertion-formal agent strengthened them with
+  auxiliary invariants that tie ghost state to real state. Those added 57
+  asserts, and every added assert is proven too.
+- **Anti-weakening:** `scripts/assert_superset.py` checks that every
+  original assert is still present verbatim and that no assume was added.
+- **Tooling:** the core files needed state inside child instances
+  (`u_regfile.regs`, `u_cycle_counter.count`). That needed a
+  `CHILD_DEBUG_PORTS` extension in `formal_common.py`, which the agent
+  proposed in scratch and the parent reviewed.
+- **Ghost-model bug:** the cycle-counter checker's ghost `elapsed`
+  counter wrapped after 2^24 cycles, which would have false-failed a
+  correct design. It now saturates.
+
+Coverage is 225/225. Formal alone, without simulation, now kills 16 of
+the 23 mutation-gate mutants, including the long-count red-team
+survivors #18, #20 and #21 that depth-20 BMC could not see. The 7 it
+misses mark where formal is still blind:
+- datapath values: #3 INB, #7 LOADX, #12 SHIFT;
+- LOAD-mode memory writes and the echo on the boot path: #10, #19,
+  #22, #23.
 
 ## 7. Golden model
 

@@ -43,7 +43,8 @@
 // ports -- the DUT's `drv` debug port is never used to decide what is
 // expected on uio_out.
 //
-// Scope: bounded-depth BMC (DEFAULT_DEPTH=20), not an inductive proof.
+// Scope: BMC (DEFAULT_DEPTH=20) plus unbounded k-induction (`make prove`),
+// closed by the Property 8 ghost==DUT invariants at the end of the file.
 // All inputs (uio_in, mode_load, set_*, outb_*, pin_index) are free;
 // the only assume is the standard "reset happens at step 0".
 
@@ -61,7 +62,14 @@ module pin_ctrl_direction_props (
     input wire             outb_bit,
     input wire [7:0]       uio_out,
     input wire [7:0][1:0]  mode,   // DEBUG_PORTS: pin_ctrl.mode[0:7]
-    input wire [7:0]       drv     // DEBUG_PORTS: pin_ctrl.drv[0:7]
+    input wire [7:0]       drv,    // DEBUG_PORTS: pin_ctrl.drv[0:7]
+    // DEBUG_PORTS, used ONLY in Property 8's induction-strengthening
+    // equalities (asserted equal to the ghost; never used to derive an
+    // expected value for Properties 1-7).
+    input wire [7:0]       uio_in_ff1,
+    input wire [7:0]       uio_in_ff2,
+    input wire             start_prev,
+    input wire             seen_start_fall
 );
 
   // ======================================================================
@@ -278,6 +286,45 @@ module pin_ctrl_direction_props (
     end
   endgenerate
 
+  // ======================================================================
+  // Property 8 -- induction-strengthening invariants (Scope note above:
+  // these exist so `make prove` closes the k-induction step; they are
+  // themselves asserts, so they are proven too). Without them the
+  // induction step can start from unreachable states where the ghost and
+  // the DUT disagree on state no port exposes for > k cycles (e.g. drv[6]
+  // vs g_val[6] while uio_oe[6]=0, or seen_start_fall vs g_seen_fall
+  // during a long LOAD stretch).
+  //   8a: ghost uio[6] synchronizer/previous-sample == DUT's
+  //   8b: ghost seen-fall latch == DUT's seen_start_fall
+  //   8c: ghost last-written value == DUT drv[] (every pin)
+  //   8d: a running-mode pin-5 write last cycle is the last pin-5 value
+  // ======================================================================
+  always @(posedge clk) begin
+    if (rst_n) begin
+      cover (g_ff1 && g_ff2 && !g_prev);
+      assert (g_ff1  == uio_in_ff1[6]);
+      assert (g_ff2  == uio_in_ff2[6]);
+      assert (g_prev == start_prev);
+      cover (g_seen_fall);
+      assert (g_seen_fall == seen_start_fall);
+      if (g_wr5_run) begin
+        cover (1'b1);
+        assert (g_val[5] == g_wr5_val);
+      end
+    end
+  end
+
+  generate
+    for (n = 0; n < 8; n = n + 1) begin : INV
+      always @(posedge clk) begin
+        if (rst_n) begin
+          cover (g_val[n]);
+          assert (drv[n] == g_val[n]);
+        end
+      end
+    end
+  endgenerate
+
 endmodule
 
 bind pin_ctrl pin_ctrl_direction_props u_pin_ctrl_direction_props (
@@ -294,5 +341,9 @@ bind pin_ctrl pin_ctrl_direction_props u_pin_ctrl_direction_props (
     .outb_bit (outb_bit),
     .uio_out  (uio_out),
     .mode     (mode),
-    .drv      (drv)
+    .drv      (drv),
+    .uio_in_ff1     (uio_in_ff1),
+    .uio_in_ff2     (uio_in_ff2),
+    .start_prev     (start_prev),
+    .seen_start_fall(seen_start_fall)
 );

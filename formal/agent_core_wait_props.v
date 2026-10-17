@@ -60,7 +60,14 @@ module core_wait_props (
     input wire [1:0]  state,       // DEBUG_PORTS
     input wire [8:0]  pc,          // DEBUG_PORTS
     input wire        flag,        // DEBUG_PORTS
-    input wire        rf_we        // DEBUG_PORTS
+    input wire        rf_we,       // DEBUG_PORTS
+    // k-induction auxiliary-invariant observation only (asserted on,
+    // never used to identify an instruction or decide an exit):
+    input wire        halted,           // DEBUG_PORTS
+    input wire [15:0] ir,               // DEBUG_PORTS
+    input wire [7:0]  ir_lo,            // DEBUG_PORTS
+    input wire        entering_execute, // DEBUG_PORTS
+    input wire [23:0] cnt_count         // DEBUG_PORTS (child u_cycle_counter.count)
 );
 
   localparam S_FETCH_LO = 2'd1;
@@ -253,6 +260,59 @@ module core_wait_props (
     end
   end
 
+  // ======================================================================
+  // Auxiliary invariants for k-induction (make prove). Each links the
+  // spec model's ghost state to the core's real state and is itself
+  // proven. Without them induction starts from unreachable states: a
+  // WAIT window whose ghost fields disagree with the latched `ir`, or
+  // whose shared countdown counter holds a value unrelated to k (the
+  // counter is 24 bits and a WAIT can last 31<<15 cycles, so no bounded
+  // depth can rule that out -- it has to be stated).
+  // Counter timing (cycle_counter.v): loaded on k = 0 with target-1,
+  // decrements every cycle, expired = (count == 0) -- so on every
+  // in-window cycle k >= 1, count == target - k, and the window ends
+  // (timeout) at k == target.
+  // ======================================================================
+  wire [31:0] tgt_r = {27'd0, w_mant_r} << (w_exp_r * 5);
+
+  always @(posedge clk) begin
+    if (rst_n) begin
+      cover (w_act_r && w_mant_r != 5'd0 && k_r >= 24'd2);
+      // g_lo and core's ir_lo both capture mem_rdata in FETCH_HI.
+      assert (ir_lo == g_lo);
+      // HALT only freezes in EXECUTE, after clearing entering_execute.
+      assert (!halted || state == S_EXECUTE);
+      assert (!halted || !entering_execute);
+      assert (!entering_execute || state == S_EXECUTE);
+      // First cycle after reset is LOAD.
+      assert (p_valid || state == 2'd0);
+    end
+    if (chk && state == S_EXECUTE) begin
+      cover (entering_execute);
+      // core's first-EXECUTE-cycle marker == checker's FETCH_HI->EXECUTE step.
+      assert (entering_execute == (p_state == S_FETCH_HI));
+      // PC is the address fetched in FETCH_HI for the whole EXECUTE.
+      assert (pc == g_fpc);
+    end
+    if (rst_n && w_act_r) begin
+      cover (w_exp_r == 2'd3 && w_mant_r[0] == 1'b0 && w_mant_r != 5'd0);
+      // In-window (past k = 0): the core is executing this same WAIT.
+      assert (p_valid && p_state == S_EXECUTE);
+      assert (!entering_execute && !halted);
+      assert (ir[15:11] == OP_WAIT);
+      assert (ir[10:9] == w_exp_r);
+      assert (ir[8:6] == w_pin_r);
+      assert (ir[5] == w_lvl_r);
+      assert (ir[4:0] == w_mant_r);
+      if (w_mant_r != 5'd0) begin
+        // Shared counter == remaining timeout (the k-to-counter link).
+        assert (k_r >= 24'd1);
+        assert ({8'd0, k_r} <= tgt_r);
+        assert (cnt_count == tgt_r[23:0] - k_r);
+      end
+    end
+  end
+
 endmodule
 
 bind protocol_cpu_core core_wait_props u_core_wait_props (
@@ -268,5 +328,10 @@ bind protocol_cpu_core core_wait_props u_core_wait_props (
     .state    (state),
     .pc       (pc),
     .flag     (flag),
-    .rf_we    (rf_we)
+    .rf_we    (rf_we),
+    .halted   (halted),
+    .ir       (ir),
+    .ir_lo    (ir_lo),
+    .entering_execute(entering_execute),
+    .cnt_count(u_cycle_counter.count)
 );

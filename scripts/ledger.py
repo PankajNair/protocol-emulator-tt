@@ -232,7 +232,9 @@ def cmd_finish(a) -> None:
         files = sorted(f for f in set(now_snap) | set(rec["snapshot"])
                        if now_snap.get(f) != rec["snapshot"].get(f) and f not in a.exclude_file)
     else:
-        files = changed_since(rec, a.exclude_commit)
+        # repo mode: --exclude-file drops files the parent (or a sibling
+        # agent working in parallel) changed during this run
+        files = [f for f in changed_since(rec, a.exclude_commit) if f not in a.exclude_file]
     scope = rec.get("write_scope")
     outside = [f for f in files if scope and not under(f, [scope])]
     protected = [f for f in files if under(f, rec.get("protected_paths", []))]
@@ -329,7 +331,7 @@ def main() -> None:
     f.add_argument("--exclude-commit", action="append", default=[],
                    help="repeatable: a commit made by the parent during the run, not by the agent")
     f.add_argument("--exclude-file", action="append", default=[],
-                   help="repeatable (--tree runs): a file the parent itself put into the agent's tree")
+                   help="repeatable: a file changed during the run by the parent or a parallel sibling agent, not by this agent")
     f.add_argument("--override", help="reason for accepting despite failing gates / scope violation")
     f.set_defaults(fn=cmd_finish)
 

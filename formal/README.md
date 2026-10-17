@@ -29,6 +29,11 @@ elaborated on this yosys build).
 
 ## Status
 
+- **All 8 props files are proven unbounded (k-induction, `make prove`)**
+  since 2026-10-17; see docs/VAL.md section 6. Strengthen with
+  auxiliary invariants only -- `scripts/assert_superset.py` rejects any
+  removed/edited assert or new assume.
+
 - **`cycle_counter.v` DELAY/WAIT timing -- done, proven.**
   `agent_cycle_counter_timing_props.v`: two properties (no-undercount,
   the named candidate below; and a tighter full-equality timing
