@@ -136,6 +136,12 @@ def cmd_start(a) -> None:
     if meta.get("role") and meta["role"] != a.agent:
         sys.exit(f"[ledger] contract role is {meta['role']!r}, not {a.agent!r}")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + f"-{a.agent}"
+    # runs started in the same second (parallel agents) must not share an
+    # id: the second open record would overwrite the first
+    taken = {r["id"] for r in load_runs()} | {q.stem for q in OPEN_DIR.glob("*.json")}
+    base, n = run_id, 2
+    while run_id in taken:
+        run_id, n = f"{base}-{n}", n + 1
     agent_def = AGENTS_DIR / f"{a.agent}.md"
     rec = {
         "id": run_id,
