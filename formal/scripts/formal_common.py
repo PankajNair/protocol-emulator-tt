@@ -40,6 +40,7 @@ line directly (matching the sibling project's own convention) rather
 than a separate marker comment.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -47,7 +48,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SRC_DIR = REPO_ROOT / "src"
 FORMAL_DIR = REPO_ROOT / "formal"
-SCRATCH_DIR = Path("/tmp/protocol_emulator_formal_scratch")
+# FORMAL_SCRATCH overrides it, so parallel runs (agents, mutant sweeps)
+# don't overwrite each other's debug copies
+SCRATCH_DIR = Path(os.environ.get("FORMAL_SCRATCH", "/tmp/protocol_emulator_formal_scratch"))
 
 # isa_defs.v has no module, just `define`s core.v/cycle_counter.v/
 # pin_ctrl.v rely on via file-order visibility, not `include` (see
