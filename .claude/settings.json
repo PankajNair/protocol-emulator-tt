@@ -1,7 +1,9 @@
 {
   "permissions": {
     "deny": [
-      "Edit(src/**)"
+      "Edit(src/**)",
+      "Edit(.claude/agents/**)",
+      "Write(.claude/agents/**)"
     ]
   }
 }

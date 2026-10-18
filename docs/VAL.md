@@ -232,19 +232,25 @@ against RTL-proven directed tests.
 
 ## 8. Agents and contracts
 
-Three generic, project-agnostic subagents live at user level
-(`~/.claude/agents/`). Each reads a contract in its write-scope directory
+Five generic, project-agnostic subagents are vendored in the repo
+(`.claude/agents/`; a project-level definition takes precedence over a
+user-level one of the same name), so a clone runs exactly the agents the
+ledger recorded. Each reads a contract in its write-scope directory
 before doing anything:
 
 | Agent | Contract | Writes | Accepted by |
 |---|---|---|---|
 | `stimulus-gen` | `test/stim/AGENT_CONTRACT.md` | new stimulus profiles | 200 seeds pass, target bins hit, mutation no drop |
 | `coverage-closure` | `test/seq/AGENT_CONTRACT.md` | targeted bursts for thin bins | `make coverage` + `make mutate` no drop |
-| `assertion-formal` | `formal/AGENT_CONTRACT.md` | props files | `make vacuity` 100% then `make formal` PASS, plus a scratch-copy bug injection |
+| `assertion-formal` | `formal/AGENT_CONTRACT.md` | props files | `make vacuity` 100%, `make prove` PROVEN, `assert_superset`, plus a scratch-copy bug injection |
+| `triage-debug` | `triage/AGENT_CONTRACT.md` | `verdict.json` | triage bench score (section 16) |
+| `red-team` | `redteam/AGENT_CONTRACT.md` | mutant candidates + witnesses | parent re-evaluates every candidate (section 17) |
 
 Agents never grade their own output: the parent session runs every gate.
-`.claude/settings.json` denies `Edit(src/**)`, and the parent runs `git diff
-src/` after every invocation. The deny rule is defense in depth, not proof.
+`.claude/settings.json` denies `Edit(src/**)` and writes to
+`.claude/agents/**`, and the parent runs `git diff src/` after every
+invocation. `ledger.py finish` also refuses `accepted` if the agent's own
+definition changed during the run. The deny rule is defense in depth, not proof.
 
 Coverage-closure bursts accepted so far (`test/seq/`, wired into
 `random_gen.CLOSURE_BURSTS`): bit-bang TX loop (OUTB on a pin actually
@@ -511,13 +517,16 @@ python3 scripts/ledger.py gate $RUN --name seeds -- \
         bash -c 'make -C test random SEEDS=200 && ! grep -q failure test/results.xml'
 python3 scripts/ledger.py gate $RUN --signoff        # after make signoff
 python3 scripts/ledger.py finish $RUN --verdict accepted|rejected --reason "..." \
-        [--commit SHA] [--bugs-found "..."] [--exclude-commit SHA]
+        [--commit SHA] [--bugs-found "..."] [--exclude-commit SHA] \
+        [--tokens N --tool-uses N]                   # from the agent's completion notice
 make ledger                                          # stats + recent runs
 ```
 
 Each record holds:
-- the agent, plus hashes of its definition (`~/.claude/agents/<agent>.md`)
-  and of its contract, so results can be split by prompt version;
+- the agent, plus hashes of its definition (`.claude/agents/<agent>.md`,
+  vendored) and of its contract, so results can be split by prompt version;
+- tokens and tool calls, copied from the agent's completion notice
+  (recorded from 2026-10-18; earlier runs have none);
 - the task, plus the full prompt when `--prompt-file` is given (copied to
   `ledger/prompts/`);
 - the base commit and the files the run changed;
@@ -537,7 +546,8 @@ tree. Tree mode skips build output (`sim_build/`, `target/`).
 - no gate was recorded;
 - any gate failed;
 - a changed file is outside the contract's `write_scope` or under
-  `protected_paths`.
+  `protected_paths`;
+- the agent's definition file changed since `start`.
 
 `--override REASON` records a deliberate exception instead. `gate --signoff`
 refuses a `signoff_report.json` older than the run's start.
@@ -592,7 +602,7 @@ bug in the model can't hide in its own trace.
 - Runs in one tree hold a lock. Two overlapping minimizer runs in one
   tree once produced a "minimal" program that then passed.
 
-**Agent.** `~/.claude/agents/triage-debug.md` is generic. The contract
+**Agent.** `.claude/agents/triage-debug.md` is generic. The contract
 gives the classes (DUT, REFERENCE_MODEL, HARNESS, SPEC_AMBIGUITY,
 NOT_REPRODUCIBLE) and the verdict JSON format. The spec is the referee:
 the agent derives the correct value by hand, then decides which side
@@ -691,7 +701,7 @@ Verdicts: KILLED, SURVIVED_WITNESSED (a real gap), SURVIVED_NO_WITNESS
 pre-screen with this tool. The parent re-runs it with `--full` as the
 gate and trusts only that run.
 
-**Agent.** The agent definition is `~/.claude/agents/red-team.md`; the
+**Agent.** The agent definition is `.claude/agents/red-team.md`; the
 contract is `redteam/AGENT_CONTRACT.md`. The agent writes only
 `redteam/candidates/` and evaluates at most 8 candidates per run. It
 must:
@@ -835,6 +845,7 @@ Nothing extra is stored, so the metrics can't drift from their sources.
 | | first-pass | every gate passed on its first attempt: no override, no re-run gate |
 | | overrides, scope flags | raw counts. A flag with an override was a deliberate exception, and its reason is in the ledger. |
 | | median minutes, findings | findings = `bugs_found` entries plus parent-confirmed red-team survivors |
+| agent cost | tokens, per accept, per finding | over the runs whose `finish` recorded `--tokens`; `tok_runs` says how many that is |
 | triage | benchmark | bench-score gate passes per round |
 | | replay reproduced | the agent's stated replay command reproduced its stated check |
 | red team | yield | parent-confirmed survivors / candidates the parent evaluated |
@@ -866,4 +877,6 @@ Caveats:
   agent pre-screens well, not that every pass will find gaps.
 - Every red-team survivor so far is a width or long-range timing gap.
   When the yield drops, that class has been worked out.
-- Token cost per run isn't recorded yet. The ledger has no field for it.
+- Token cost is recorded only from 2026-10-18 (`finish --tokens`). Older
+  runs could only be matched to their completion notices by time and
+  agent type, so they were not backfilled.

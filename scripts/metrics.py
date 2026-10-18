@@ -59,6 +59,23 @@ def first_pass(r: dict) -> bool:
     return bool(names) and all(g["passed"] for g in r["gates"]) and not rerun and not r.get("override")
 
 
+def findings_of(rs: list[dict]) -> int:
+    return sum(len(r.get("bugs_found") or []) for r in rs) + redteam_survivor_count(rs)
+
+
+def token_metrics(live: list[dict]) -> dict:
+    """Cost, over the runs whose finish recorded --tokens (older runs
+    predate it; 'tok_runs' says how many the figures cover)."""
+    tr = [r for r in live if r.get("tokens") is not None]
+    tok = sum(r["tokens"] for r in tr)
+    acc = sum(r["verdict"] == "accepted" for r in tr)
+    found = sum(len(r.get("bugs_found") or []) for r in tr) + redteam_survivor_count(tr)
+    return {"tok_runs": f"{len(tr)}/{len(live)}" if live else None,
+            "tokens": tok if tr else None,
+            "tok_per_accept": round(tok / acc) if acc else None,
+            "tok_per_finding": round(tok / found) if found else None}
+
+
 def agent_metrics(runs: list[dict]) -> list[dict]:
     rows = []
     by_agent = defaultdict(list)
@@ -76,8 +93,9 @@ def agent_metrics(runs: list[dict]) -> list[dict]:
             "overrides": sum(bool(r.get("override")) for r in live),
             "scope_flags": sum(bool(r.get("scope_outside") or r.get("scope_protected")) for r in live),
             "median_min": round(statistics.median(mins), 1) if mins else None,
-            "findings": sum(len(r.get("bugs_found") or []) for r in rs) + redteam_survivor_count(rs),
+            "findings": findings_of(rs),
             "def_versions": len([v for v in versions if v]),
+            **token_metrics(live),
         })
     return rows
 
@@ -199,10 +217,15 @@ def main() -> int:
         return 0
 
     cols = ["agent", "runs", "live", "acceptance", "first_pass", "overrides", "scope_flags", "median_min", "findings"]
+    tcols = ["agent", "tok_runs", "tokens", "tok_per_accept", "tok_per_finding"]
     print("== agents (rates over live runs)")
     print("  ".join(f"{c:>16}" if i else f"{c:18}" for i, c in enumerate(cols)))
     for r in m["agents"]:
         print("  ".join(f"{str(r[c] if r[c] is not None else '-'):>16}" if i else f"{r[c]:18}" for i, c in enumerate(cols)))
+    print("\n== agent cost (tokens, over runs that recorded them)")
+    print("  ".join(f"{c:>16}" if i else f"{c:18}" for i, c in enumerate(tcols)))
+    for r in m["agents"]:
+        print("  ".join(f"{str(r[c] if r[c] is not None else '-'):>16}" if i else f"{r[c]:18}" for i, c in enumerate(tcols)))
     t = m["triage"]
     print(f"\n== triage   benchmark {t['benchmark']}   replay reproduced {t['replay_reproduced']}   "
           f"real failures triaged {t['real_failures_triaged']}")

@@ -16,6 +16,7 @@ Flow, all run by the parent session (never by the agent itself):
     ledger.py gate   RUN_ID --name seeds -- make -C test random SEEDS=200
     ledger.py gate   RUN_ID --signoff          # import signoff_report.json
     ledger.py finish RUN_ID --verdict accepted|rejected --reason "..." [--commit SHA]
+                     [--tokens N --tool-uses N]
     ledger.py show [--agent NAME] [-n N]
     ledger.py stats
 
@@ -25,7 +26,8 @@ Rules `finish` enforces:
   * a change outside write_scope, or touching protected_paths, is a scope
     violation;
   * `accepted` needs at least one gate, every gate passing, and no scope
-    violation -- `--override REASON` records an explicit exception.
+    violation, and an agent definition unchanged since start --
+    `--override REASON` records an explicit exception.
 """
 
 import argparse
@@ -44,7 +46,10 @@ LEDGER_DIR = ROOT / "ledger"
 LEDGER = LEDGER_DIR / "runs.jsonl"
 OPEN_DIR = LEDGER_DIR / ".open"
 PROMPTS_DIR = LEDGER_DIR / "prompts"
-AGENTS_DIR = Path.home() / ".claude" / "agents"
+# agent definitions are vendored in the repo (project-level agents take
+# precedence over ~/.claude/agents), so a clone reproduces every run
+AGENTS_DIR = ROOT / ".claude" / "agents"
+USER_AGENTS_DIR = Path.home() / ".claude" / "agents"
 SIGNOFF_REPORT = ROOT / "signoff_report.json"
 
 
@@ -143,6 +148,12 @@ def cmd_start(a) -> None:
     while run_id in taken:
         run_id, n = f"{base}-{n}", n + 1
     agent_def = AGENTS_DIR / f"{a.agent}.md"
+    if not agent_def.is_file():
+        sys.exit(f"[ledger] no vendored definition {agent_def.relative_to(ROOT)}; copy it into the repo first")
+    user_def = USER_AGENTS_DIR / f"{a.agent}.md"
+    if user_def.is_file() and sha256(user_def) != sha256(agent_def):
+        print(f"[ledger] note: {user_def} differs from the vendored copy; the vendored one is what runs and is recorded",
+              file=sys.stderr)
     rec = {
         "id": run_id,
         "agent": a.agent,
@@ -239,9 +250,14 @@ def cmd_finish(a) -> None:
     outside = [f for f in files if scope and not under(f, [scope])]
     protected = [f for f in files if under(f, rec.get("protected_paths", []))]
     gates_ok = bool(rec["gates"]) and all(g["passed"] for g in rec["gates"])
+    # an agent must not be able to rewrite its own instructions mid-run
+    def_now = sha256(AGENTS_DIR / f"{rec['agent']}.md")
+    def_changed = rec["agent_def_sha"] is not None and def_now != rec["agent_def_sha"]
 
     problems = []
     if a.verdict == "accepted":
+        if def_changed:
+            problems.append(f"agent definition changed during the run ({rec['agent_def_sha']} -> {def_now})")
         if not rec["gates"]:
             problems.append("no gates recorded")
         elif not gates_ok:
@@ -263,6 +279,8 @@ def cmd_finish(a) -> None:
         "verdict": a.verdict, "reason": a.reason, "override": a.override,
         "commit": a.commit, "bugs_found": a.bugs_found,
         "excluded_parent_commits": a.exclude_commit,
+        "tokens": a.tokens, "tool_uses": a.tool_uses,
+        "agent_def_changed": def_changed,
     }
     LEDGER_DIR.mkdir(exist_ok=True)
     with LEDGER.open("a") as f:
@@ -332,6 +350,8 @@ def main() -> None:
                    help="repeatable: a commit made by the parent during the run, not by the agent")
     f.add_argument("--exclude-file", action="append", default=[],
                    help="repeatable: a file changed during the run by the parent or a parallel sibling agent, not by this agent")
+    f.add_argument("--tokens", type=int, help="total tokens the agent used (from its completion notice)")
+    f.add_argument("--tool-uses", type=int, help="tool calls the agent made (from its completion notice)")
     f.add_argument("--override", help="reason for accepting despite failing gates / scope violation")
     f.set_defaults(fn=cmd_finish)
 
