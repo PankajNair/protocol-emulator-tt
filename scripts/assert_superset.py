@@ -6,7 +6,8 @@ assert_superset.py -- anti-weakening gate for formal props edits.
 
 Every assert/assume statement in FILE as of git revision REV must still be
 present, verbatim (whitespace-normalized), in the working-tree FILE, and
-the working tree must not add any assume. An agent strengthening a props
+the working tree must not add any assume other than the standard
+initial `assume (!rst_n)` (so a brand-new props file passes with it). An agent strengthening a props
 file for induction may ADD asserts (auxiliary invariants, which are then
 proven too) but may not drop, edit or relax an existing one, and may not
 constrain the environment further. Exit 0 if that holds for every file.
@@ -17,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+STANDARD_ASSUMES = {("assume", "!rst_n")}
 STMT = re.compile(r"\b(assert|assume)\s*\((.*?)\)\s*;", re.S)
 
 
@@ -36,7 +38,9 @@ def main() -> int:
         new = stmts(Path(f).read_text())
         old = stmts(old_text)
         missing = [e for e in old if e not in new]
-        added_assumes = [e for e in new if e[0] == "assume" and e not in old]
+        # the standard initial reset assume every props file carries is not
+        # an environment constraint; any other new assume is
+        added_assumes = [e for e in new if e[0] == "assume" and e not in old and e not in STANDARD_ASSUMES]
         n_old = sum(k == "assert" for k, _ in old)
         n_new = sum(k == "assert" for k, _ in new)
         status = "OK" if not missing and not added_assumes else "FAIL"

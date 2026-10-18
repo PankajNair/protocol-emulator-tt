@@ -118,6 +118,16 @@ DEBUG_PORTS = {
         "ir":                   ("logic [15:0]", None),
         "ir_lo":                ("logic [7:0]", None),
         "entering_execute":     ("logic", None),
+        # Added for agent_core_datapath_props.v's k-induction
+        # strengthening: the deferred LOAD/LOADX writeback's destination,
+        # asserted equal to the checker's own copy of the Rd field.
+        "pending_lx_rd":        ("logic [1:0]", None),
+        # Added for agent_core_boot_props.v's k-induction invariants
+        # (ghost boot model == real LOAD-mode state). Asserted on only,
+        # never used to predict a write, address or echo.
+        "boot_addr":            ("logic [9:0]", None),
+        "boot_full":            ("logic", None),
+        "load_ack":             ("logic", None),
     },
     # Added for agent_cycle_counter_timing_props.v's induction-
     # strengthening invariants (ghost model <-> real count), assert-only.

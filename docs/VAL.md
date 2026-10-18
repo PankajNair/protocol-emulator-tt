@@ -185,6 +185,8 @@ docstring.
 | `agent_core_call_ret_misuse_props.v` | `protocol_cpu_core`: ghost `return_valid`/`retaddr` from identified CALL/RET commits match the core every cycle; misuse flag rises only after a nested CALL or orphan RET, always after one, sticky until reset; CALL saves PC+1 and jumps, RET (orphan included) jumps to `retaddr` | proven unbounded (k-induction), 17/17 covers. Scratch mutants (#4, #5, RET not clearing return_valid, CALL saving PC) each fail |
 | `agent_core_reset_props.v` | `protocol_cpu_core`: known state on the first cycle after any (incl. mid-trace) reset; nothing executes, drives pins or writes memory before START except host boot writes; first fetch byte 0; no leakage from a DELAY, blocked WAIT, FETCH_HI or pending LOAD/LOADX writeback interrupted by reset (a cover per scenario) | proven unbounded (k-induction), 22/22 covers. Scratch mutants (dropped reset, surviving writeback, reset into FETCH_LO, regfile without reset) each fail |
 | `agent_core_illegal_opcode_props.v` | `protocol_cpu_core`: illegal_op_flag rises only after a reserved-opcode commit, always rises after one, sticky until reset; reserved opcode is a true NOP (no mem/pin/regfile write, PC+1, other state unchanged). Opcode taken from `mem_rdata` at FETCH_HI->EXECUTE, not core.v's decode | proven unbounded (k-induction), 9/9 covers. Agent scratch mutants (#8, flag never set, LDI also sets) each fail |
+| `agent_core_datapath_props.v` | `protocol_cpu_core`: every regfile write carries the value docs/isa.md defines (LDI, IN, SHIFT zero-fill both ways, INB single-bit merge, LOOP Rd-1, LOAD/LOADX from `512+addr` with the 1-cycle trailing writeback), to the named Rd, at the named cycle; no other opcode or cycle writes. Instruction rebuilt from `mem_rdata`, operands from a ghost regfile asserted equal to `u_regfile.regs` | proven unbounded (k-induction), 17 asserts, 28/28 covers. Formal-only kills #3, #7, #12 |
+| `agent_core_boot_props.v` | `protocol_cpu_core` LOAD mode: write strobe exactly once per accepted HOST_GO pulse, at the ghost counter's address with `ui_in`; counter saturates at 1023 (that byte written once, over-run pulses no-ops); uo_out echo = counter low byte, valid when HOST_STATUS rises; ack cleared on HOST_GO fall. Ghost model from ports only, asserted equal to `boot_addr`/`boot_full`/`load_ack` | proven unbounded (k-induction), 29 asserts, 10/10 covers + 4 `[deep]` covers (address 1023 is ~2047 cycles deep) with simulation evidence `test_boot_echo_and_saturation`. Formal-only kills #10, #19, #22, #23 |
 | `agent_pin_ctrl_direction_props.v` | `pin_ctrl`: no uio[6] drive in LOAD or before a real START fall (ghost model from ports), `cover(uio_oe[6])` + drives-once-allowed, fixed-role pins 4/5, protocol-pin oe only per sticky mode and never in LOAD, sticky mode matches a ghost model; output VALUES: `uio_out[5]` always the last value written to pin 5 (LOAD ack and runtime), `uio_out[6]` the latched HOST_ERROR once its gate opens, protocol pins drive their last written value (0 in open-drain) | proven unbounded (k-induction), 47/47 covers. Validated by re-injecting the HOST_ERROR bug (142ab71): assert FAILS and the `uio_oe[6]` cover goes UNREACHED, so formal alone would have caught it |
 | `agent_pin_ctrl_sync_depth_props.v` | `pin_ctrl`: every consumer of an external input sees exactly the value from 2 cycles earlier (expected values rebuilt from ports only): all 8 `ui_in_sync` bits, the `pin_read` tap feeding WAIT/INB (pin_index taken in the current cycle), the START/HOST_GO edge outputs with their `mode_load` gating, and the post-reset window while the flops still hold 0 | proven unbounded (k-induction), 66/66 covers. Agent mutants (pin_read on ff1, extra flop on both paths, edge detectors on ff1, ui_in_sync on ff1) each fail, also with the reset-phase asserts removed; parent re-ran the first two independently on full-repo copies |
 
@@ -204,13 +206,20 @@ docstring.
   counter wrapped after 2^24 cycles, which would have false-failed a
   correct design. It now saturates.
 
-Coverage is 225/225. Formal alone, without simulation, now kills 16 of
-the 23 mutation-gate mutants, including the long-count red-team
-survivors #18, #20 and #21 that depth-20 BMC could not see. The 7 it
-misses mark where formal is still blind:
-- datapath values: #3 INB, #7 LOADX, #12 SHIFT;
-- LOAD-mode memory writes and the echo on the boot path: #10, #19,
-  #22, #23.
+Coverage is 263/263 reached plus 4 `[deep]`. Formal alone, without
+simulation, now kills all 23 mutation-gate mutants (`scripts/formal_mutants.py`),
+up from 16 before the datapath and boot files: the 7 former blind spots
+(#3 INB, #7 LOADX, #12 SHIFT; boot-path writes and echo #10, #19, #22,
+#23) are each killed by a proven property.
+
+**`[deep]` covers (2026-10-18).** A cover whose state lies beyond BMC
+depth may be tagged `[deep]` on its source line. `make vacuity` counts an
+unreached cover as deep only if the file also carries a
+`// deep-evidence: <test>` header naming an `async def <test>` that exists
+in `test/*.py` and drives that state in simulation; otherwise it fails as
+unreached. The asserts those covers guard are still proven for all
+reachable states by k-induction; the tag only answers "is the antecedent
+ever true?", which simulation shows. A fake test name fails the gate.
 
 ## 7. Golden model
 

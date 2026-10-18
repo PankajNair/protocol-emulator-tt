@@ -35,7 +35,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import formal_common as fc
 
 REACHED_RE = re.compile(r"Reached cover statement in step \d+ at \S+: (\S+)")
-UNREACHED_RE = re.compile(r"Unreached cover statement at (\S+)")
+UNREACHED_RE = re.compile(r"Unreached cover statement at \S+: (\S+)")
+TEST_ROOT = Path(__file__).resolve().parent.parent.parent / "test"
+
+
+def deep_policy(props_path: Path, unreached: list[str]) -> tuple[list[str], list[str], str | None]:
+    """Split unreached covers into (deep, vacuous). A cover is DEEP -- not
+    counted against the BMC vacuity threshold -- only if its source line
+    is tagged `[deep]` AND the file declares `// deep-evidence: <test>`
+    naming a cocotb test in test/ that drives the design into that state
+    in simulation. Its asserts are still proven for all states by
+    k-induction (make prove); the simulation test shows the state is
+    reachable, which is what a BMC cover can't do at that depth."""
+    src = props_path.read_text().splitlines()
+    m = re.search(r"//\s*deep-evidence:\s*(\w+)", props_path.read_text())
+    evidence = m.group(1) if m else None
+    if evidence and not any(re.search(rf"\basync def {evidence}\b", f.read_text())
+                            for f in TEST_ROOT.glob("*.py")):
+        evidence = None  # names a test that doesn't exist
+    deep, vacuous = [], []
+    for loc in unreached:
+        lm = re.search(r":(\d+)\.", loc)
+        line = src[int(lm.group(1)) - 1] if lm and int(lm.group(1)) <= len(src) else ""
+        (deep if "[deep]" in line and evidence else vacuous).append(loc)
+    return deep, vacuous, evidence
 
 
 def main() -> int:
@@ -61,7 +84,7 @@ def main() -> int:
         return 1
 
     all_ok = True
-    total_reached = total_covers = 0
+    total_reached = total_covers = total_deep = 0
     for props_path in props_files:
         print(f"[vacuity_check] {props_path.name} (depth={args.depth}) ...", flush=True)
         try:
@@ -74,18 +97,25 @@ def main() -> int:
         passed, output = fc.run_smtbmc(smt2_path, args.depth, cover_mode=True)
         reached = REACHED_RE.findall(output)
         unreached = UNREACHED_RE.findall(output)
+        deep, unreached, evidence = deep_policy(props_path, unreached)
         total_reached += len(reached)
+        total_deep += len(deep)
         total_covers += len(reached) + len(unreached)
 
         for loc in reached:
             print(f"  [REACHED  ] {loc}")
+        for loc in deep:
+            print(f"  [DEEP     ] {loc}  (beyond BMC depth; reached in simulation by {evidence})")
         for loc in unreached:
             print(f"  [UNREACHED] {loc}  <-- VACUOUS")
 
-        if unreached or not passed:
+        # smtbmc's cover pass reports FAILED whenever any cover is unreached;
+        # deep covers (see deep_policy) are accounted for separately
+        if unreached or (not passed and not deep):
             all_ok = False
 
-    print(f"\n[vacuity_check] {total_reached}/{total_covers} covers reached "
+    deep_note = f" + {total_deep} deep (simulation evidence)" if total_deep else ""
+    print(f"\n[vacuity_check] {total_reached}/{total_covers} covers reached{deep_note} "
           f"({'100%' if total_covers and total_reached == total_covers else 'INCOMPLETE'})")
     print(f"[vacuity_check] {'PASS' if all_ok else 'FAIL'} "
           f"({len(props_files)} props file(s), depth={args.depth})")

@@ -119,6 +119,31 @@ elaborated on this yosys build).
   inverted pin level. Bounded: timeout exits only reached for exponent 0
   (target <= ~16); exponent >= 1 is checked only for "not early".
 
+- **`core.v` regfile write values -- done, proven.**
+  `agent_core_datapath_props.v` (assertion-formal agent): every regfile
+  write carries the value docs/isa.md defines (LDI, IN, SHIFT zero-fill,
+  INB single-bit merge, LOOP Rd-1, LOAD/LOADX from `512+addr` with the
+  trailing writeback) to the named Rd at the named cycle; no other opcode
+  or cycle writes. Instruction rebuilt from `mem_rdata`; ghost regfile
+  asserted equal to `u_regfile.regs`. 17 asserts, 28/28 covers. Formal
+  alone kills mutate.py #3, #7, #12.
+- **`core.v` LOAD-mode boot path -- done, proven.**
+  `agent_core_boot_props.v` (assertion-formal agent): one write per
+  accepted HOST_GO pulse at the counter's address; saturation at 1023
+  (written once, over-run pulses no-ops); echo = counter low byte when
+  HOST_STATUS rises. 29 asserts, 10/10 covers + 4 `[deep]` covers
+  (address 1023, ~2047 cycles deep; evidence `test_boot_echo_and_saturation`,
+  see below). Formal alone kills mutate.py #10, #19, #22, #23.
+
+With these two, formal alone kills all 23 mutation-gate mutants
+(`python3 scripts/formal_mutants.py`).
+
+**`[deep]` covers.** A cover beyond BMC depth may carry `[deep]` on its
+line if the file has a `// deep-evidence: <test>` header naming an
+existing `async def <test>` in `test/*.py` that reaches the state.
+`vacuity_check.py` then reports it as deep instead of unreached; without
+a valid evidence test it fails.
+
 ## Candidate properties, not yet written
 
 None open. Every candidate on the original list, plus the follow-ups

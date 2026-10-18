@@ -28,6 +28,11 @@ same toolchain, same yosys/z3 install):
 - Every `assert` needs a companion `cover` on the same antecedent --
   that companion cover is what `make vacuity` actually checks. A
   property with no matching cover cannot be vacuity-checked at all.
+- A cover genuinely beyond BMC depth (not fixable by a reachable
+  witness) may be tagged `[deep]` on its source line, only together with a
+  `// deep-evidence: <test>` header naming an existing cocotb test in
+  `test/*.py` that drives that state; the parent's vacuity gate rejects the
+  tag otherwise. Never use an assume to make a deep cover reachable.
 - Add `assume`s only to constrain the standalone-module BMC environment
   to a realistic regime (e.g. "reset actually happens in the BMC
   window" -- every existing props file needs `initial assume (!rst_n);`
