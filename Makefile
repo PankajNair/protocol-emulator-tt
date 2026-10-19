@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove tieoffs blind-mutate
 
 MUTATE_SEEDS ?= 50
 
@@ -101,3 +101,16 @@ ifdef TARGET_PROPS
 else
 	python3 formal/scripts/vacuity_check.py --all
 endif
+
+# ---------------------------------------------------------------------------
+# tieoffs: structural check of the SRAM macro's static pins (A_DLY, BIST),
+#          which no simulation or formal gate can observe (section 20)
+# blind-mutate: operator-based mutation census of src/ against every gate
+#          (several hours; resumable; parent session only)
+# ---------------------------------------------------------------------------
+tieoffs:
+	python3 scripts/check_tieoffs.py
+
+BLIND_JOBS ?= 6
+blind-mutate:
+	python3 scripts/blind_mutate.py run -j $(BLIND_JOBS)

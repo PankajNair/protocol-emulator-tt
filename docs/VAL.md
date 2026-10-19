@@ -464,8 +464,9 @@ shadow of the driver state.
 | `cov_default` | `make coverage-gate`, 100 seeds |
 | `cov_<profile>` | `make coverage-gate STIM_PROFILE=<profile>`, 50 seeds, each of the 4 profiles |
 | `determinism` | 25 random seeds run twice give byte-identical per-seed coverage JSON |
-| `formal` | `make formal`: every props file PASS |
-| `vacuity` | `make vacuity`: every cover reached |
+| `formal` | `make prove`: every props file PROVEN (BMC + k-induction) |
+| `vacuity` | `make vacuity`: every cover reached, or `[deep]` with simulation evidence |
+| `tieoffs` | `scripts/check_tieoffs.py`: SRAM macro static pins as validated (section 20) |
 | `mutation` | `scripts/mutate.py` (directed + random + board), score >= threshold, nothing errored |
 
 The determinism gate exists because a failing random seed is only useful if
@@ -880,3 +881,78 @@ Caveats:
 - Token cost is recorded only from 2026-10-18 (`finish --tokens`). Older
   runs could only be matched to their completion notices by time and
   agent type, so they were not backfilled.
+
+## 20. Blind mutation campaign
+
+The mutation gate's 23 mutants (section 5) were each chosen by someone
+who knew the gates, so killing them shows the known gaps are closed, not
+how many are left. `scripts/blind_mutate.py` (`make blind-mutate`)
+generates mutants mechanically from `src/` with standard operator rules
+and no human choosing sites:
+- relational, logical, bitwise and arithmetic operator swaps;
+- sized constants ±1;
+- negated `if` conditions;
+- deleted assignments.
+
+Each mutant runs in a private copy of the tree through compile, then
+simulation (directed, 50 random seeds, board; first failing suite
+wins), then formal alone (`make prove`). Results go to
+`blind_mutation_results.jsonl` (gitignored) and the campaign resumes
+where it stopped.
+
+Sites inside `for (...)` headers are excluded. Those loops only
+replicate logic; a step mutated from `i + 1` to `i - 1` never ends, and
+the simulator then spins at time 0 allocating memory (one reached 3 GB
+in 3 minutes).
+
+**Census, 2026-10-19: all 455 sites, no sampling.**
+
+| | kills |
+|---|---|
+| live mutants (3 more did not compile) | 452 |
+| simulation | 381 (84.3%) |
+| formal alone | 370 (81.9%) |
+| tie-off check (below) | 15 |
+| any gate | 427 (94.5%) |
+| survivors, all traced and equivalent | 25 |
+| **score excluding equivalent mutants** | **427/427 (100%)** |
+
+The **25 equivalent survivors** are listed with reasons in
+`blind_mutate.EQUIVALENT`. Each entry is pinned to its source line's
+exact text, so an RTL edit there makes the survivor count as unexplained
+again, and `report` then exits 1. The mutants fall into four groups:
+- defaults in combinational muxes that are overridden whenever they
+  matter;
+- reset values of registers that are rewritten before they are read;
+- lint tie-offs with no reader;
+- `isa_defs.v` macros referenced only in comments.
+
+**Real gap found: the SRAM macro's static pins.** Before the tie-off
+check, 11 `mem.v` mutants survived every gate: `A_DLY` and the
+`A_BIST_*` inputs. IHP's behavioral model declares `A_DLY` but never
+reads it, and reads the BIST inputs only when `A_BIST_EN` is 1. On
+silicon they are real inputs, and no simulation or formal gate here can
+see them. `scripts/check_tieoffs.py` (`make tieoffs`, now a sign-off
+gate) checks every macro port against the validated recipe in the
+`mem.v` header. It kills all 15 `mem.v` mutants.
+
+**Killed by formal only (35).** These mark where simulation is blind
+and formal is the only gate. Nearly all are reset behaviour that
+simulation never varies:
+- `uo_out`'s reset value, which is visible on the pins in LOAD before
+  the first boot pulse;
+- the synchronizer and edge-detector flops in `pin_ctrl.v`, which
+  matter when START or HOST_GO is already high as reset releases;
+- a reset that lands while a LOAD/LOADX writeback is still pending;
+- the PC reset, which START overwrites anyway.
+
+Simulation always resets the same way, from a quiet bus. A directed
+test that holds START and HOST_GO high across reset release, and resets
+in the middle of a pending writeback, would make simulation catch these
+on its own; for now `agent_core_reset_props.v` and the `pin_ctrl`
+props cover them.
+
+`isa_defs.v` shows formal's scope: it kills 36 of 60 opcode and field
+mutants, against 56 for simulation. The props check behaviours, not
+the whole decode table, while the random differential test exercises
+every opcode against the golden model.

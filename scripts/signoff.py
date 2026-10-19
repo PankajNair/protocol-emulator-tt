@@ -108,6 +108,14 @@ def gate_formal(timeout):
     return rc == 0 and m is not None and m.group(1) == m.group(2), info, out
 
 
+def gate_tieoffs(timeout):
+    # SRAM macro static pins: invisible to every simulation and formal
+    # gate (the vendor model ignores them), so checked structurally
+    rc, out = sh("python3 scripts/check_tieoffs.py", timeout)
+    m = re.search(r"(\d+)/(\d+) \S+ ports as expected", out)
+    return rc == 0, {"ports": f"{m.group(1)}/{m.group(2)}" if m else None}, out
+
+
 def gate_vacuity(timeout):
     rc, out = sh("make vacuity", timeout)
     m = re.findall(r"(\d+)/(\d+) covers reached", out)
@@ -144,6 +152,7 @@ def main() -> int:
         ("determinism", lambda: gate_determinism(900)),
         ("formal", lambda: gate_formal(1800)),
         ("vacuity", lambda: gate_vacuity(1800)),
+        ("tieoffs", lambda: gate_tieoffs(60)),
         ("mutation", lambda: gate_mutation(args.mutate_seeds, 5400)),
     ]
 
