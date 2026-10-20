@@ -467,6 +467,7 @@ shadow of the driver state.
 | `formal` | `make prove`: every props file PROVEN (BMC + k-induction) |
 | `vacuity` | `make vacuity`: every cover reached, or `[deep]` with simulation evidence |
 | `tieoffs` | `scripts/check_tieoffs.py`: SRAM macro static pins as validated (section 20) |
+| `spec` | `make -C test spec`: the spec-only conformance suite passes (section 21) |
 | `mutation` | `scripts/mutate.py` (directed + random + board), score >= threshold, nothing errored |
 
 The determinism gate exists because a failing random seed is only useful if
@@ -1007,3 +1008,74 @@ props cover them.
 mutants, against 56 for simulation. The props check behaviours, not
 the whole decode table, while the random differential test exercises
 every opcode against the golden model.
+
+## 21. Spec-only independence check
+
+Every other check here was written by the same team that read the spec
+and also read the design. If the spec was misread, the RTL, golden
+model, tests and formal props agree and are all wrong together, and
+mutation testing cannot see it. So a fresh agent, `spec-conformance`
+(`.claude/agents/spec-conformance.md`, contract
+`spec_tests/AGENT_CONTRACT.md`), wrote a black-box suite from the spec
+alone.
+
+**What it got:**
+- `isa.md`, `architecture.md`, `protocol_timing.md` and `info.md`;
+- `tb.v`, which exposes pins only.
+
+**What it did not get:** `src/`, the model, the existing tests, the
+formal props, this document, or git history.
+
+**How it worked:**
+- It wrote its own encoder, assembler, boot-handshake driver and pad
+  model.
+- It cites a spec sentence for every expected value.
+- It never ran anything against the design.
+
+**Independence is audited, not assumed.** `scripts/audit_agent_paths.py`
+checks every tool call in the agent's transcript for paths outside its
+tree. That covers Read/Write paths, absolute paths in Bash, and `../`
+paths resolved against the command's own `cd`. Run
+`20261020-125357-spec-conformance` made 4 out-of-tree calls, all to a
+stub directory it made itself, which imported only its own two files
+under a fake `cocotb`. The ledger records the audit as failed, with an
+explicit override.
+
+**Result: 62 tests, 62/62 pass on the RTL at first contact** (`make -C
+test spec`, now a sign-off gate). On its own, the suite kills 16 of the
+23 curated mutants:
+- **Correctly missed (#4, #5, #8):** the debug flags reach no pin.
+- **Missed (#18, #20, #21):** counts past 2^20 cycles, beyond its cycle
+  budget.
+- **Missed (#2), one synchronizer flop dropped:** the spec states only
+  a relative "+2 cycles" of synchronizer latency, never the total time
+  from a pin edge to the WAIT exit. Our own test pins that total
+  against a value calibrated from the RTL.
+
+**Spec findings.** These are items the agent had to assume, or found
+ambiguous; the RTL's choice agrees with the agent's reading in every
+case:
+
+| | Item | Spec |
+|---|---|---|
+| F1 | OUTB/INB `bit_select`: which value selects bit 7 | missing (width only; only `isa_defs.v` pins it) |
+| F2 | HOST_GO pulse after saturation: is it acked? | ambiguous ("harmless no-op" vs "acks each write") |
+| F3 | total WAIT reaction latency, pin edge to exit | missing (relative "+2" only) |
+| F4 | SET's mode field on fixed-role pins 5/6 | silent |
+| F5 | LOOP with Rd = 0 | implicit (8-bit decrement wraps: 256 iterations) |
+
+**Which formal-only kills are visible at the pins.** These are the 35
+blind mutants that only formal killed (section 20). The equivalence
+prover classifies each one: it tries to prove equivalence at the pins,
+or failing that, to refute it with a pin-level counterexample within 12
+cycles.
+
+| Result | Count | Mutants |
+|---|---|---|
+| pin-visible (refuted) | 5 | `uo_out` reset value ×3; `pending_lx_writeback` reset deleted; HOST_GO's edge detector turned into a level detector (`pin_ctrl.v:138`) |
+| proven pin-equivalent | 3 | `start_fall` (`pin_ctrl.v:137`), which has no consumer; formal kills it only because a prop checks that output directly |
+| undetermined | 27 | no pin difference within 12 cycles, and not proven (no per-mutant allowed-difference list) |
+
+The spec suite kills the 3 `uo_out` mutants, which our own simulation
+missed. The other 2 pin-visible ones are real gaps in simulation that
+only formal closes.

@@ -146,6 +146,7 @@ def main() -> int:
     gates = [
         ("directed", lambda: gate_cocotb("make -C test -B", 1200)),
         ("pytest", lambda: gate_pytest(300)),
+        ("spec", lambda: gate_cocotb("make -C test spec", 900)),
         ("board", lambda: gate_cocotb("make -C test board", 1800)),
         ("cov_default", lambda: gate_coverage("", 100, 1800)),
         *[(f"cov_{p}", (lambda p=p: gate_coverage(p, 50, 1800))) for p in PROFILES],

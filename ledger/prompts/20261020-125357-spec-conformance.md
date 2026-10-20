@@ -1,0 +1,5 @@
+First read /private/tmp/claude-501/-Users-pankajnair-Desktop-Projects-protocol-emulator-tt/94aa3d8b-68df-46c3-bfde-829d41b278cb/scratchpad/spec_tree/ROLE.md in full: it is your role definition (spec-conformance subagent). Follow it exactly.
+
+Your tree is /private/tmp/claude-501/-Users-pankajnair-Desktop-Projects-protocol-emulator-tt/94aa3d8b-68df-46c3-bfde-829d41b278cb/scratchpad/spec_tree. Work ONLY inside it: do not read, list, search or run anything outside it. Your contract is /private/tmp/claude-501/-Users-pankajnair-Desktop-Projects-protocol-emulator-tt/94aa3d8b-68df-46c3-bfde-829d41b278cb/scratchpad/spec_tree/spec_tests/AGENT_CONTRACT.md -- read it next, then every file it lists under spec and harness.
+
+Task: write the black-box conformance suite for this design from the spec alone, as the contract describes, into /private/tmp/claude-501/-Users-pankajnair-Desktop-Projects-protocol-emulator-tt/94aa3d8b-68df-46c3-bfde-829d41b278cb/scratchpad/spec_tree/spec_tests/. You cannot run it against the design; do not try to find or build one. Return the reply your role's output contract asks for.

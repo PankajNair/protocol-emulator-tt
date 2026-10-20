@@ -119,7 +119,7 @@ Single-value immediates keep the low bits their rows name: LDI
 field: DELAY's mantissa, and LOAD/STORE's address.
 
 This also was only implicit, in the RTL and the assembler. An
-independent spec-only model (docs/VAL.md section 20) read these
+independent spec-only model (an experiment since removed) read these
 sub-fields as low-justified, following the LDI/SHIFT precedents, and
 the differential fuzz caught the disagreement.
 

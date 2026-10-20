@@ -1,0 +1,1579 @@
+"""Black-box spec-conformance suite for protocol-emulator-tt.
+
+Written from docs/isa.md, docs/architecture.md, docs/protocol_timing.md and
+docs/info.md only, against tb.v's pins. Every expected value cites the spec
+sentence it comes from. `ASSUMPTION:` marks a reading the spec does not
+force; `AMBIGUOUS:` marks a place where the spec admits two readings (the
+test encodes the one judged intended).
+
+Timing convention: exact cycle counts are always measured as the distance
+between two edges of the *same kind* (e.g. two SET KEEP value changes on a
+push-pull pin), so the constant output-stage latency cancels.
+"""
+
+import cocotb
+
+from spec_helpers import (Asm, Chip, KEEP, PP, OD, INPUT, PIN_GO, PIN_STATUS,
+                          PIN_ERROR, PROTOCOL_PINS, RESERVED_OPS, OP, enc_0op,
+                          delay_cycles, fw_send, fw_recv, fw_ack, fw_out_flag)
+
+PROTO_AND_ERR = (0, 1, 2, 3, 6, 7)
+
+
+def data_pattern(i):
+    """Deterministic data-region preload; distinct at the boundaries tested."""
+    return (i * 37 + 11 + 0x5A * (i >> 8)) & 0xFF
+
+
+DATA = [data_pattern(i) for i in range(512)]
+
+
+async def new_chip(dut):
+    return await Chip.create(dut)
+
+
+def gap_prog(mid, pre=None, tail=None):
+    """SET p0 PP 0 (configure) ... SET p0 KEEP 1 | mid | SET p0 KEEP 0 | HALT.
+    The rise->fall distance is SET's own 3 cycles plus mid's occupancy."""
+    a = Asm()
+    a.set(0, 0, PP)
+    a.delay(10)
+    if pre:
+        pre(a)
+    a.set(0, 1, KEEP)
+    mid(a)
+    a.set(0, 0, KEEP)
+    a.halt()
+    if tail:
+        tail(a)
+    return a
+
+
+async def measure_gap(chip, prog, timeout=60000, ext=None, during=None):
+    await chip.run(prog, ext=ext)
+    await chip.wait_drive(0, "0", 500, "p0 configured push-pull low")
+    r = await chip.wait_drive(0, "1", 500, "marker rise")
+    if during:
+        await during(chip)
+    f = await chip.wait_drive(0, "0", timeout, "marker fall")
+    return f - r
+
+
+# ===========================================================================
+# Reset and LOAD-mode boot
+# ===========================================================================
+@cocotb.test()
+async def test_reset_pin_state(dut):
+    """architecture.md I/O register reset state: uio_out all-0; uio_oe 0 for
+    protocol pins, uio[4], uio[6]; 1 for uio[5] (HOST_STATUS hardwired output
+    'in every mode, including LOAD'); uo_out resets to 0."""
+    chip = await new_chip(dut)
+    await chip.reset()
+    for _ in range(20):
+        assert chip.uo() == 0, f"uo_out after reset = {chip.s_uo}"
+        assert chip.out_int() == 0, f"uio_out after reset = {chip.s_out}"
+        assert chip.oe_int() == 0x20, f"uio_oe after reset = {chip.s_oe}, spec 0b00100000"
+        await chip.clk()
+
+
+@cocotb.test()
+async def test_boot_echo_ack_and_hiz(dut):
+    """architecture.md LOAD: each HOST_GO pulse writes, increments, echoes
+    the counter's low 8 bits post-increment on uo_out ('host ... expects
+    echo == k mod 256'); HOST_STATUS acks each write and clears after
+    HOST_GO is seen low; protocol pins and uio[6] Hi-Z throughout LOAD.
+    300 bytes crosses the 8-bit echo wrap at 256."""
+    chip = await new_chip(dut)
+    await chip.reset()
+    for k in range(1, 301):
+        echo = await chip.load_byte((k * 13) & 0xFF)
+        assert echo == (k & 0xFF), f"pulse {k}: echo {echo}, spec {k & 0xFF}"
+        assert chip.drive(PIN_STATUS) == "0"
+    assert not chip.load_violations, f"pin driven during LOAD: {chip.load_violations[:5]}"
+
+
+@cocotb.test()
+async def test_boot_held_strobe_is_one_write(dut):
+    """architecture.md LOAD: 'chip: sees synchronized HOST_GO=0 -> clears
+    HOST_STATUS' -- the ack holds while GO is held; a long-held strobe is
+    one pulse ('each pulse writes ... then increments'), so the echo does
+    not advance while held and the next pulse advances by exactly 1."""
+    chip = await new_chip(dut)
+    await chip.reset()
+    assert await chip.load_byte(0x11) == 1
+    chip.set_ui(0x22)
+    await chip.clk(2)
+    chip.set_ext(PIN_GO, 1)
+    await chip.wait_until(lambda: chip.drive(PIN_STATUS) == "1", 200, "ack")
+    for _ in range(80):
+        await chip.clk()
+        assert chip.drive(PIN_STATUS) == "1", "HOST_STATUS dropped while HOST_GO still high"
+        assert chip.uo() == 2, f"echo moved while strobe held: {chip.s_uo}"
+    chip.set_ext(PIN_GO, 0)
+    await chip.wait_until(lambda: chip.drive(PIN_STATUS) == "0", 200, "ack clear")
+    assert await chip.load_byte(0x33) == 3
+    assert not chip.load_violations
+
+
+@cocotb.test()
+async def test_boot_counter_saturates_no_wrap(dut):
+    """architecture.md: 'Byte-address counter saturates at 1023, does not
+    wrap. A HOST_GO pulse at address 1023 writes/echoes that byte and stops
+    advancing -- further pulses are harmless no-ops, not silent corruption
+    of address 0'. Echo after pulse k = min(k,1023) & 0xFF. Extra pulses
+    carry 0x00 which, if they landed on address 0, would turn the first
+    LDI's value byte into 0x00."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xA5)
+    a.out(0)
+    a.halt()
+    img = a.image() + [0] * (1024 - len(a.image()))
+    await chip.reset()
+    await chip.boot(img)  # checks every echo incl. 256/512/768 wraps
+    assert chip.last_echo == 0xFF
+    for _ in range(4):
+        echo = await chip.load_byte(0x00)
+        # AMBIGUOUS: whether a saturated pulse still produces the HOST_STATUS
+        # ack. The spec says the handshake acks 'each write' and calls these
+        # pulses 'harmless no-ops'; a host that got no ack would hang, so the
+        # intended reading is taken to be: ack still happens, echo stays 0xFF.
+        assert echo == 0xFF, f"echo after saturation {echo}"
+    await chip.clk(3)
+    await chip.start()
+    hist = await chip.wait_uo(1)
+    assert hist == [0xA5], f"program at address 0 corrupted by post-saturation pulses: {hist}"
+
+
+@cocotb.test()
+async def test_boot_saturated_pulses_do_not_rewrite_1023(dut):
+    """AMBIGUOUS: architecture.md says a pulse at 1023 'writes/echoes that
+    byte and stops advancing -- further pulses are harmless no-ops'. Reading
+    A (taken here): further pulses do not write, so byte 1023 keeps the
+    1024th byte. Reading B: the counter sits at 1023, so every further pulse
+    is again 'a pulse at address 1023' and overwrites it. Byte 1023 is data
+    offset 511 (isa.md: LOAD address = 512 + imm)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.load(0, 511)
+    a.out(0)
+    a.halt()
+    img = a.image() + [0] * (1023 - len(a.image())) + [0x5A]
+    await chip.reset()
+    await chip.boot(img)
+    for _ in range(3):
+        await chip.load_byte(0xC3)
+    await chip.clk(3)
+    await chip.start()
+    hist = await chip.wait_uo(1)
+    assert hist == [0x5A], f"byte 1023 after extra pulses: {hist} (0xC3 = reading B)"
+
+
+@cocotb.test()
+async def test_boot_byte_order_low_first(dut):
+    """architecture.md LOAD: 'low byte of instruction 0 first, matching
+    FETCH_LO/FETCH_HI's own PC*2/PC*2+1 order'. LDI R0,0x0F = 0x200F streams
+    0x0F,0x20; swapped it would decode as opcode 1 (HALT) and never OUT."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x0F)
+    a.out(0)
+    a.halt()
+    assert a.image()[:2] == [0x0F, 0x20]
+    await chip.run(a)
+    assert await chip.wait_uo(1) == [0x0F]
+
+
+@cocotb.test()
+async def test_uo_cleared_at_start(dut):
+    """architecture.md: uo_out 'is explicitly re-cleared at the LOAD->FETCH_LO
+    transition' so the last echo is not misread as OUT data."""
+    chip = await new_chip(dut)
+    await chip.reset()
+    a = Asm()
+    a.halt()
+    img = a.image() + [0] * 5  # 7 bytes -> last echo 7
+    await chip.boot(img)
+    assert chip.uo() == 7
+    await chip.clk(3)
+    await chip.start()
+    await chip.wait_until(lambda: chip.uo() == 0, 60, "uo_out cleared after START")
+    for _ in range(200):
+        await chip.clk()
+        assert chip.uo() == 0, "uo_out changed though program never executes OUT"
+
+
+@cocotb.test()
+async def test_start_begins_execution_and_error_driver_gate(dut):
+    """architecture.md LOAD: 'FSM exits LOAD on START's synchronized rising
+    edge (PC=0, execution begins immediately), but uio_oe[6] stays 0 (input)
+    until START's synchronized falling edge is also observed'; a SET of
+    HOST_ERROR before the gate opens 'still latches internally and reaches
+    the pin once the gate opens'.
+    ASSUMPTION: holding START for 60 cycles is a legal pulse (the release
+    deadline is 'TBD'); the gate opening within 20 cycles of release is a
+    harness bound, not a spec number."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP)
+    a.set(PIN_ERROR, 1)
+    a.halt()
+    await chip.reset()
+    await chip.boot(a.image())
+    await chip.clk(3)
+    chip.mark()
+    chip.set_ext(PIN_ERROR, 1)
+    chip.in_load = False
+    began = None
+    for i in range(60):
+        await chip.clk()
+        assert chip.oe(PIN_ERROR) == "0", f"uio_oe[6] rose while host still drives START (cycle {i})"
+        if began is None and chip.drive(0) == "1":
+            began = i
+    assert began is not None, "execution did not begin on START's rising edge (p0 never driven)"
+    chip.set_ext(PIN_ERROR, 0)
+    await chip.wait_until(lambda: chip.oe(PIN_ERROR) == "1", 20, "uio_oe[6] after START fall")
+    await chip.clk(2)
+    assert chip.drive(PIN_ERROR) == "1", "SET HOST_ERROR,1 issued before gate opened did not reach pin"
+
+
+@cocotb.test()
+async def test_error_gate_recloses_on_reset(dut):
+    """architecture.md Reset values: the 'seen START fall' latch resets to 0
+    'so HOST_ERROR's driver starts gated closed ... same rule applies after
+    any reset'; uio_out resets 0, so an unset HOST_ERROR drives 0."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.halt()
+    await chip.run(a)
+    await chip.wait_until(lambda: chip.oe(PIN_ERROR) == "1", 40, "gate open (first boot)")
+    assert chip.drive(PIN_ERROR) == "0"
+    await chip.reset()
+    assert chip.oe(PIN_ERROR) == "0", "gate not closed by reset"
+    await chip.boot(a.image())
+    await chip.clk(20)
+    assert chip.oe(PIN_ERROR) == "0"
+    await chip.start()
+    await chip.wait_until(lambda: chip.oe(PIN_ERROR) == "1", 40, "gate open (second boot)")
+    assert not chip.load_violations
+
+
+@cocotb.test()
+async def test_host_go_after_start_is_not_a_boot_strobe(dut):
+    """architecture.md: HOST_GO is the write-strobe 'During LOAD'; HOST_STATUS
+    'During normal execution: firmware SETs it'. With a HALT program, GO
+    pulses after START produce no echo and no ack."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.halt()
+    await chip.run(a)
+    await chip.clk(20)
+    for v in (0x12, 0x34, 0x56):
+        chip.set_ui(v)
+        chip.set_ext(PIN_GO, 1)
+        for _ in range(30):
+            await chip.clk()
+            assert chip.uo() == 0 and chip.drive(PIN_STATUS) == "0"
+        chip.set_ext(PIN_GO, 0)
+        await chip.clk(30)
+        assert chip.uo() == 0 and chip.drive(PIN_STATUS) == "0"
+
+
+@cocotb.test()
+async def test_reset_during_load_restarts_counter(dut):
+    """architecture.md: 'Reset -> LOAD'; reset values apply to everything.
+    Reset mid-boot (with HOST_GO high mid-handshake) restarts the byte
+    counter: the first echo after reset is 1 again."""
+    chip = await new_chip(dut)
+    await chip.reset()
+    for b in range(10):
+        await chip.load_byte(b)
+    chip.set_ui(0x77)
+    chip.set_ext(PIN_GO, 1)
+    await chip.clk(3)
+    await chip.reset()
+    a = Asm()
+    a.ldi(1, 0x3C)
+    a.out(1)
+    a.halt()
+    await chip.boot(a.image())  # echo checked from 1
+    await chip.clk(3)
+    await chip.start()
+    assert await chip.wait_uo(1) == [0x3C]
+
+
+def _dirty_prog():
+    a = Asm()
+    a.ldi(1, 0x99)
+    a.ldi(2, 0x98)
+    a.ldi(3, 0x97)
+    a.cmp(1, 1)          # flag = 1
+    a.set(0, 1, PP)
+    a.set(2, 0, OD)
+    a.set(PIN_ERROR, 1)
+    a.set(PIN_STATUS, 1)
+    a.call("sub")        # return-valid = 1
+    a.label("sub")
+    a.ldi(0, 0x77)
+    a.out(0)
+    a.label("spin")
+    a.delay(300)
+    a.jmp("spin")
+    return a
+
+
+def _clean_check_prog():
+    """Fails (OUT 0xEE) unless flag == 0 and R0..R3 == 0 at entry."""
+    a = Asm()
+    a.beq("bad")                     # flag reset value 0 -> not taken
+    a.cmp(0, 1); a.bne("bad")
+    a.cmp(1, 2); a.bne("bad")
+    a.cmp(2, 3); a.bne("bad")        # R0==R1==R2==R3
+    a.ldi(0, 0)
+    a.cmp(0, 1); a.bne("bad")        # ... == 0
+    a.ldi(0, 0x3C); a.out(0); a.halt()
+    a.label("bad")
+    a.ldi(0, 0xEE); a.out(0); a.halt()
+    return a
+
+
+@cocotb.test()
+async def test_reset_mid_execution_sweep(dut):
+    """architecture.md Reset values: 'PC=0, R0-R3=0, compare/test flag=0 ...
+    A reset asserting mid-fetch ... unconditionally returns to LOAD -- the
+    in-flight fetch is simply discarded'. Reset is asserted at a sweep of
+    offsets after START (covering FETCH_LO/FETCH_HI/EXECUTE of the first
+    instructions and the middle of a DELAY); each time the pins must return
+    to the reset state and a fresh boot must see clean registers and flag."""
+    chip = await new_chip(dut)
+    dirty, clean = _dirty_prog(), _clean_check_prog()
+    for d in list(range(0, 16)) + [17, 19, 23, 29, 40, 60, 200, 450]:
+        await chip.run(dirty)
+        await chip.clk(d)
+        await chip.reset()
+        assert chip.uo() == 0, f"d={d}: uo_out {chip.s_uo}"
+        assert chip.out_int() == 0, f"d={d}: uio_out {chip.s_out}"
+        assert chip.oe_int() == 0x20, f"d={d}: uio_oe {chip.s_oe}"
+        await chip.boot(clean.image())
+        await chip.clk(3)
+        await chip.start()
+        hist = await chip.wait_uo(1, settle=20)
+        assert hist == [0x3C], f"reset at d={d}: state not clean after reset ({hist})"
+        assert chip.pin_hist(0) == ["Z"] and chip.pin_hist(2) == ["Z"], \
+            f"d={d}: drive mode survived reset"
+
+
+@cocotb.test()
+async def test_registers_reset_to_zero_each(dut):
+    """isa.md Register file: 'Reset value: all registers 0.' Each register is
+    read out separately through the OUT handshake (zero would be invisible on
+    uo_out's history)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    for r in range(4):
+        fw_send(a, r)
+    a.halt()
+    await chip.run(_dirty_prog())
+    await chip.clk(50)
+    await chip.reset()
+    await chip.boot(a.image())
+    await chip.clk(3)
+    await chip.start()
+    vals = await chip.host_read_n(4)
+    assert vals == [0, 0, 0, 0], f"R0..R3 after reset = {vals}"
+
+
+# ===========================================================================
+# Single opcodes
+# ===========================================================================
+@cocotb.test()
+async def test_nop_any_low_bits(dut):
+    """isa.md NOP row: 'the all-zero 16-bit word (and any word with just the
+    top 5 bits zero ...) a valid NOP encoding'. NOPs with arbitrary low bits
+    change no register or flag."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x12)
+    a.ldi(1, 0x34)
+    a.cmp(0, 0)                       # flag 1
+    for low in (0x7FF, 0x555, 0x2AA, 0x001, 0x400):
+        a.nop(low)
+    a.out(0)
+    a.out(1)
+    fw_out_flag(a, 2, 0x50)
+    a.cmp(0, 1)                       # flag 0
+    a.nop(0x7FF)
+    fw_out_flag(a, 2, 0x60)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(4) == [0x12, 0x34, 0x51, 0x60]
+
+
+@cocotb.test()
+async def test_ldi_all_registers(dut):
+    """isa.md LDI: 'load immediate -> Rd', 8-bit value in imm(7:0).
+    ASSUMPTION: imm(8), stated 'unused', is ignored (tested with it set)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xFF)
+    a.ldi(1, 0x80)
+    a.ldi(2, 0x01)
+    a.ldi(3, 0x7F)
+    for r in range(4):
+        a.out(r)
+    a.ldi(0, 0x00); a.out(0)
+    a.ldi(1, 0xA5, imm8=1); a.out(1)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(6) == [0xFF, 0x80, 0x01, 0x7F, 0x00, 0xA5]
+
+
+@cocotb.test()
+async def test_out_drives_all_bits_and_holds(dut):
+    """isa.md OUT: 'drive Rd (all 8 bits) onto the host-facing parallel data
+    bus in one shot'; architecture.md: uo_out is the DATA-OUT bus. HALT row:
+    outputs hold their last-driven state."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(2, 0xA5); a.out(2)
+    a.ldi(3, 0x5A); a.out(3)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(2) == [0xA5, 0x5A]
+    for _ in range(300):
+        await chip.clk()
+        assert chip.uo() == 0x5A
+
+
+@cocotb.test()
+async def test_out_back_to_back_three_cycles(dut):
+    """architecture.md: 'Uniform 3 cycles/instruction'. Three consecutive
+    OUTs change uo_out exactly 3 cycles apart."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x01); a.ldi(1, 0x02); a.ldi(2, 0x03)
+    a.out(0); a.out(1); a.out(2)
+    a.halt()
+    await chip.run(a)
+    await chip.wait_uo(3)
+    e = [c for (c, v) in chip.uo_edges() if v in (1, 2, 3)]
+    assert len(e) == 3 and e[1] - e[0] == 3 and e[2] - e[1] == 3, f"OUT edge cycles {e}"
+
+
+@cocotb.test()
+async def test_in_reads_ui_in(dut):
+    """isa.md IN: 'read the host-facing parallel data bus into Rd (all 8
+    bits)'; architecture.md: ui_in is the DATA-IN bus. ui_in is changed long
+    before the read so the stated 2-flop synchronizer has settled."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.in_(1); a.out(1)
+    a.wait(7, 1)
+    a.in_(3); a.out(3)
+    a.halt()
+    await chip.run(a, ui=0xA5)
+    assert await chip.wait_uo(1) == [0xA5]
+    chip.set_ui(0x3C)
+    await chip.clk(8)
+    chip.set_ext(7, 1)
+    assert await chip.wait_uo(2) == [0xA5, 0x3C]
+
+
+@cocotb.test()
+async def test_host_handshake_in_out_turnaround(dut):
+    """architecture.md Host handshake: both directions host-initiated; 'back-
+    to-back transfers in any order are safe with no minimum HOST_GO low
+    time'; the host may change ui_in once it observes HOST_STATUS=1. The
+    firmware is the spec's own IN and OUT sequences in a loop (the IN->OUT->
+    IN turnaround that deadlocked in the earlier design)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.label("top")
+    fw_recv(a, 0)
+    fw_send(a, 0)
+    a.jmp("top")
+    await chip.run(a)
+    for v in (0x00, 0xFF, 0xA5, 0x5A, 0x01, 0x80, 0x7E):
+        await chip.host_write(v)
+        got = await chip.host_read()
+        assert got == v, f"echo of {v:#04x} came back {got!r}"
+
+
+@cocotb.test()
+async def test_set_push_pull(dut):
+    """isa.md SET: mode 01 = 'configure push-pull and drive value
+    immediately (oe=1, out=value)'; mode 00 = 'just drive value per whatever
+    mode is currently configured'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    for v, m in ((1, PP), (0, PP), (1, KEEP), (0, KEEP), (1, KEEP)):
+        a.set(0, v, m)
+        a.delay(30)
+    a.halt()
+    await chip.run(a)
+    await chip.clk(400)
+    assert chip.pin_hist(0) == ["Z", "1", "0", "1", "0", "1"], chip.pin_hist(0)
+
+
+@cocotb.test()
+async def test_set_open_drain(dut):
+    """isa.md SET: mode 10 = open-drain, 'value=1 -> release, oe=0 ...;
+    value=0 -> drive low, oe=1, out=0'; mode 00 then follows open-drain."""
+    chip = await new_chip(dut)
+    a = Asm()
+    for v, m in ((0, OD), (1, OD), (0, KEEP), (1, KEEP), (0, KEEP)):
+        a.set(1, v, m)
+        a.delay(30)
+    a.halt()
+    await chip.run(a, ext={1: 1})  # external pull-up
+    await chip.clk(400)
+    assert chip.pin_hist(1) == ["Z", "0", "Z", "0", "Z", "0"], chip.pin_hist(1)
+
+
+@cocotb.test()
+async def test_set_input_mode_is_sticky(dut):
+    """isa.md SET: mode 11 = 'configure input (oe forced 0, value
+    ignored)'; mode is 'sticky', so a later mode-00 SET on that pin drives
+    nothing until a mode is configured again."""
+    chip = await new_chip(dut)
+    a = Asm()
+    for v, m in ((1, PP), (1, INPUT), (1, KEEP), (0, KEEP), (0, PP)):
+        a.set(3, v, m)
+        a.delay(30)
+    a.halt()
+    await chip.run(a)
+    await chip.clk(400)
+    assert chip.pin_hist(3) == ["Z", "1", "Z", "0"], chip.pin_hist(3)
+
+
+@cocotb.test()
+async def test_unconfigured_pins_are_inputs(dut):
+    """isa.md SET: 'Reset: all 5 protocol pins ... start in input mode ...
+    a SET/OUTB targeting an unconfigured pin is a harmless no-op'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xFF)
+    a.set(0, 1, KEEP)
+    a.set(7, 0, KEEP)
+    a.outb(0, 1, 0)
+    a.outb(0, 3, 7)
+    a.set(2, 1, PP)
+    a.halt()
+    await chip.run(a)
+    await chip.wait_drive(2, "1", 200)
+    await chip.clk(50)
+    for p in (0, 1, 3, 7):
+        assert chip.pin_hist(p, min_dwell=1) == ["Z"], f"unconfigured pin {p}: {chip.pin_hist(p, 1)}"
+
+
+@cocotb.test()
+async def test_pin_index_map_and_independence(dut):
+    """architecture.md Pin map: pin_index 0-3 -> uio[3:0], 7 -> uio[7];
+    'sticky per-pin drive-mode'. Configuring one pin touches no other."""
+    chip = await new_chip(dut)
+    for p in PROTOCOL_PINS:
+        a = Asm()
+        a.set(p, 1, PP)
+        a.delay(20)
+        a.set(p, 0, KEEP)
+        a.halt()
+        await chip.run(a)
+        await chip.clk(150)
+        assert chip.pin_hist(p) == ["Z", "1", "0"], f"pin_index {p}: {chip.pin_hist(p)}"
+        for q in PROTOCOL_PINS:
+            if q != p:
+                assert chip.pin_hist(q, 1) == ["Z"], f"SET pin {p} disturbed uio[{q}]"
+        assert chip.oe(PIN_GO) == "0" and chip.oe(PIN_STATUS) == "1"
+
+
+@cocotb.test()
+async def test_set_drive_is_atomic_at_pin(dut):
+    """isa.md SET: mode change and value happen in the same SET ('configure
+    push-pull and drive value immediately (oe=1, out=value)'). Checks that no
+    intermediate drive state appears even for one cycle.
+    ASSUMPTION: 'immediately' means oe and out reach the pin on the same
+    cycle (a one-cycle 0 glitch before driving 1 would matter on a real bus)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP); a.delay(10)
+    a.set(0, 1, INPUT); a.delay(10)
+    a.set(0, 1, PP); a.delay(10)
+    a.set(1, 0, OD); a.delay(10)
+    a.set(1, 1, KEEP); a.delay(10)
+    a.halt()
+    await chip.run(a, ext={1: 1})
+    await chip.clk(150)
+    assert chip.pin_hist(0, min_dwell=1) == ["Z", "1", "Z", "1"], chip.pin_hist(0, 1)
+    assert chip.pin_hist(1, min_dwell=1) == ["Z", "0", "Z"], chip.pin_hist(1, 1)
+
+
+@cocotb.test()
+async def test_set_fixed_role_pins(dut):
+    """architecture.md Pin map rule (1): 'a pin's oe is fixed by its role
+    (hardwired for 4/5/6 ...), never by which opcode currently targets it,
+    so SET/OUTB on a hardwired-input pin is a safe no-op'; SET on 5 is the
+    'primary use: drive status'.
+    ASSUMPTION: the mode field is ignored on pins 5/6 (SET p5 with mode 01
+    still just drives the value)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(PIN_GO, 1, PP)
+    a.set(PIN_GO, 1, KEEP)
+    a.set(PIN_STATUS, 1, KEEP); a.delay(20)
+    a.set(PIN_STATUS, 0, KEEP); a.delay(20)
+    a.set(PIN_STATUS, 1, PP); a.delay(20)
+    a.set(PIN_STATUS, 0, INPUT); a.delay(20)   # oe must stay 1 (role)
+    a.set(PIN_STATUS, 0, KEEP); a.delay(20)
+    a.set(PIN_ERROR, 1, KEEP); a.delay(20)
+    a.halt()
+    await chip.run(a)
+    oe5_low = oe4_high = False
+    for _ in range(250):
+        await chip.clk()
+        oe4_high |= chip.oe(PIN_GO) != "0"
+        oe5_low |= chip.oe(PIN_STATUS) != "1"
+    assert not oe4_high, "uio_oe[4] (HOST_GO, hardwired input) went high"
+    assert not oe5_low, "uio_oe[5] (HOST_STATUS, hardwired output) went low"
+    h = chip.pin_hist(PIN_STATUS)
+    assert h[:4] == ["0", "1", "0", "1"], f"HOST_STATUS history {h}"
+    assert chip.drive(PIN_STATUS) == "0"
+    assert chip.drive(PIN_ERROR) == "1"
+
+
+@cocotb.test()
+async def test_outb_bit_select_push_pull(dut):
+    """isa.md OUTB: 'drive pin = Rd[bit] (bit is 0 or 7)'; obeys the sticky
+    push-pull mode. Rd is not modified. (bit-select encoding: see the
+    ASSUMPTION in spec_helpers.Asm._bitsel.)"""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 0, PP); a.delay(20)
+    a.ldi(0, 0x80)
+    a.outb(0, 0, 7); a.delay(20)   # 1
+    a.outb(0, 0, 0); a.delay(20)   # 0
+    a.ldi(0, 0x01)
+    a.outb(0, 0, 0); a.delay(20)   # 1
+    a.outb(0, 0, 7); a.delay(20)   # 0
+    a.out(0)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(1) == [0x01]
+    assert chip.pin_hist(0) == ["Z", "0", "1", "0", "1", "0"], chip.pin_hist(0)
+
+
+@cocotb.test()
+async def test_outb_open_drain(dut):
+    """isa.md OUTB: 'on an open-drain pin, Rd[bit]=1 releases and Rd[bit]=0
+    drives low'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(3, 1, OD); a.delay(20)
+    a.ldi(1, 0x7E)
+    a.outb(1, 3, 0); a.delay(20)   # 0 -> low
+    a.ldi(1, 0x81)
+    a.outb(1, 3, 7); a.delay(20)   # 1 -> release
+    a.outb(2, 3, 7); a.delay(20)   # R2 = 0 -> low
+    a.halt()
+    await chip.run(a, ext={3: 1})
+    await chip.clk(200)
+    assert chip.pin_hist(3) == ["Z", "0", "Z", "0"], chip.pin_hist(3)
+
+
+@cocotb.test()
+async def test_outb_noop_on_input_and_host_go(dut):
+    """isa.md OUTB: 'on an unconfigured (input) pin it's a no-op';
+    architecture.md matrix: OUTB on pin 4 'no-op, oe hardwired 0'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xFF)
+    a.set(1, 0, PP); a.delay(20)
+    a.set(1, 0, INPUT); a.delay(20)
+    a.outb(0, 1, 7)
+    a.outb(0, 2, 0)
+    a.outb(0, PIN_GO, 0)
+    a.outb(0, PIN_GO, 7)
+    a.set(0, 1, PP)
+    a.halt()
+    await chip.run(a)
+    await chip.wait_drive(0, "1", 300)
+    await chip.clk(30)
+    assert chip.pin_hist(1) == ["Z", "0", "Z"], chip.pin_hist(1)
+    assert chip.pin_hist(2, 1) == ["Z"]
+    assert chip.pin_hist(PIN_GO, 1) == ["Z"]
+
+
+@cocotb.test()
+async def test_outb_status_and_error_pins(dut):
+    """architecture.md matrix: OUTB on 5 and 6 is 'valid: drive from a live
+    bit'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x80)
+    a.outb(0, PIN_STATUS, 7); a.delay(20)
+    a.outb(0, PIN_STATUS, 0); a.delay(20)
+    a.delay(60)
+    a.outb(0, PIN_ERROR, 7); a.delay(20)
+    a.halt()
+    await chip.run(a)
+    await chip.clk(250)
+    assert chip.pin_hist(PIN_STATUS)[:3] == ["0", "1", "0"], chip.pin_hist(PIN_STATUS)
+    assert chip.drive(PIN_ERROR) == "1"
+
+
+@cocotb.test()
+async def test_inb_sets_one_bit(dut):
+    """isa.md INB: 'set Rd[bit] = pin's current value, other bits of Rd
+    untouched'. Pins: p1=1, p2=0, p7=1 (stable long before the reads)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    cases = [(0, 0x5A, 1, 0, 0x5B), (0, 0x5A, 1, 7, 0xDA), (1, 0xFF, 2, 0, 0xFE),
+             (1, 0xFF, 2, 7, 0x7F), (2, 0x00, 7, 7, 0x80), (3, 0x00, 7, 0, 0x01),
+             (0, 0xFF, 1, 0, 0xFF), (1, 0x00, 2, 7, 0x00)]
+    for (r, init, pin, bit, _exp) in cases:
+        a.ldi(r, init)
+        a.inb(r, pin, bit)
+        fw_send(a, r)
+    a.halt()
+    await chip.run(a, ext={1: 1, 2: 0, 7: 1})
+    got = await chip.host_read_n(len(cases))
+    assert got == [c[4] for c in cases], f"INB results {[hex(g) for g in got]}"
+
+
+@cocotb.test()
+async def test_inb_host_go(dut):
+    """architecture.md matrix: INB on pin 4 'valid: sample without
+    blocking'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(2, 0x41)
+    a.inb(2, PIN_GO, 0)       # GO = 0 at start (host rule) -> 0x40
+    a.out(2)
+    a.wait(7, 1)
+    a.ldi(3, 0x02)
+    a.inb(3, PIN_GO, 7)       # GO = 1 -> 0x82
+    a.out(3)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(1) == [0x40]
+    chip.set_ext(PIN_GO, 1)
+    await chip.clk(8)
+    chip.set_ext(7, 1)
+    assert await chip.wait_uo(2) == [0x40, 0x82]
+
+
+@cocotb.test()
+async def test_inb_and_wait_status_loopback(dut):
+    """architecture.md matrix: WAIT/INB on pin 5 'reads back own driven value
+    -- self-loopback ... defined'. Rule (2): uio_in reflects the pad even on
+    a pin the chip drives (emulated by the harness pad model). DELAYs give
+    the 2-flop synchronizer time; no loopback latency is stated."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(PIN_STATUS, 1)
+    a.delay(20)
+    a.ldi(0, 0x10)
+    a.inb(0, PIN_STATUS, 0)          # -> 0x11
+    a.out(0)
+    a.wait(PIN_STATUS, 1, 31, 1)     # met -> flag 0
+    a.beq("bad")
+    a.wait(PIN_STATUS, 0, 20, 0)     # STATUS is 1 -> timeout -> flag 1
+    a.bne("bad")
+    a.set(PIN_STATUS, 0)
+    a.delay(20)
+    a.ldi(1, 0xFF)
+    a.inb(1, PIN_STATUS, 7)          # -> 0x7F
+    a.out(1)
+    a.halt()
+    a.label("bad")
+    a.ldi(0, 0xEE); a.out(0); a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(2) == [0x11, 0x7F]
+
+
+@cocotb.test()
+async def test_shift(dut):
+    """isa.md SHIFT: 'shift Rd by exactly 1 bit; imm(0) = direction, 0 =
+    shift left, 1 = shift right ... Vacated bit is always 0 (plain logical
+    shift -- no rotate'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x81); a.shift(0, False); a.out(0)        # 0x02
+    a.ldi(0, 0x81); a.shift(0, True); a.out(0)         # 0x40
+    a.ldi(1, 0xFF); a.shift(1, False); a.out(1)        # 0xFE
+    a.shift(1, True); a.out(1)                         # 0x7F
+    a.ldi(2, 0x01)
+    for _ in range(7):
+        a.shift(2, False)
+    a.out(2)                                           # 0x80
+    a.shift(2, False); a.out(2)                        # 0x00
+    a.ldi(3, 0x80)
+    for _ in range(7):
+        a.shift(3, True)
+    a.out(3)                                           # 0x01
+    a.shift(3, True); a.out(3)                         # 0x00
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(8) == [0x02, 0x40, 0xFE, 0x7F, 0x80, 0x00, 0x01, 0x00]
+
+
+@cocotb.test()
+async def test_shift_does_not_touch_flag(dut):
+    """isa.md SHIFT: 'SHIFT does not touch the shared flag' (rotate-through-
+    flag was considered and rejected)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x01)
+    a.ldi(1, 0x80)
+    a.cmp(0, 0)              # flag 1
+    a.shift(0, False)        # shifts out 0
+    a.shift(0, True)
+    fw_out_flag(a, 2, 0x10)  # 0x11
+    a.cmp(0, 1)              # flag 0
+    a.shift(1, False)        # shifts out a 1
+    fw_out_flag(a, 2, 0x20)  # 0x20
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(2) == [0x11, 0x20]
+
+
+@cocotb.test()
+async def test_test_bit_every_index(dut):
+    """isa.md TEST-bit: 'test bit N of Rd, set flag; imm = bit_index(3).
+    Flag polarity: flag=1 iff the tested bit=1'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xA5)
+    for b in range(8):
+        a.test(0, b)
+        fw_out_flag(a, 1, 0x10 * (b + 1))
+    a.ldi(2, 0x5A)
+    a.test(2, 0); fw_out_flag(a, 3, 0x90)
+    a.test(2, 7); fw_out_flag(a, 3, 0xA0)
+    a.test(2, 6); fw_out_flag(a, 3, 0xB0)
+    a.halt()
+    await chip.run(a)
+    exp = [0x10 * (b + 1) | ((0xA5 >> b) & 1) for b in range(8)] + [0x90, 0xA0, 0xB1]
+    assert await chip.wait_uo(len(exp)) == exp
+
+
+@cocotb.test()
+async def test_cmp_equality(dut):
+    """isa.md CMP: 'Equality only: sets the shared flag to (Rd==Rs)'.
+    Pairs differing in a single (top or bottom) bit must compare unequal."""
+    chip = await new_chip(dut)
+    cases = [(0, 1, 0x00, 0x00, 1), (0, 1, 0x80, 0x00, 0), (0, 1, 0x01, 0x00, 0),
+             (2, 3, 0xFF, 0xFF, 1), (2, 3, 0xFF, 0x7F, 0), (3, 2, 0xFE, 0xFF, 0),
+             (1, 2, 0x5A, 0x5A, 1), (1, 1, 0x33, 0x33, 1), (3, 0, 0x10, 0x01, 0)]
+    a = Asm()
+    exp = []
+    for i, (ra, rb, x, y, f) in enumerate(cases):
+        s = next(r for r in range(4) if r not in (ra, rb))
+        a.ldi(ra, x)
+        if rb != ra:
+            a.ldi(rb, y)
+        a.cmp(ra, rb)
+        fw_out_flag(a, s, 0x10 * (i + 1))
+        exp.append(0x10 * (i + 1) | f)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(len(exp)) == exp
+
+
+@cocotb.test()
+async def test_flag_last_writer_wins(dut):
+    """isa.md CMP: 'Same physical flag as TEST-bit -- one flag register,
+    last write wins'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x02)
+    a.ldi(1, 0x03)
+    a.cmp(0, 0); a.test(0, 0); fw_out_flag(a, 3, 0x10)   # 1 then 0 -> 0x10
+    a.test(0, 1); a.cmp(0, 1); fw_out_flag(a, 3, 0x20)   # 1 then 0 -> 0x20
+    a.cmp(0, 1); a.test(0, 1); fw_out_flag(a, 3, 0x30)   # 0 then 1 -> 0x31
+    a.test(0, 0); a.cmp(1, 1); fw_out_flag(a, 3, 0x40)   # 0 then 1 -> 0x41
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(4) == [0x10, 0x20, 0x31, 0x41]
+
+
+@cocotb.test()
+async def test_branch_conditions(dut):
+    """isa.md Branch format: cond 00 always, 01 if flag set (BEQ), 10 if
+    flag clear (BNE). architecture.md: flag resets to 0."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.beq("l1")                         # flag 0: not taken
+    a.ldi(0, 1); a.out(0)
+    a.label("l1")
+    a.bne("l2")                         # taken
+    a.ldi(0, 0xEE); a.out(0)
+    a.label("l2")
+    a.ldi(0, 2); a.out(0)
+    a.cmp(0, 0)                         # flag 1
+    a.beq("l3")                         # taken
+    a.ldi(0, 0xEE); a.out(0)
+    a.label("l3")
+    a.bne("l4")                         # not taken
+    a.ldi(0, 3); a.out(0)
+    a.label("l4")
+    a.jmp("l5")
+    a.ldi(0, 0xEE); a.out(0)
+    a.label("l5")
+    a.ldi(0, 4); a.out(0)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(4) == [1, 2, 3, 4]
+
+
+@cocotb.test()
+async def test_jump_target_is_word_index(dut):
+    """architecture.md: 'the branch/loop/call addr(9) field is a word index,
+    not a byte address -- the fetch unit does the x2'. Literal targets 7 and
+    4 (odd and even word indices)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.jmp(7)                           # 0
+    a.ldi(0, 0xE1); a.out(0); a.halt()  # 1-3
+    a.ldi(0, 0x44); a.out(0); a.halt()  # 4-6
+    a.ldi(0, 0x77); a.out(0)           # 7-8
+    a.jmp(4)                           # 9
+    assert len(a.words()) == 10
+    await chip.run(a)
+    assert await chip.wait_uo(2) == [0x77, 0x44]
+
+
+@cocotb.test()
+async def test_call_ret_and_flag(dut):
+    """isa.md: cond 11 = 'call (push return address ... then jump)'; RET
+    'jumps to return-addr register'. CALL itself does not write the flag,
+    but a subroutine's CMP does ('CALL also silently clobbers the shared
+    flag if the subroutine uses CMP')."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(1, 1)
+    a.cmp(0, 0)                       # flag 1
+    a.call("s1")
+    fw_out_flag(a, 2, 0x10)           # 0x11 (preserved)
+    a.cmp(0, 0)
+    a.call("s2")
+    fw_out_flag(a, 2, 0x20)           # 0x20 (clobbered by s2's CMP)
+    a.ldi(2, 0x5A); a.out(2)
+    a.halt()
+    a.label("s1")
+    a.ldi(3, 0xC3); a.out(3); a.ret()
+    a.label("s2")
+    a.cmp(0, 1)
+    a.ldi(3, 0xC4); a.out(3); a.ret()
+    await chip.run(a)
+    assert await chip.wait_uo(5) == [0xC3, 0x11, 0xC4, 0x20, 0x5A]
+
+
+@cocotb.test()
+async def test_nested_call_overwrites_return(dut):
+    """isa.md: 'A second CALL while one return address is already pending
+    silently overwrites it -- no protection'. Outer->inner->RET returns
+    after the inner CALL; the outer RET then returns there again (the
+    register still holds it), looping forever; the main path (0x11) is
+    never reached.
+    ASSUMPTION: RET does not clear the return-address register (isa.md: an
+    orphan RET jumps to 'whatever the return-address register happens to
+    hold')."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 0, PP)
+    a.call("outer")
+    a.ldi(0, 0x11); a.out(0); a.halt()
+    a.label("outer")
+    a.call("inner")
+    a.ldi(0, 0x22); a.out(0)
+    a.set(0, 1, KEEP)
+    a.set(0, 0, KEEP)
+    a.ret()
+    a.label("inner")
+    a.ret()
+    await chip.run(a)
+    await chip.clk(600)
+    assert chip.uo_hist() == [0x22], f"uo history {chip.uo_hist()} (0x11 = return stack behaviour)"
+    rises = [c for (c, s) in chip.pin_edges(0) if s == "1"]
+    assert len(rises) >= 10, f"loop not repeating: {len(rises)} marker pulses"
+
+
+@cocotb.test()
+async def test_orphan_ret_jumps_to_reset_return_address(dut):
+    """isa.md: orphan RET 'would otherwise silently jump to whatever the
+    return-address register happens to hold (its reset value, 0, if nothing's
+    ever called yet)'; architecture.md: return-address register resets to 0.
+    SET/SET/RET from word 0 therefore repeats with a 9-cycle period."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP)
+    a.set(0, 0, KEEP)
+    a.ret()
+    a.ldi(0, 0xEE); a.out(0)
+    a.halt()
+    await chip.run(a)
+    await chip.clk(400)
+    assert chip.uo_hist() == [], f"fell through orphan RET: {chip.uo_hist()}"
+    rises = [c for (c, s) in chip.pin_edges(0) if s == "1"]
+    assert len(rises) >= 20
+    d = {rises[i + 1] - rises[i] for i in range(1, len(rises) - 1)}
+    assert d == {9}, f"loop period {d}, spec 3 x 3 cycles"
+
+
+@cocotb.test()
+async def test_loop_counts(dut):
+    """isa.md LOOP: 'Decrements Rd, branches to addr if nonzero'; trailing 2
+    bits select Rd. Registers are 8-bit, so Rd=0 decrements to 255 and runs
+    256 times.
+    ASSUMPTION: 8-bit wraparound 0 -> 255 on decrement (the spec gives no
+    saturating rule and registers are 8 bits wide)."""
+    chip = await new_chip(dut)
+    for (r, n, expect) in [(1, 1, 1), (1, 2, 2), (0, 5, 5), (3, 3, 3), (2, 255, 255), (2, 0, 256)]:
+        s = (r + 1) % 4
+        a = Asm()
+        a.set(0, 0, PP)
+        a.ldi(r, n)
+        a.ldi(s, 0)
+        a.label("top")
+        a.set(0, 1, KEEP)
+        a.set(0, 0, KEEP)
+        a.loop(r, "top")
+        a.cmp(r, s)                   # Rd must now be 0
+        fw_out_flag(a, s, 0x70)
+        a.halt()
+        await chip.run(a)
+        hist = await chip.wait_uo(1, timeout=10000)
+        rises = [c for (c, st) in chip.pin_edges(0) if st == "1"]
+        assert len(rises) == expect, f"LOOP R{r} from {n}: {len(rises)} iterations, spec {expect}"
+        if len(rises) > 2:
+            assert {rises[i + 1] - rises[i] for i in range(len(rises) - 1)} == {9}
+        assert hist == [0x71], f"R{r} not 0 after LOOP exit ({hist})"
+
+
+@cocotb.test()
+async def test_loop_does_not_touch_flag(dut):
+    """isa.md LOOP: 'Does not touch the shared flag'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(1, 3)
+    a.cmp(0, 0)                       # flag 1
+    a.label("l1")
+    a.loop(1, "l1")                   # taken twice, falls once
+    fw_out_flag(a, 2, 0x10)           # 0x11
+    a.ldi(1, 2)
+    a.cmp(0, 1)                       # flag 0
+    a.label("l2")
+    a.loop(1, "l2")
+    fw_out_flag(a, 2, 0x20)           # 0x20
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(2) == [0x11, 0x20]
+
+
+@cocotb.test()
+async def test_halt_freezes_everything(dut):
+    """isa.md HALT: 'Freezes the FSM -- stops fetching, no further state
+    changes. All outputs (including uio_oe) hold their last-driven state;
+    does not release pins or touch HOST_STATUS ... HOST_GO does not resume
+    from HALT'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP)
+    a.set(2, 0, OD)
+    a.set(PIN_STATUS, 1)
+    a.ldi(0, 0x77)
+    a.out(0)
+    a.halt()
+    a.set(0, 0, KEEP)
+    a.ldi(0, 0x11); a.out(0)
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(1) == [0x77]
+    await chip.clk(40)
+    snap = (chip.s_uo, chip.s_oe, chip.s_out)
+    for i in range(6):
+        chip.set_ext(PIN_GO, i & 1)
+        chip.set_ui(0x5A ^ i)
+        chip.set_ext(1, i & 1)
+        for _ in range(100):
+            await chip.clk()
+            assert (chip.s_uo, chip.s_oe, chip.s_out) == snap, \
+                f"state changed after HALT: {snap} -> {(chip.s_uo, chip.s_oe, chip.s_out)}"
+    assert chip.drive(0) == "1" and chip.drive(2) == "0" and chip.drive(PIN_STATUS) == "1"
+
+
+@cocotb.test()
+async def test_reserved_opcodes_execute_as_nop(dut):
+    """isa.md: 'Reserved/unused opcode encodings execute as NOP'; opcode
+    table '19-31 reserved ... Executes as NOP'. Each reserved opcode (with
+    all-ones and all-zeros operand bits) leaves R0-R3, the flag and the pins
+    untouched, falls through to the next word and takes 3 cycles
+    (architecture.md: NOP is 3 cycles). The sticky illegal-opcode flag is
+    not pin-visible and is not tested."""
+    chip = await new_chip(dut)
+    fails = []
+    for op in RESERVED_OPS:
+        for low in (0x7FF, 0x000):
+            flag = (op + low) & 1
+            a = Asm()
+            a.ldi(0, 0x11); a.ldi(1, 0x22); a.ldi(2, 0x33); a.ldi(3, 0x44)
+            a.set(0, 0, PP); a.delay(10)
+            a.cmp(0, 0) if flag else a.cmp(0, 1)
+            a.set(0, 1, KEEP)
+            a.raw(enc_0op(op, low))
+            a.set(0, 0, KEEP)
+            for r in range(4):
+                a.out(r)
+            a.beq("t")
+            a.ldi(0, 0x50); a.out(0); a.halt()
+            a.label("t")
+            a.ldi(0, 0x51); a.out(0); a.halt()
+            await chip.run(a)
+            await chip.wait_drive(0, "0", 500)
+            r_ = await chip.wait_drive(0, "1", 500)
+            f_ = await chip.wait_drive(0, "0", 500)
+            hist = await chip.wait_uo(5, timeout=500, settle=20)
+            exp = [0x11, 0x22, 0x33, 0x44, 0x50 | flag]
+            other = [p for p in (1, 2, 3, 7) if chip.pin_hist(p, 1) != ["Z"]]
+            if f_ - r_ != 6 or hist != exp or other:
+                fails.append((op, hex(low), f_ - r_, hist, other))
+    assert not fails, f"reserved opcodes not NOP (op, low, gap!=6, uo, pins): {fails}"
+
+
+# ===========================================================================
+# Timing (architecture.md Pipeline)
+# ===========================================================================
+def _uniform_cases():
+    nopskip = lambda a, br: (br(a), a.nop(), a.label("tgt"))  # noqa: E731
+    c = [
+        ("NOP", None, lambda a: a.nop(), None),
+        ("LDI", None, lambda a: a.ldi(1, 0x55), None),
+        ("SET other pin", None, lambda a: a.set(1, 1, PP), None),
+        ("OUT", None, lambda a: a.out(1), None),
+        ("IN", None, lambda a: a.in_(1), None),
+        ("SHIFT", None, lambda a: a.shift(1, False), None),
+        ("TEST-bit", None, lambda a: a.test(1, 3), None),
+        ("OUTB (input pin)", None, lambda a: a.outb(1, 2, 0), None),
+        ("INB", None, lambda a: a.inb(1, 1, 0), None),
+        ("LOAD", None, lambda a: a.load(1, 5), None),
+        ("STORE", None, lambda a: a.store(1, 5), None),
+        ("LOADX", None, lambda a: a.loadx(1, 2), None),
+        ("CMP", None, lambda a: a.cmp(1, 2), None),
+        ("JMP taken", None, lambda a: nopskip(a, lambda x: x.jmp("tgt")), None),
+        ("BEQ not taken", None, lambda a: (a.beq("far")), None),
+        ("BNE taken", None, lambda a: nopskip(a, lambda x: x.bne("tgt")), None),
+        ("BEQ taken", lambda a: a.cmp(0, 0), lambda a: nopskip(a, lambda x: x.beq("tgt")), None),
+        ("BNE not taken", lambda a: a.cmp(0, 0), lambda a: a.bne("far"), None),
+        ("CALL", None, lambda a: nopskip(a, lambda x: x.call("tgt")), None),
+        ("LOOP falls through", lambda a: a.ldi(1, 1), lambda a: a.loop(1, "far"), None),
+        ("LOOP taken", lambda a: a.ldi(1, 2), lambda a: nopskip(a, lambda x: x.loop(1, "tgt")), None),
+        ("DELAY 0", None, lambda a: a.delay(0, 0), None),
+        ("reserved 19", None, lambda a: a.raw(enc_0op(19, 0x7FF)), None),
+        ("reserved 31", None, lambda a: a.raw(enc_0op(31, 0x123)), None),
+    ]
+    return [(n, p, m, 6) for (n, p, m, _t) in c]
+
+
+@cocotb.test()
+async def test_uniform_three_cycles_per_instruction(dut):
+    """architecture.md: 'Uniform 3 cycles/instruction for everything -- NOP,
+    BRANCH, LOOP, CMP, SET, register ops, all of it'; LOAD/LOADX trailing
+    writeback 'doesn't weaken this: FSM occupancy is still exactly 3'.
+    Gap between two marker SETs around one instruction = 3 + 3. A branch
+    that should be taken skips a NOP (which would add 3). 'far' is a trap
+    label after HALT; reaching it means a wrongly-taken branch."""
+    chip = await new_chip(dut)
+    fails = []
+    for (name, pre, mid, exp) in _uniform_cases():
+        def tail(a):
+            a.label("far")
+            a.set(0, 1, KEEP)
+            a.halt()
+        prog = gap_prog(mid, pre=pre, tail=tail)
+        try:
+            g = await measure_gap(chip, prog, timeout=300)
+        except AssertionError as e:
+            fails.append((name, str(e)))
+            continue
+        if g != exp:
+            fails.append((name, g))
+    # RET: SET1 / CALL sub / SET0 ... sub: RET -> 3 + 3 + 3
+    prog = gap_prog(lambda a: a.call("sub"), tail=lambda a: (a.label("sub"), a.ret()))
+    g = await measure_gap(chip, prog, timeout=300)
+    if g != 9:
+        fails.append(("CALL+RET", g))
+    assert not fails, f"instructions not 3 cycles (name, gap): {fails}"
+
+
+@cocotb.test()
+async def test_delay_exact_cycles(dut):
+    """architecture.md: 'DELAY stays in EXECUTE ... (3+N cycles, N from the
+    immediate)'; isa.md DELAY: 'cycles = mantissa << (exponent*5)', Rd field
+    is the exponent. Gap = SET(3) + DELAY(3+N)."""
+    chip = await new_chip(dut)
+    fails = []
+    for (m, e) in [(0, 0), (1, 0), (2, 0), (100, 0), (511, 0), (0, 1), (0, 3),
+                   (1, 1), (3, 1), (511, 1), (1, 2), (2, 2), (1, 3)]:
+        n = delay_cycles(m, e)
+        g = await measure_gap(chip, gap_prog(lambda a, m=m, e=e: a.delay(m, e)), timeout=n + 200)
+        if g != 6 + n:
+            fails.append(((m, e), g, 6 + n))
+    assert not fails, f"DELAY (mant,exp), gap, expected: {fails}"
+
+
+@cocotb.test()
+async def test_repurposed_rd_fields_leave_registers(dut):
+    """isa.md: DELAY/WAIT/SET 'repurpose their otherwise-unused Rd field ...
+    rather than a register select'; DELAY 'doesn't touch the regfile'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    for r in range(4):
+        a.ldi(r, 0x10 * (r + 1))
+    a.delay(2, 1)
+    a.delay(0, 2)
+    a.delay(0, 3)
+    a.delay(5, 0)
+    a.wait(1, 1, 1, 2)       # pin1 high -> met
+    a.wait(2, 1, 3, 3)       # pin2 high -> met
+    a.set(3, 1, PP)
+    a.set(3, 0, OD)
+    a.set(3, 1, INPUT)
+    for r in range(4):
+        a.out(r)
+    a.halt()
+    await chip.run(a, ext={1: 1, 2: 1})
+    assert await chip.wait_uo(4) == [0x10, 0x20, 0x30, 0x40]
+
+
+@cocotb.test()
+async def test_wait_blocks_on_level(dut):
+    """isa.md WAIT: 'block until pin==level'. architecture.md: every uio
+    input goes through a 2-flop synchronizer (uniform latency), so the
+    reaction time to a rise and to a fall is the same.
+    ASSUMPTION: reaction <= 12 cycles (the spec gives +2 sync and 3/instr but
+    no total; 12 is a generous harness bound)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP)
+    a.wait(1, 1)
+    a.set(0, 0, KEEP)
+    a.wait(1, 0)
+    a.set(0, 1, KEEP)
+    a.halt()
+    await chip.run(a)
+    await chip.wait_drive(0, "1", 200)
+    for _ in range(300):
+        await chip.clk()
+        assert chip.drive(0) == "1", "WAIT p1,1 did not block"
+    chip.set_ext(1, 1)
+    t1 = chip.cycle
+    l1 = await chip.wait_drive(0, "0", 50) - t1
+    for _ in range(300):
+        await chip.clk()
+        assert chip.drive(0) == "0", "WAIT p1,0 did not block"
+    chip.set_ext(1, 0)
+    t2 = chip.cycle
+    l2 = await chip.wait_drive(0, "1", 50) - t2
+    assert l1 == l2, f"rise reaction {l1} != fall reaction {l2}"
+    assert l1 <= 12, f"reaction {l1} cycles"
+
+
+@cocotb.test()
+async def test_wait_timeout_exact_cycles(dut):
+    """architecture.md: WAIT 'stays in EXECUTE until its pin condition is true
+    or its own optional timeout counter expires (3+N if a timeout is set)';
+    isa.md WAIT: cycles = mantissa << (exponent*5), mantissa = imm[4:0],
+    exponent = Rd. Pin never reaches level -> gap = SET(3) + 3 + N."""
+    chip = await new_chip(dut)
+    fails = []
+    for (m, e) in [(1, 0), (2, 0), (20, 0), (31, 0), (1, 1), (3, 1), (1, 2), (2, 2)]:
+        n = delay_cycles(m, e)
+        g = await measure_gap(chip, gap_prog(lambda a, m=m, e=e: a.wait(1, 1, m, e)), timeout=n + 200)
+        if g != 6 + n:
+            fails.append(((m, e), g, 6 + n))
+    # level-0 wait on a pin held high
+    g = await measure_gap(chip, gap_prog(lambda a: a.wait(2, 0, 7, 0)), ext={2: 1})
+    if g != 13:
+        fails.append(("level0 (7,0)", g, 13))
+    assert not fails, f"WAIT timeout (mant,exp), gap, expected: {fails}"
+
+
+@cocotb.test()
+async def test_wait_writes_flag_always(dut):
+    """isa.md WAIT: 'Every WAIT writes the shared flag on exit, uniformly, no
+    exceptions: 0 if the pin condition was met, 1 if it timed out. For an
+    unbounded WAIT this is always 0'."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(1, 1)
+    a.cmp(0, 0)                    # flag 1
+    a.wait(7, 1)                   # unbounded, met when host raises p7
+    fw_out_flag(a, 3, 0x10)        # 0x10
+    a.cmp(0, 1)                    # flag 0
+    a.wait(2, 1, 10, 0)            # p2 low -> timeout
+    fw_out_flag(a, 3, 0x20)        # 0x21
+    a.cmp(0, 0)                    # flag 1
+    a.wait(7, 1, 31, 1)            # already met
+    fw_out_flag(a, 3, 0x30)        # 0x30
+    a.cmp(0, 0)
+    a.wait(2, 0, 4, 0)             # level 0 met immediately (p2 low)
+    fw_out_flag(a, 3, 0x40)        # 0x40
+    a.halt()
+    await chip.run(a)
+    await chip.clk(100)
+    assert chip.uo_hist() == [], "passed an unbounded WAIT with the pin low"
+    chip.set_ext(7, 1)
+    assert await chip.wait_uo(4) == [0x10, 0x21, 0x30, 0x40]
+
+
+@cocotb.test()
+async def test_wait_computed_zero_is_unbounded(dut):
+    """isa.md WAIT: 'any encoding whose computed cycles is 0 -- not just the
+    literal exponent=0,mantissa=0 case, e.g. exponent=2,mantissa=0 too --
+    means no timeout (unbounded wait)'. Each exponent with mantissa 0 must
+    stay blocked well past any timeout it could be mistaken for, then
+    proceed with flag 0 once the pin rises."""
+    chip = await new_chip(dut)
+    for e, hold in ((0, 1500), (1, 2500), (2, 5000), (3, 40000)):
+        a = Asm()
+        a.cmp(0, 0)              # flag 1, so a 'met' exit must clear it
+        a.wait(1, 1, 0, e)
+        fw_out_flag(a, 3, 0x60)
+        a.halt()
+        await chip.run(a)
+        await chip.clk(hold)
+        assert chip.uo_hist() == [], f"WAIT exp={e} mant=0 exited without the pin: {chip.uo_hist()}"
+        chip.set_ext(1, 1)
+        assert await chip.wait_uo(1) == [0x60], f"exp={e}: flag after met unbounded WAIT"
+
+
+@cocotb.test()
+async def test_wait_tie_condition_wins(dut):
+    """isa.md WAIT: 'If the pin condition becomes true on the exact same cycle
+    the counter would expire, condition-met wins'. The pin rise is swept one
+    cycle at a time across the expiry. Timeout exits occur at gap 6+N; met
+    exits move 1:1 with the rise. Condition-wins means some run exits at
+    exactly the timeout cycle with flag 0 (a timeout-first design would show
+    flag 1 there and its latest met exit would be one cycle earlier).
+    ASSUMPTION: both exits resolve in the same EXECUTE cycle, so 'same cycle
+    as expiry' is observable as 'met-exit at the timeout exit time'."""
+    chip = await new_chip(dut)
+    m = 24
+    t_to = 6 + m
+    res = []
+    for d in range(0, 46):
+        a = Asm()
+        a.set(0, 0, PP)
+        a.delay(10)
+        a.set(0, 1, KEEP)
+        a.wait(1, 1, m, 0)
+        a.set(0, 0, KEEP)
+        a.beq("to")
+        a.ldi(0, 0x11); a.out(0); a.halt()
+        a.label("to")
+        a.ldi(0, 0x22); a.out(0); a.halt()
+        await chip.run(a)
+        await chip.wait_drive(0, "0", 300)
+        r = await chip.wait_drive(0, "1", 300)
+        while chip.cycle < r + d:
+            await chip.clk()
+        chip.set_ext(1, 1)
+        await chip.wait_drive(0, "0", 200)
+        f = next(c for (c, st) in chip.pin_edges(0) if c > r and st == "0")
+        hist = await chip.wait_uo(1, timeout=100, settle=5)
+        res.append((d, hist[0], f - r))
+    met = [(d, g) for (d, o, g) in res if o == 0x11]
+    tos = [(d, g) for (d, o, g) in res if o == 0x22]
+    assert met and tos, f"sweep did not span both outcomes: {res}"
+    assert all(g == t_to for (_d, g) in tos), f"timeout exits not at 6+N={t_to}: {tos}"
+    assert max(d for d, _ in met) < min(d for d, _ in tos), f"outcome not monotonic: {res}"
+    gs = [g for _, g in met]
+    assert all(gs[i + 1] - gs[i] in (0, 1) for i in range(len(gs) - 1)), f"met exits {met}"
+    assert max(gs) == t_to, (f"no met exit at the expiry cycle ({t_to}); latest met exit "
+                             f"{max(gs)} -> timeout won the tie. sweep: {res}")
+
+
+@cocotb.test()
+async def test_wait_open_drain_clock_stretch(dut):
+    """isa.md WAIT row / SET open-drain: 'WAIT SCL,1 blocks until the slave
+    actually releases the clock, not just until we do'. architecture.md
+    rule (2): WAIT reads the pad. Pin 1 released (open-drain 1) while the
+    'slave' holds it low; also, when the chip itself drives low, a timed
+    WAIT for high times out (flag 1)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(1, 1, OD)
+    a.set(0, 1, PP)
+    a.wait(1, 1)
+    a.set(0, 0, KEEP)
+    a.set(1, 0, KEEP)          # chip drives SCL low
+    a.delay(20)
+    a.wait(1, 1, 30, 0)        # pad low (own drive) -> timeout
+    fw_out_flag(a, 2, 0x40)    # 0x41
+    a.halt()
+    await chip.run(a, ext={1: 0})
+    await chip.wait_drive(0, "1", 200)
+    for _ in range(300):
+        await chip.clk()
+        assert chip.drive(1) == "Z", "open-drain 1 should release the pin"
+        assert chip.drive(0) == "1", "WAIT passed while slave holds the line low"
+    chip.set_ext(1, 1)  # slave releases, pull-up wins
+    await chip.wait_drive(0, "0", 50)
+    assert await chip.wait_uo(1) == [0x41]
+
+
+@cocotb.test()
+async def test_load_preloaded_data_region(dut):
+    """isa.md Data memory: bytes 512-1023 are data; LOAD 'Address = 512 +
+    imm (imm(9) reaches the full 512-byte data region)'; architecture.md:
+    LOAD-mode boot 'streams the full 1024 bytes' and 'the host can preload a
+    CRC table or config constants through the exact same boot sequence'.
+    Also: a STORE over a preloaded byte is read back."""
+    chip = await new_chip(dut)
+    offs = [0, 1, 7, 8, 255, 256, 300, 510, 511]
+    assert DATA[0] != DATA[256] and DATA[255] != DATA[511]
+    a = Asm()
+    for i, o in enumerate(offs):
+        r = i % 4
+        a.load(r, o)
+        fw_send(a, r)
+    a.ldi(2, 0xC6)
+    a.store(2, 7)
+    a.load(3, 7)
+    fw_send(a, 3)
+    a.load(1, 8)       # neighbour untouched
+    fw_send(a, 1)
+    a.halt()
+    await chip.run(a, data=DATA)
+    got = await chip.host_read_n(len(offs) + 2)
+    assert got == [DATA[o] for o in offs] + [0xC6, DATA[8]], f"LOAD results {got}"
+
+
+@cocotb.test()
+async def test_store_load_roundtrip(dut):
+    """isa.md STORE: 'write Rd's value to data memory, address = 512 + imm';
+    LOADX address = 512 + Rs. architecture.md: 'STORE writes cleanly within
+    its own EXECUTE', so a LOAD of the same address in the very next
+    instruction sees the new value. Offsets 0 and 256 must not alias."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x3C); a.store(0, 300); a.load(1, 300); fw_send(a, 1)       # 3C
+    a.ldi(0, 0xC3); a.store(0, 511); a.load(2, 511); fw_send(a, 2)       # C3
+    a.ldi(0, 0x99); a.store(0, 0); a.ldi(1, 0); a.loadx(3, 1); fw_send(a, 3)       # 99
+    a.ldi(0, 0x42); a.store(0, 255); a.ldi(1, 255); a.loadx(2, 1); fw_send(a, 2)   # 42
+    a.ldi(0, 0x11); a.store(0, 256)
+    a.ldi(0, 0x22); a.store(0, 0)
+    a.load(1, 256); fw_send(a, 1)                                         # 11
+    a.load(1, 0); fw_send(a, 1)                                           # 22
+    a.ldi(3, 0x5E); a.store(3, 400); a.ldi(3, 0); a.load(3, 400); fw_send(a, 3)    # 5E
+    a.halt()
+    await chip.run(a)
+    got = await chip.host_read_n(7)
+    assert got == [0x3C, 0xC3, 0x99, 0x42, 0x11, 0x22, 0x5E], f"{[hex(x) for x in got]}"
+
+
+@cocotb.test()
+async def test_loadx_register_index(dut):
+    """isa.md LOADX: 'read data memory into Rd, address = 512 + Rs ...
+    Rs's full 8-bit range reaches the first 256 bytes of the data region'.
+    Rd==Rs is allowed (1 read + 1 write of the same register)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    exp = []
+    for (rd, rs, idx) in [(0, 1, 0), (0, 1, 1), (2, 1, 255), (3, 2, 0x80), (1, 1, 0x40), (0, 3, 0x7F)]:
+        a.ldi(rs, idx)
+        a.loadx(rd, rs)
+        fw_send(a, rd)
+        exp.append(DATA[idx])
+    a.halt()
+    await chip.run(a, data=DATA)
+    got = await chip.host_read_n(len(exp))
+    assert got == exp, f"LOADX results {got}, expected {exp}"
+
+
+@cocotb.test()
+async def test_load_writeback_no_hazard(dut):
+    """architecture.md: LOAD/LOADX writeback lands at the end of the next
+    instruction's FETCH_LO, 'always before that instruction's own EXECUTE
+    ... Hazard-free by construction'. The loaded register is consumed by the
+    very next instruction (CMP, OUT, STORE, TEST, SHIFT); and a following
+    LDI to the same register wins (it writes later)."""
+    chip = await new_chip(dut)
+    data = list(DATA)
+    data[10], data[11] = 0x5A, 0xA5
+    a = Asm()
+    a.ldi(2, 0x5A)
+    a.load(1, 10); a.cmp(1, 2); fw_out_flag(a, 3, 0x10); fw_ack(a)        # read 0x11
+    a.load(1, 11); a.out(1); fw_ack(a)                                     # A5
+    a.load(1, 10); a.store(1, 20); a.load(0, 20); fw_send(a, 0)            # 5A
+    a.load(1, 11); a.ldi(1, 0x33); fw_send(a, 1)                           # 33
+    a.load(1, 10); a.test(1, 1); fw_out_flag(a, 3, 0x20); fw_ack(a)        # 21
+    a.load(1, 11); a.shift(1, True); fw_send(a, 1)                         # 52
+    a.ldi(3, 11); a.loadx(0, 3); a.out(0); fw_ack(a)                       # A5
+    a.load(1, 10); a.load(2, 11); a.cmp(1, 2); fw_out_flag(a, 3, 0x30); fw_ack(a)  # 30
+    fw_send(a, 1); fw_send(a, 2)                                           # 5A A5
+    a.halt()
+    await chip.run(a, data=data)
+    got = await chip.host_read_n(10)
+    assert got == [0x11, 0xA5, 0x5A, 0x33, 0x21, 0x52, 0xA5, 0x30, 0x5A, 0xA5], \
+        f"{[hex(x) for x in got]}"
+
+
+# ===========================================================================
+# Worked idioms / protocol timing
+# ===========================================================================
+@cocotb.test()
+async def test_uart_tx_idiom_bit_period(dut):
+    """isa.md Worked idioms TX loop; protocol_timing.md: 'OUTB(3) +
+    DELAY(3+N) + SHIFT(3) + LOOP(3) = 12 fixed cycles + N per bit'; UART
+    115200 row: N=422, total 434, 'exact'. 0x55 sent MSB-first toggles every
+    bit, so all 8 edges must be exactly 434 cycles apart."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 1, PP)
+    a.ldi(1, 8)
+    a.ldi(0, 0x55)
+    a.label("tx")
+    a.outb(0, 0, 7)
+    a.delay(422)
+    a.shift(0, False)
+    a.loop(1, "tx")
+    a.set(0, 1, KEEP)
+    a.halt()
+    await chip.run(a)
+    await chip.clk(8 * 434 + 200)
+    e = chip.pin_edges(0)
+    assert e[0][1] == "1"
+    bits = e[1:]
+    assert [s for _, s in bits] == ["0", "1"] * 4, f"TX levels {bits}"
+    gaps = {bits[i + 1][0] - bits[i][0] for i in range(len(bits) - 1)}
+    assert gaps == {434}, f"bit periods {gaps}, spec 434"
+
+
+@cocotb.test()
+async def test_uart_rx_idiom(dut):
+    """isa.md Worked idioms RX loop ('shift before capturing'): DELAY/
+    SHIFT/INB/LOOP, period 12+N cycles (N=100 -> 112). The harness drives
+    bits MSB-first, one per 112 cycles, phased so each INB samples mid-bit
+    (margin about +-50 cycles, far more than the 2-cycle synchronizer)."""
+    chip = await new_chip(dut)
+    p = 112
+    a = Asm()
+    a.set(0, 1, PP)
+    a.ldi(1, 8)
+    a.ldi(0, 0)
+    a.label("rx")
+    a.delay(100)
+    a.shift(0, False)
+    a.inb(0, 1, 0)
+    a.loop(1, "rx")
+    a.out(0)
+    a.halt()
+    await chip.run(a)
+    c0 = await chip.wait_drive(0, "1", 200)
+    data = 0xB2
+    for k in range(8):
+        while chip.cycle < c0 + 55 + k * p:
+            await chip.clk()
+        chip.set_ext(1, (data >> (7 - k)) & 1)
+    assert await chip.wait_uo(1, timeout=400) == [data]
