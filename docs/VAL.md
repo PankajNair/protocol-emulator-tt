@@ -914,7 +914,7 @@ in 3 minutes).
 | formal alone | 370 (81.9%) |
 | tie-off check (below) | 15 |
 | any gate | 427 (94.5%) |
-| survivors, all traced and equivalent | 25 |
+| survivors, all **proven** equivalent (below) | 25 |
 | **score excluding equivalent mutants** | **427/427 (100%)** |
 
 The **25 equivalent survivors** are listed with reasons in
@@ -926,6 +926,57 @@ again, and `report` then exits 1. The mutants fall into four groups:
 - reset values of registers that are rewritten before they are read;
 - lint tie-offs with no reader;
 - `isa_defs.v` macros referenced only in comments.
+
+**All 25 are proven equivalent, not just traced**
+(`scripts/prove_equiv.py`, `make prove-equiv`, about 25 minutes). Per
+mutant, the prover builds a sequential miter of the whole chip:
+- **Two copies:** the original and the mutant, given the same inputs.
+- **One shared SRAM:** the macro is cut out of both copies
+  (`expose -evert`) and replaced by a model of IHP's behaviour: enabled
+  while `rst_n`, a read every cycle, write-through. Its contents start
+  arbitrary and identical in both copies.
+- **The claim, asserted every cycle:**
+  - `uo_out` and `uio_oe` are equal;
+  - `uio_out` is equal wherever its enable is on (a disabled output
+    never reaches the pad);
+  - both copies issue the same SRAM writes. This also makes the
+    single shared array exact.
+- **Strengthening asserts:** every flop is equal, except a per-mutant
+  `ALLOWED_DIFF` list. Each entry comes with invariants that are
+  asserted, never assumed, so they are proven too.
+- **Proof:** BMC from reset plus 20-step induction.
+
+`core.v:281` (the default SRAM address) needed three design invariants:
+- the read data may differ only where nothing reads it;
+- the deferred LOAD/LOADX writeback flag is only ever seen in FETCH_LO;
+- a halted core never decodes the live SRAM byte, because HALT clears
+  `entering_execute` on the same edge it commits.
+
+Results are recorded in `formal/equiv_proofs.json` with a hash of the
+RTL and of the prover. `report` labels a survivor "proven" only while
+that hash matches; after any RTL change it falls back to "traced".
+
+**Negative control** (`--controls`): a prover that proves everything is
+worthless. Four campaign-killed mutants, one per part of the miter, must
+each be refuted by a real counterexample from reset, using only the pin
+and write asserts:
+
+| Control mutant | Refuted at | By the assert on |
+|---|---|---|
+| `uo_out` reset value | step 0 | `uo_out` |
+| HOST_STATUS output enable | step 0 | `uio_oe` |
+| OUT taken for every other opcode | step 10, a program running from the shared SRAM | `uo_out` |
+| STORE data deleted | step 9 | the writes |
+
+All four are refuted. Refutation searches only to depth 12: with two
+chip copies and the SRAM array, z3's search time grows about 5× every
+2 cycles (depth 14 takes ~2 minutes).
+
+One survivor shows the gates are stricter than the pins.
+`core.v:318 2'd0 -> 2'd1` is proven equivalent at the pins, yet the
+random test kills it. The random test compares `pin_ctrl`'s internal
+`mode[]` against the golden model, and that mutant leaves `mode[5]` (a
+pin whose role is hardwired) holding push-pull instead of input.
 
 **Real gap found: the SRAM macro's static pins.** Before the tie-off
 check, 11 `mem.v` mutants survived every gate: `A_DLY` and the

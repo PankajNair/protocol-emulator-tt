@@ -436,17 +436,22 @@ def cmd_report(a) -> int:
               f"  formal {sum(r['formal'].startswith('killed') for r in fr):3d}"
               f"  any {sum(kill(r) for r in fr):3d}")
     surv = [r for r in ok if not kill(r)]
+    import prove_equiv
+    proven = prove_equiv.proven_ids()
     eq = [r for r in surv if equivalent(r)]
     real = [r for r in surv if not equivalent(r)]
+    n_proven = sum(r["id"] in proven for r in eq)
     m = len(ok) - len(eq) or 1
-    print(f"  survivors of every gate: {len(surv)} = {len(eq)} equivalent + {len(real)} unexplained")
+    print(f"  survivors of every gate: {len(surv)} = {len(eq)} equivalent ({n_proven} proven by "
+          f"scripts/prove_equiv.py, {len(eq) - n_proven} traced only) + {len(real)} unexplained")
     print(f"  score excluding equivalent: {any_k}/{len(ok) - len(eq)} ({100 * any_k / m:.1f}%)")
     print(f"  unexplained survivors ({len(real)}):")
     for r in sorted(real, key=lambda r: (r["file"], r["line"])):
         print(f"    {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']}")
     print(f"  equivalent ({len(eq)}):")
     for r in sorted(eq, key=lambda r: (r["file"], r["line"])):
-        print(f"    {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']:28s} {equivalent(r)[:70]}")
+        tag = "proven" if r["id"] in proven else "traced"
+        print(f"    {tag:6s} {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']:28s} {equivalent(r)[:60]}")
     sim_only = [r for r in ok if r["sim"] == "survived" and r["formal"].startswith("killed")]
     print(f"  killed by formal only, not simulation ({len(sim_only)}):")
     for r in sorted(sim_only, key=lambda r: (r["file"], r["line"])):

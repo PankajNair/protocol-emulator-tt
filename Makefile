@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove tieoffs blind-mutate
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove tieoffs blind-mutate prove-equiv
 
 MUTATE_SEEDS ?= 50
 
@@ -114,3 +114,10 @@ tieoffs:
 BLIND_JOBS ?= 6
 blind-mutate:
 	python3 scripts/blind_mutate.py run -j $(BLIND_JOBS)
+
+# prove-equiv: prove the blind-mutation survivors in blind_mutate.EQUIVALENT
+#          really are equivalent at the pins (sequential miter, BMC +
+#          induction), then the negative control (section 20)
+prove-equiv:
+	python3 scripts/prove_equiv.py
+	python3 scripts/prove_equiv.py --controls

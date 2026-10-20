@@ -1,0 +1,31 @@
+{
+ "rtl_sha": "02e555474a1bd3e1",
+ "k": 20,
+ "results": {
+  "cpu/core.v:207:8497:DEL:';'": "PROVEN",
+  "cpu/core.v:207:8510:CONST:\"8'd1\"": "PROVEN",
+  "cpu/core.v:207:8510:CONST:\"8'd255\"": "PROVEN",
+  "cpu/core.v:281:11028:DEL:';'": "PROVEN",
+  "cpu/core.v:281:11042:CONST:\"10'd1\"": "PROVEN",
+  "cpu/core.v:281:11042:CONST:\"10'd1023\"": "PROVEN",
+  "cpu/core.v:283:11077:DEL:';'": "PROVEN",
+  "cpu/core.v:283:11091:CONST:\"8'd1\"": "PROVEN",
+  "cpu/core.v:283:11091:CONST:\"8'd255\"": "PROVEN",
+  "cpu/core.v:318:12340:CONST:\"2'd3\"": "PROVEN",
+  "cpu/core.v:339:13261:DEL:';'": "PROVEN",
+  "cpu/core.v:339:13286:CONST:\"16'd1\"": "PROVEN",
+  "cpu/core.v:339:13286:CONST:\"16'd65535\"": "PROVEN",
+  "cpu/core.v:351:13707:DEL:';'": "PROVEN",
+  "cpu/core.v:351:13732:CONST:\"2'd1\"": "PROVEN",
+  "cpu/core.v:351:13732:CONST:\"2'd3\"": "PROVEN",
+  "cpu/core.v:437:16719:BIT:'|'": "PROVEN",
+  "cpu/core.v:437:16772:CONST:\"1'd1\"": "PROVEN",
+  "cpu/isa_defs.v:229:10149:CONST:\"1'd0\"": "PROVEN",
+  "cpu/isa_defs.v:237:10581:CONST:\"1'd1\"": "PROVEN",
+  "cpu/isa_defs.v:47:2268:CONST:\"5'd1\"": "PROVEN",
+  "cpu/isa_defs.v:47:2268:CONST:\"5'd31\"": "PROVEN",
+  "io/pin_ctrl.v:202:8818:CONST:\"1'd1\"": "PROVEN",
+  "top.v:98:2983:BIT:'|'": "PROVEN",
+  "top.v:98:2990:CONST:\"1'd1\"": "PROVEN"
+ }
+}
