@@ -3,7 +3,10 @@
 audit_agent_paths.py -- did a subagent stay inside the tree it was given?
 (docs/VAL.md section 21)
 
-    audit_agent_paths.py TRANSCRIPT.jsonl --tree DIR [--allow PATH ...]
+    audit_agent_paths.py TRANSCRIPT.jsonl --tree DIR [--allow PATH ...] [--skip N]
+
+--skip N ignores the first N tool calls: a resumed agent appends to the
+same transcript, so a later pass is audited on its own calls only.
 
 Reads a subagent's transcript (the per-agent JSONL Claude Code writes)
 and checks every tool call: file paths passed to Read/Write/Edit, and
@@ -55,6 +58,7 @@ def main() -> int:
     ap.add_argument("transcript", type=Path)
     ap.add_argument("--tree", type=Path, required=True)
     ap.add_argument("--allow", nargs="*", default=[])
+    ap.add_argument("--skip", type=int, default=0, help="ignore the first N tool calls (earlier passes)")
     a = ap.parse_args()
     tree = str(a.tree.resolve())
     variants = {tree, tree.replace("/private/tmp/", "/tmp/", 1)}
@@ -64,7 +68,9 @@ def main() -> int:
         return any(p == t or p.startswith(t.rstrip("/") + "/") for t in allowed)
 
     n, bad, unresolved = 0, [], []
-    for name, inp in tool_calls(a.transcript):
+    for i, (name, inp) in enumerate(tool_calls(a.transcript)):
+        if i < a.skip:
+            continue
         n += 1
         if name in ("Read", "Write", "Edit", "NotebookEdit"):
             p = inp.get("file_path") or inp.get("notebook_path") or ""

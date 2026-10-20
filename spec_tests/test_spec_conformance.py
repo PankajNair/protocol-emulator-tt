@@ -122,7 +122,9 @@ async def test_boot_counter_saturates_no_wrap(dut):
     advancing -- further pulses are harmless no-ops, not silent corruption
     of address 0'. Echo after pulse k = min(k,1023) & 0xFF. Extra pulses
     carry 0x00 which, if they landed on address 0, would turn the first
-    LDI's value byte into 0x00."""
+    LDI's value byte into 0x00. Each extra pulse 'is still acked like any
+    other: HOST_STATUS rises with the echo showing 1023's low byte (0xFF)
+    and clears on the HOST_GO fall' (load_byte waits for both edges)."""
     chip = await new_chip(dut)
     a = Asm()
     a.ldi(0, 0xA5)
@@ -134,11 +136,11 @@ async def test_boot_counter_saturates_no_wrap(dut):
     assert chip.last_echo == 0xFF
     for _ in range(4):
         echo = await chip.load_byte(0x00)
-        # AMBIGUOUS: whether a saturated pulse still produces the HOST_STATUS
-        # ack. The spec says the handshake acks 'each write' and calls these
-        # pulses 'harmless no-ops'; a host that got no ack would hang, so the
-        # intended reading is taken to be: ack still happens, echo stays 0xFF.
+        # architecture.md saturation bullet: 'A no-op pulse ... is still
+        # acked like any other: HOST_STATUS rises with the echo showing
+        # 1023's low byte (0xFF) and clears on the HOST_GO fall'.
         assert echo == 0xFF, f"echo after saturation {echo}"
+        assert chip.drive(PIN_STATUS) == "0", "ack not cleared after HOST_GO fall"
     await chip.clk(3)
     await chip.start()
     hist = await chip.wait_uo(1)
@@ -147,12 +149,10 @@ async def test_boot_counter_saturates_no_wrap(dut):
 
 @cocotb.test()
 async def test_boot_saturated_pulses_do_not_rewrite_1023(dut):
-    """AMBIGUOUS: architecture.md says a pulse at 1023 'writes/echoes that
-    byte and stops advancing -- further pulses are harmless no-ops'. Reading
-    A (taken here): further pulses do not write, so byte 1023 keeps the
-    1024th byte. Reading B: the counter sits at 1023, so every further pulse
-    is again 'a pulse at address 1023' and overwrites it. Byte 1023 is data
-    offset 511 (isa.md: LOAD address = 512 + imm)."""
+    """architecture.md saturation bullet: 'A no-op pulse writes nothing
+    (byte 1023 keeps its value) but is still acked like any other'. Byte
+    1023 is data offset 511 (isa.md: LOAD address = 512 + imm); extra
+    pulses carry 0xC3 and must not land there."""
     chip = await new_chip(dut)
     a = Asm()
     a.load(0, 511)
@@ -162,7 +162,8 @@ async def test_boot_saturated_pulses_do_not_rewrite_1023(dut):
     await chip.reset()
     await chip.boot(img)
     for _ in range(3):
-        await chip.load_byte(0xC3)
+        echo = await chip.load_byte(0xC3)  # returns only after ack rise+clear
+        assert echo == 0xFF, f"no-op pulse echo {echo}, spec 0xFF"
     await chip.clk(3)
     await chip.start()
     hist = await chip.wait_uo(1)
@@ -612,9 +613,12 @@ async def test_set_fixed_role_pins(dut):
     """architecture.md Pin map rule (1): 'a pin's oe is fixed by its role
     (hardwired for 4/5/6 ...), never by which opcode currently targets it,
     so SET/OUTB on a hardwired-input pin is a safe no-op'; SET on 5 is the
-    'primary use: drive status'.
-    ASSUMPTION: the mode field is ignored on pins 5/6 (SET p5 with mode 01
-    still just drives the value)."""
+    'primary use: drive status'. isa.md SET row: 'On the fixed-role pins
+    the mode field is ignored: their direction is set by role ..., so
+    SET/OUTB to pin_index 5 (HOST_STATUS) or 6 (HOST_ERROR) drives only the
+    value, and to pin_index 4 (HOST_GO, always an input) has no effect.'
+    So every mode (00/01/10/11) on 5/6 drives the value with oe=1, leaves
+    no sticky mode behind for a later OUTB, and nothing reaches pin 4."""
     chip = await new_chip(dut)
     a = Asm()
     a.set(PIN_GO, 1, PP)
@@ -622,29 +626,46 @@ async def test_set_fixed_role_pins(dut):
     a.set(PIN_STATUS, 1, KEEP); a.delay(20)
     a.set(PIN_STATUS, 0, KEEP); a.delay(20)
     a.set(PIN_STATUS, 1, PP); a.delay(20)
-    a.set(PIN_STATUS, 0, INPUT); a.delay(20)   # oe must stay 1 (role)
+    a.set(PIN_STATUS, 0, INPUT); a.delay(20)   # mode ignored: drives 0, oe stays 1
+    a.set(PIN_STATUS, 1, INPUT); a.delay(20)   # drives 1 (value not ignored)
+    a.set(PIN_STATUS, 0, OD); a.delay(20)      # drives 0
+    a.set(PIN_STATUS, 1, OD); a.delay(20)      # drives 1 (not a release)
+    a.ldi(0, 0x00)
+    a.outb(0, PIN_STATUS, 0); a.delay(20)      # OUTB after OD/INPUT SETs: drives 0
+    a.ldi(0, 0x80)
+    a.outb(0, PIN_STATUS, 7); a.delay(20)      # drives 1
     a.set(PIN_STATUS, 0, KEEP); a.delay(20)
-    a.set(PIN_ERROR, 1, KEEP); a.delay(20)
+    a.delay(40)                                # HOST_ERROR gate (START fall) open by now
+    a.set(PIN_ERROR, 1, INPUT); a.delay(20)    # drives 1, oe stays 1
+    a.set(PIN_ERROR, 0, OD); a.delay(20)       # drives 0
+    a.set(PIN_ERROR, 1, OD); a.delay(20)       # drives 1 (not a release)
+    a.ldi(1, 0x01)
+    a.outb(1, PIN_GO, 0)
+    a.set(PIN_GO, 1, OD)
+    a.set(PIN_GO, 0, INPUT)
     a.halt()
     await chip.run(a)
     oe5_low = oe4_high = False
-    for _ in range(250):
+    for _ in range(700):
         await chip.clk()
         oe4_high |= chip.oe(PIN_GO) != "0"
         oe5_low |= chip.oe(PIN_STATUS) != "1"
     assert not oe4_high, "uio_oe[4] (HOST_GO, hardwired input) went high"
     assert not oe5_low, "uio_oe[5] (HOST_STATUS, hardwired output) went low"
     h = chip.pin_hist(PIN_STATUS)
-    assert h[:4] == ["0", "1", "0", "1"], f"HOST_STATUS history {h}"
+    assert h == ["0", "1", "0", "1", "0", "1", "0", "1", "0", "1", "0"], f"HOST_STATUS history {h}"
+    e = chip.pin_hist(PIN_ERROR)
+    assert e[-3:] == ["1", "0", "1"] and "Z" not in e[e.index("1"):], f"HOST_ERROR history {e}"
     assert chip.drive(PIN_STATUS) == "0"
     assert chip.drive(PIN_ERROR) == "1"
+    assert chip.pin_hist(PIN_GO, 1) == ["Z"]
 
 
 @cocotb.test()
 async def test_outb_bit_select_push_pull(dut):
     """isa.md OUTB: 'drive pin = Rd[bit] (bit is 0 or 7)'; obeys the sticky
-    push-pull mode. Rd is not modified. (bit-select encoding: see the
-    ASSUMPTION in spec_helpers.Asm._bitsel.)"""
+    push-pull mode. Rd is not modified. Encoding: isa.md sub-field packing,
+    'For OUTB/INB, bit_select = 0 selects bit 0 and 1 selects bit 7'."""
     chip = await new_chip(dut)
     a = Asm()
     a.set(0, 0, PP); a.delay(20)
@@ -1023,10 +1044,9 @@ async def test_orphan_ret_jumps_to_reset_return_address(dut):
 @cocotb.test()
 async def test_loop_counts(dut):
     """isa.md LOOP: 'Decrements Rd, branches to addr if nonzero'; trailing 2
-    bits select Rd. Registers are 8-bit, so Rd=0 decrements to 255 and runs
-    256 times.
-    ASSUMPTION: 8-bit wraparound 0 -> 255 on decrement (the spec gives no
-    saturating rule and registers are 8 bits wide)."""
+    bits select Rd. isa.md LOOP row: 'Rd is 8 bits and the decrement wraps:
+    entered with Rd = 0, LOOP writes 255 and branches, so a loop body runs
+    256 times.'"""
     chip = await new_chip(dut)
     for (r, n, expect) in [(1, 1, 1), (1, 2, 2), (0, 5, 5), (3, 3, 3), (2, 255, 255), (2, 0, 256)]:
         s = (r + 1) % 4
@@ -1048,6 +1068,18 @@ async def test_loop_counts(dut):
         if len(rises) > 2:
             assert {rises[i + 1] - rises[i] for i in range(len(rises) - 1)} == {9}
         assert hist == [0x71], f"R{r} not 0 after LOOP exit ({hist})"
+    # isa.md LOOP row: 'entered with Rd = 0, LOOP writes 255 and branches'.
+    for r in range(4):
+        a = Asm()
+        a.ldi(r, 0)
+        a.loop(r, "t")
+        a.ldi(r, 0xEE); a.out(r); a.halt()      # fall-through = wrong
+        a.label("t")
+        a.out(r)                                # must show 255
+        a.halt()
+        await chip.run(a)
+        hist = await chip.wait_uo(1, timeout=500)
+        assert hist == [0xFF], f"LOOP R{r} entered at 0: {hist}, spec writes 255 and branches"
 
 
 @cocotb.test()
@@ -1247,35 +1279,41 @@ async def test_repurposed_rd_fields_leave_registers(dut):
 
 @cocotb.test()
 async def test_wait_blocks_on_level(dut):
-    """isa.md WAIT: 'block until pin==level'. architecture.md: every uio
-    input goes through a 2-flop synchronizer (uniform latency), so the
-    reaction time to a rise and to a fall is the same.
-    ASSUMPTION: reaction <= 12 cycles (the spec gives +2 sync and 3/instr but
-    no total; 12 is a generous harness bound)."""
+    """isa.md WAIT: 'block until pin==level'. architecture.md synchronizer
+    paragraph, 'Exact reaction, at the pins: count rising clock edges from
+    the first one that samples the pin at its new level as edge 1. Edges 1
+    and 2 load the two synchronizer flops, and WAIT leaves EXECUTE at edge
+    3. ... a SET straight after the WAIT changes its pin at edge 6. The same
+    holds for a rising and a falling level.' Harness timing: the input is
+    changed just after falling edge t, so edge 1 is the next rising edge and
+    a pin change at edge 6 is first sampled at falling edge t+6. Checked on
+    a protocol pin (1 and 7) and on HOST_GO, since 'every uio input goes
+    through the same standard 2-flop synchronizer, uniformly'."""
     chip = await new_chip(dut)
-    a = Asm()
-    a.set(0, 1, PP)
-    a.wait(1, 1)
-    a.set(0, 0, KEEP)
-    a.wait(1, 0)
-    a.set(0, 1, KEEP)
-    a.halt()
-    await chip.run(a)
-    await chip.wait_drive(0, "1", 200)
-    for _ in range(300):
-        await chip.clk()
-        assert chip.drive(0) == "1", "WAIT p1,1 did not block"
-    chip.set_ext(1, 1)
-    t1 = chip.cycle
-    l1 = await chip.wait_drive(0, "0", 50) - t1
-    for _ in range(300):
-        await chip.clk()
-        assert chip.drive(0) == "0", "WAIT p1,0 did not block"
-    chip.set_ext(1, 0)
-    t2 = chip.cycle
-    l2 = await chip.wait_drive(0, "1", 50) - t2
-    assert l1 == l2, f"rise reaction {l1} != fall reaction {l2}"
-    assert l1 <= 12, f"reaction {l1} cycles"
+    for pin in (1, 7, PIN_GO):
+        a = Asm()
+        a.set(0, 1, PP)
+        a.wait(pin, 1)
+        a.set(0, 0, KEEP)
+        a.wait(pin, 0)
+        a.set(0, 1, KEEP)
+        a.halt()
+        await chip.run(a)
+        await chip.wait_drive(0, "1", 200)
+        for _ in range(300):
+            await chip.clk()
+            assert chip.drive(0) == "1", f"WAIT p{pin},1 did not block"
+        chip.set_ext(pin, 1)
+        t1 = chip.cycle
+        l1 = await chip.wait_drive(0, "0", 50) - t1
+        for _ in range(300):
+            await chip.clk()
+            assert chip.drive(0) == "0", f"WAIT p{pin},0 did not block"
+        chip.set_ext(pin, 0)
+        t2 = chip.cycle
+        l2 = await chip.wait_drive(0, "1", 50) - t2
+        assert l1 == 6, f"pin {pin}: rising-level reaction {l1} cycles, spec edge 6"
+        assert l2 == 6, f"pin {pin}: falling-level reaction {l2} cycles, spec edge 6"
 
 
 @cocotb.test()

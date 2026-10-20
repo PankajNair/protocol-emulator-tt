@@ -162,7 +162,11 @@ writing it.)
 - **Byte-address counter saturates at 1023, does not wrap.** A
   `HOST_GO` pulse at address 1023 writes/echoes that byte and stops
   advancing -- further pulses are harmless no-ops, not silent
-  corruption of address 0 (which a wrapping counter would cause). No
+  corruption of address 0 (which a wrapping counter would cause). A
+  no-op pulse writes nothing (byte 1023 keeps its value) but is still
+  **acked like any other**: HOST_STATUS rises with the echo showing
+  1023's low byte (`0xFF`) and clears on the `HOST_GO` fall, so a host
+  that sends too many bytes never hangs waiting for an ack. No
   separate overflow flag needed on top of this -- the host already
   tracks its own byte count.
 - **`uio[3:0]` (protocol bus) and `uio[6:7]` are Hi-Z (`oe=0`)
@@ -410,7 +414,13 @@ those pins' role is firmware-configured rather than fixed. Fix: every
 `uio` input goes through the same standard 2-flop synchronizer,
 uniformly, not just the host-facing subset -- one synchronizer design
 applied to every input pin, not a special case for some of them. This
-adds a uniform +2-cycle latency to `WAIT`'s reaction time that
+adds a uniform +2-cycle latency to `WAIT`'s reaction time. **Exact
+reaction, at the pins:** count rising clock edges from the first one
+that samples the pin at its new level as edge 1. Edges 1 and 2 load the
+two synchronizer flops, and `WAIT` leaves `EXECUTE` at edge 3. The next
+instruction then takes its usual 3 cycles (`FETCH_LO`, `FETCH_HI`,
+`EXECUTE`), so a `SET` straight after the `WAIT` changes its pin at
+edge 6. The same holds for a rising and a falling level. That is a latency
 [protocol_timing.md](protocol_timing.md)'s budget doesn't currently
 include; small against every margin already checked there (the
 tightest, USB LS, already has *no* margin per that doc's own

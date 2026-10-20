@@ -1054,7 +1054,10 @@ test spec`, now a sign-off gate). On its own, the suite kills 16 of the
 
 **Spec findings.** These are items the agent had to assume, or found
 ambiguous; the RTL's choice agrees with the agent's reading in every
-case:
+case. All five are now written into `isa.md` and `architecture.md` as
+the RTL behaves (2026-10-20). F3's number was measured at the pins,
+and the measurement tells the RTL (6 edges) apart from curated
+mutant #2 (5 edges).
 
 | | Item | Spec |
 |---|---|---|
@@ -1063,6 +1066,19 @@ case:
 | F3 | total WAIT reaction latency, pin edge to exit | missing (relative "+2" only) |
 | F4 | SET's mode field on fixed-role pins 5/6 | silent |
 | F5 | LOOP with Rd = 0 | implicit (8-bit decrement wraps: 256 iterations) |
+
+**Pass 2** (run `20261020-175337-spec-conformance`): the same agent
+re-read the clarified docs, still in its own tree, and replaced every
+ASSUMPTION/AMBIGUOUS marker on F1-F5 with a citation of the new text,
+tightening each check to what the spec now states.
+- Its WAIT test now checks the exact 6-edge reaction, for rising and
+  falling levels, on pins 1, 7 and HOST_GO. That kills #2, so the suite
+  alone now kills **17/23** curated mutants.
+- The 6 it misses are the 3 debug-flag mutants, which no pin shows, and
+  the 3 counter-width mutants, which need more than 2^20 cycles.
+- The pass-2 audit is clean: 7 tool calls, all inside the tree
+  (`audit_agent_paths.py --skip 18` skips pass 1's calls in the shared
+  transcript).
 
 **Which formal-only kills are visible at the pins.** These are the 35
 blind mutants that only formal killed (section 20). The equivalence

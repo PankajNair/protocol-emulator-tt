@@ -180,9 +180,8 @@ class Asm:
     @staticmethod
     def _bitsel(bit):
         # isa.md OUTB/INB: "bit is 0 or 7"; bit_select(1) = imm[5].
-        # ASSUMPTION: bit_select 0 -> bit 0, 1 -> bit 7 (the spec names the
-        # two choices but not which encoding is which; this is the natural
-        # reading of a 1-bit selector listed as "0 or 7").
+        # isa.md sub-field packing: "For OUTB/INB, bit_select = 0 selects
+        # bit 0 and 1 selects bit 7".
         if bit not in (0, 7):
             raise ValueError("OUTB/INB bit must be 0 or 7")
         return 1 if bit == 7 else 0
