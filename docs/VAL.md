@@ -167,6 +167,11 @@ host-handshake test, oe-aware boot helper and physical-pin scoreboard.
 The same sample hung the suite on a boot mutant (`load_byte` had an
 unbounded wait), which is why waits are now bounded.
 
+#24 (uo_out reset value) and #25 (reset not clearing a pending LOAD
+writeback) came from the full blind census (section 20). They survived
+every simulation gate, and only formal killed them. The new directed
+reset tests (section 21) now kill both in simulation as well.
+
 ## 6. Formal / vacuity gate
 
 Plain `yosys` + `yosys-smtbmc` + `z3`, no SymbiYosys. Immediate
@@ -207,10 +212,11 @@ docstring.
   correct design. It now saturates.
 
 Coverage is 263/263 reached plus 4 `[deep]`. Formal alone, without
-simulation, now kills all 23 mutation-gate mutants (`scripts/formal_mutants.py`),
-up from 16 before the datapath and boot files: the 7 former blind spots
-(#3 INB, #7 LOADX, #12 SHIFT; boot-path writes and echo #10, #19, #22,
-#23) are each killed by a proven property.
+simulation, now kills all 23 of the original mutation-gate mutants
+(`scripts/formal_mutants.py`), up from 16 before the datapath and boot
+files: the 7 former blind spots (#3 INB, #7 LOADX, #12 SHIFT; boot-path
+writes and echo #10, #19, #22, #23) are each killed by a proven
+property. It also kills #24 and #25 (section 21), which makes 25/25.
 
 **`[deep]` covers (2026-10-18).** A cover whose state lies beyond BMC
 depth may be tagged `[deep]` on its source line. `make vacuity` counts an
@@ -942,6 +948,12 @@ mutant, the prover builds a sequential miter of the whole chip:
     never reaches the pad);
   - both copies issue the same SRAM writes. This also makes the
     single shared array exact.
+  - These claims are checked while `rst_n` is high. `async2sync`
+    models the async reset synchronously, so in a reset's first cycle
+    the flops still hold arbitrary values that silicon would already
+    have forced. That once produced a bogus "difference" during reset.
+    Nothing is lost: a reset-value difference still shows on the pins
+    the cycle after release, and the SRAM ignores writes during reset.
 - **Strengthening asserts:** every flop is equal, except a per-mutant
   `ALLOWED_DIFF` list. Each entry comes with invariants that are
   asserted, never assumed, so they are proven too.
@@ -1088,10 +1100,35 @@ cycles.
 
 | Result | Count | Mutants |
 |---|---|---|
-| pin-visible (refuted) | 5 | `uo_out` reset value ×3; `pending_lx_writeback` reset deleted; HOST_GO's edge detector turned into a level detector (`pin_ctrl.v:138`) |
+| pin-visible (refuted) | 5 | `uo_out` reset value ×3; `pending_lx_writeback` reset deleted; HOST_GO's rise detector firing one cycle late (`pin_ctrl.v:138`, `!host_go_prev` → `host_go_prev`) |
 | proven pin-equivalent | 3 | `start_fall` (`pin_ctrl.v:137`), which has no consumer; formal kills it only because a prop checks that output directly |
 | undetermined | 27 | no pin difference within 12 cycles, and not proven (no per-mutant allowed-difference list) |
 
 The spec suite kills the 3 `uo_out` mutants, which our own simulation
-missed. The other 2 pin-visible ones are real gaps in simulation that
-only formal closes.
+missed.
+
+**Closed in simulation (2026-10-20).** Two new directed tests make
+simulation kill all four reset mutants on its own; mutation-gate
+entries #24 (uo_out reset value) and #25 (pending writeback not cleared
+by reset) guard them:
+- `test_reset_pin_state` checks the pins' reset values during and
+  after a power-up reset, and again after a reset that lands mid-run,
+  while `uo_out` shows a value and a pin is driven.
+- `test_reset_during_pending_writeback` sweeps a reset across every
+  cycle of a loop that keeps a LOAD's writeback in flight. It then
+  boots a program that OUTs R0-R3; every register must read 0.
+
+The first version of that test checked only R1 and missed the mutant.
+The stale writeback lands in whatever register the reset left in its
+destination latch, which is R0.
+
+**`pin_ctrl.v:138` is pin-visible but spec-legal.** A probe on the RTL
+and on the mutant shows exactly what changes:
+- the HOST_STATUS ack comes after 5 edges instead of 4;
+- a 1-cycle HOST_GO pulse is never acked.
+
+The boot handshake is level-based: the host holds HOST_GO until it
+sees the ack, and the spec never states the ack's cycle latency. A
+directed test pinning 4 edges would over-specify the design, so this
+mutant stays a formal-only kill: `agent_pin_ctrl_sync_depth_props.v`
+is deliberately stricter than the spec.

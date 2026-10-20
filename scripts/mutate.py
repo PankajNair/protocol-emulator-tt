@@ -231,6 +231,22 @@ MUTANTS = [
         edits=[("        mem_we_c    = host_go_rise && !load_ack && !boot_full;",
                 "        mem_we_c    = host_go_rise && !load_ack;")],
     ),
+    dict(
+        id=24, file="cpu/core.v",
+        desc="uo_out resets to 0xFF instead of 0",
+        hazard="uo_out reset value (architecture.md I/O reset state); visible on the pins in LOAD",
+        bug_ref="blind-mutation survivor of every simulation gate (formal-only kill); test_reset_pin_state",
+        edits=[("      uo_out_reg            <= 8'd0;\n      pending_lx_writeback",
+                "      uo_out_reg            <= 8'hFF;\n      pending_lx_writeback")],
+    ),
+    dict(
+        id=25, file="cpu/core.v",
+        desc="reset no longer clears a pending LOAD/LOADX writeback",
+        hazard="a reset landing in a LOAD's trailing-writeback window lets it complete after restart",
+        bug_ref="blind-mutation survivor of every simulation gate (formal-only kill); test_reset_during_pending_writeback",
+        edits=[("      pending_lx_writeback  <= 1'b0;\n      pending_lx_rd",
+                "      pending_lx_rd")],
+    ),
 ]
 
 

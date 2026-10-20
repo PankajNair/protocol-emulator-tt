@@ -31,6 +31,10 @@ Per mutant, a sequential miter of the whole chip:
       pins:   uo_out equal, uio_oe equal, uio_out equal where uio_oe = 1
               (an output with its enable off never reaches the pad);
       writes: same write enable, and when writing, same address and data;
+      (pins and writes are checked while rst_n is high: async2sync models
+      reset synchronously, so in a reset's first cycle the flops are still
+      arbitrary where silicon has already forced them; a reset-value
+      difference shows on the pins the cycle after release anyway)
       state:  every exposed flop equal, except the per-mutant ALLOWED_DIFF
               set, plus per-mutant invariants about those flops.
     The state asserts are strengthening for induction; the pin and write
@@ -183,12 +187,19 @@ def miter(gp: dict, mp: dict, allowed: list[str], invariant: str | None) -> str:
         "  initial assume (!rst_n);",
         "  initial assume (dr_g == dr_m);",
         "  always @(*) begin",
-        "    assert (g_uo_out == m_uo_out);",
-        "    assert (g_uio_oe == m_uio_oe);",
-        "    assert ((g_uio_out & g_uio_oe) == (m_uio_out & m_uio_oe));",
-        "    assert (g_u_mem_rst_n == m_u_mem_rst_n);",
-        "    assert (g_u_mem_we == m_u_mem_we);",
-        "    if (g_u_mem_we) assert (g_u_mem_addr == m_u_mem_addr && g_u_mem_wdata == m_u_mem_wdata);",
+        # Claims are checked out of reset only. async2sync models the async
+        # reset synchronously: on the first cycle of a reset, flops still
+        # hold arbitrary values that silicon would already have forced.
+        # Nothing is lost: a reset-value difference is still on the pins
+        # the cycle after release, and the SRAM ignores writes in reset.
+        "    if (rst_n) begin",
+        "      assert (g_uo_out == m_uo_out);",
+        "      assert (g_uio_oe == m_uio_oe);",
+        "      assert ((g_uio_out & g_uio_oe) == (m_uio_out & m_uio_oe));",
+        "      assert (g_u_mem_rst_n == m_u_mem_rst_n);",
+        "      assert (g_u_mem_we == m_u_mem_we);",
+        "      if (g_u_mem_we) assert (g_u_mem_addr == m_u_mem_addr && g_u_mem_wdata == m_u_mem_wdata);",
+        "    end",
         "`ifdef STRENGTHEN",
     ]
     for n, (d, _) in gp.items():

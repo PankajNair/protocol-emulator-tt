@@ -921,6 +921,84 @@ async def test_host_error_gated_until_start_fall(dut):
 
 
 @cocotb.test()
+async def test_reset_pin_state(dut):
+    """docs/architecture.md "I/O register reset state": uo_out resets to
+    0, uio_out to all-0, and uio_oe is 0 everywhere except HOST_STATUS
+    (pin 5, hardwired output). Checked at power-up and again after a
+    reset that lands mid-run, while uo_out shows a value and a protocol
+    pin is driven -- simulation always reset from a quiet chip before,
+    so a wrong uo_out reset value survived every simulation gate (blind
+    mutation campaign, docs/VAL.md section 20)."""
+
+    def check(when):
+        assert int(dut.uo_out.value) == 0, f"{when}: uo_out={dut.uo_out.value}"
+        assert int(dut.uio_out.value) == 0, f"{when}: uio_out={dut.uio_out.value}"
+        assert int(dut.uio_oe.value) == 1 << HOST_STATUS_BIT, f"{when}: uio_oe={dut.uio_oe.value}"
+
+    _ensure_clock(dut)
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 3)
+    check("during the power-up reset")
+    dut.rst_n.value = 1
+    for k in range(3):
+        await RisingEdge(dut.clk)
+        check(f"{k + 1} cycle(s) after the power-up reset, in LOAD")
+
+    prog = [asm.ldi(0, 0xA5), asm.out(0), asm.set_pin(asm.SET_MODE_PUSH_PULL, 0, 1), asm.halt()]
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0xA5, max_cycles=60)
+    await ClockCycles(dut.clk, 10)
+    assert int(dut.uio_oe.value) & 1, "SET did not drive pin 0 (test precondition)"
+
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 3)
+    check("during a mid-run reset")
+    dut.rst_n.value = 1
+    for k in range(5):
+        await RisingEdge(dut.clk)
+        check(f"{k + 1} cycle(s) after a mid-run reset, in LOAD")
+
+
+@cocotb.test()
+async def test_reset_during_pending_writeback(dut):
+    """docs/architecture.md: a LOAD/LOADX writeback lands in the next
+    instruction's FETCH_LO, and "Reset values": R0-R3 = 0 after any
+    reset. A reset that lands while that writeback is still pending must
+    not let it complete later. Sweeps the reset over every cycle of a
+    loop that keeps a LOAD's writeback in flight, then boots a program
+    that OUTs R0-R3 and halts: every register must still read 0 (the
+    stale writeback's destination is whatever the reset left in its
+    Rd latch, so all four are checked). The first program leaves 0xC3
+    at SRAM address 10, which is what the SRAM read register returns in
+    the restarted chip's first FETCH_LO (the 5-word check program stops
+    the boot counter at 10), so a stale writeback shows as 0xC3 rather
+    than by luck as 0. Found by the blind mutation campaign: deleting
+    pending_lx_writeback's reset survived every simulation gate."""
+    loop = [
+        asm.out(1),          # word 0
+        asm.load(1, 0),      # word 1: R1 <= data[0]; writeback pending in word 2's FETCH_LO
+        asm.jmp(0),          # word 2
+        asm.nop(),           # words 3-4: never executed
+        asm.nop(),
+        asm.ldi(3, 0xC3),    # word 5, never executed: low byte 0xC3 at SRAM address 10
+    ]
+    check_prog = [asm.out(0), asm.out(1), asm.out(2), asm.out(3), asm.halt()]
+    for k in range(0, 24):
+        await reset_and_boot(dut, loop)
+        await ClockCycles(dut.clk, k)
+        dut.rst_n.value = 0
+        await ClockCycles(dut.clk, 3)
+        await reset_and_boot(dut, check_prog)
+        for _ in range(40):
+            await RisingEdge(dut.clk)
+            assert dut.uo_out.value.is_resolvable and int(dut.uo_out.value) == 0, \
+                f"reset {k} cycles after START: a register read {dut.uo_out.value} after restart, spec says 0"
+
+
+@cocotb.test()
 async def test_host_handshake_in_out(dut):
     """The runtime host protocol, end to end (docs/architecture.md Host
     handshake): both directions host-initiated 4-phase exchanges ending
