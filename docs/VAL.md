@@ -682,6 +682,64 @@ The round found two real gaps in the live environment:
   - `formal/agent_pin_ctrl_sync_depth_props.v` proves the 2-cycle depth
     for every consumer, including the `pin_read` tap.
 
+**Round 3 (2026-10-21): harder cases, opaque trees.** Seven new cases
+(`r3_*` in `scripts/triage_bench.py`):
+- **Timing-only symptoms** (a `cycles used` mismatch, no wrong value),
+  as a same-symptom pair: OUTB taking 4 cycles in the DUT, or in the
+  model.
+- **A rare trigger:** the WAIT tie rule, again as a DUT/model pair.
+  Only seeds where the pin matches on the expiry cycle fail.
+- **A harness bug that reads as a DUT bug:** the harness skips Rs
+  instead of Rd at a LOADX commit, so Rd is compared before its
+  documented trailing writeback lands.
+- **A DUT bug that reads as a harness bug:** a third synchronizer flop
+  on `pin_read`, which looks like `SYNC_DELAY` being off.
+- **Two live bugs:** a TEST-bit index reversal, plus a decoy (the model
+  WAIT tie). Setup picks a seed that fails the same check with the
+  primary alone and passes with the decoy alone, and checks that the
+  decoy still fails some other seed.
+
+Building the round exposed two leaks that also affected rounds 1 and 2:
+- **Bug catalogues in the tree.** `scripts/mutate.py` holds several
+  planted edits verbatim (`dut_wait_tie` is mutant #6, and round 1's
+  `dut_inb_invert`, `dut_sync_drop` and `dut_delay_offbyone` are #3, #2
+  and #1). `docs/VAL.md` and `formal/README.md` describe them. Bench
+  trees now leave out the mutation and red-team tooling and these docs,
+  and the tree's contract says so. An audit of all 14 round-1/2
+  transcripts found no agent that read any of those files.
+- **The tree's own path.** Directories named `bench/model_cmp` or
+  `r3_two_bugs` name the answer. The first round-3 launch was voided
+  when the two-bug agent remarked on its tree's name. Its 7 ledger runs
+  are recorded as rejected `VOID (parent error)`, and metrics leave void
+  runs out. Trees are now `case_01`..`case_07` in shuffled order, with
+  the map kept outside them. Rounds 1-2 cannot be re-checked for this
+  leak: their reasoning cites spec and code evidence throughout, but a
+  path hint can't be ruled out.
+
+**Result: 7/7 classification, 7/7 culprit file**, all high confidence:
+- The DUT/model pairs were separated by the spec's 3-cycle rule and its
+  tie rule.
+- The LOADX agent wrote three discriminating programs (LOAD; LOADX with
+  Rd=Rs; LOADX with Rd!=Rs) showing that the failure follows the
+  harness's skip index.
+- One WAIT-tie agent removed the tie (timeout 31) to show the sampling
+  paths agree.
+- The two-bug agent found the primary without being misled by the decoy.
+
+Every replay reproduces. The independence audit is clean once two of
+my own audit bugs are fixed:
+- It flagged the agent's own background-task output.
+- It flagged the tree's deliberate `.venv` symlink.
+
+The ledger keeps the first, failing gate runs and records the
+overrides. Cost (`make metrics`): 265,557 tokens for the 7 runs, about
+38k per accepted triage.
+
+Also noticed by an agent: `test_sync_depth_matches_harness_sync_delay`
+measures `uio_in_ff2`, not `pin_read`, so it cannot see an extra flop
+on the WAIT/INB tap. The formal sync-depth props and the random
+scoreboard still catch it (case_01 failed in random within seed 1).
+
 ## 17. Red team
 
 The red-team agent attacks the verification environment itself. It

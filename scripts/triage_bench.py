@@ -12,6 +12,11 @@ ground truth kept only in this file.
                                        write DIR/TRIAGE_TASK.md
     triage_bench.py score CASE DIR     compare DIR/triage/reports/*/verdict.json
 
+DIR must not name the case: the path is visible to the agent, and a
+directory called model_cmp or two_bugs gives the answer away (rounds
+1-3 did exactly that until round 3's two-bug agent remarked on its own
+tree's name). Use opaque names (case_01 ...) and keep the map elsewhere.
+
 The copy has no git history and no copy of this file, so the agent can't
 diff its way to the answer: it has to reason from the spec, the code and
 the evidence. Comments that would narrate the planted bug's fix are
@@ -72,19 +77,82 @@ CASES = {
                (r"one cycle more than the textbook 2-flop count\. ", ""),
                (r"  # empirically measured, see module header -- NOT the textbook 2-flop count", "  # see module header")],
         truth="stimulus sync delay one cycle short of the measured RTL path; RTL matches spec"),
+
+    # ---- round 3: harder (docs/VAL.md section 16) -----------------------
+    # timing-only symptom ("cycles used"), same symptom, opposite owners
+    "r3_dut_outb_slow": dict(
+        cls="DUT", file="src/cpu/core.v",
+        edits=[("  wire exec_done = !delay_pending && !wait_pending;",
+                "  wire exec_done = !delay_pending && !wait_pending &&\n"
+                "                   !(opcode == `OP_OUTB && entering_execute);")],
+        truth="OUTB holds EXECUTE an extra cycle (4 cycles); spec: every non-DELAY/WAIT instruction is 3"),
+    "r3_model_outb_slow": dict(
+        cls="REFERENCE_MODEL", file="test/golden_model.py",
+        edits=[("        s.pin_drv[pin] = bit\n\n    elif op == asm.OP_INB:",
+                "        s.pin_drv[pin] = bit\n        cycles = 4\n\n    elif op == asm.OP_INB:")],
+        truth="model charges OUTB 4 cycles; spec says 3 (same symptom as r3_dut_outb_slow)"),
+    # rare trigger: only seeds where a WAIT's pin matches on its expiry cycle
+    "r3_dut_wait_tie": dict(
+        cls="DUT", file="src/cpu/core.v",
+        edits=[("`OP_WAIT:    flag <= wait_condition_met ? 1'b0 : 1'b1;",
+                "`OP_WAIT:    flag <= (wait_has_timeout && cnt_expired) ? 1'b1 : (wait_condition_met ? 1'b0 : 1'b1);")],
+        truth="WAIT tie resolved as a timeout; isa.md: condition-met wins"),
+    "r3_model_wait_tie": dict(
+        cls="REFERENCE_MODEL", file="test/golden_model.py",
+        edits=[("                s.flag = not met  # isa.md WAIT row: 0 if met, 1 if timed out; met wins the tie\n",
+                "                s.flag = expired or not met  # isa.md WAIT row: 0 if met, 1 if timed out\n")],
+        scrub=[(r"    condition-met wins on an exact tie, matching core\.v checking the\n    condition before the counter \(docs/isa\.md WAIT row\)\. ",
+                "    see docs/isa.md WAIT row. ")],
+        truth="model resolves a WAIT tie as a timeout; isa.md: condition-met wins (same symptom as r3_dut_wait_tie)"),
+    # a harness bug whose symptom reads as a DUT writeback bug
+    "r3_harness_ldx_skip": dict(
+        cls="HARNESS", file="test/test_random.py",
+        edits=[('        skip_reg = decoded["rd"] if decoded["opcode"] in (asm.OP_LOAD, asm.OP_LOADX) else None\n',
+                '        skip_reg = (decoded["rs"] if decoded["opcode"] == asm.OP_LOADX else decoded["rd"]) \\\n'
+                '            if decoded["opcode"] in (asm.OP_LOAD, asm.OP_LOADX) else None\n')],
+        truth="harness skips Rs instead of Rd at a LOADX commit, so it compares Rd before its documented trailing writeback lands"),
+    # a DUT bug whose symptom reads as the harness's SYNC_DELAY being off
+    "r3_dut_sync_extra": dict(
+        cls="DUT", file="src/io/pin_ctrl.v",
+        edits=[("  reg [7:0] uio_in_ff1, uio_in_ff2;", "  reg [7:0] uio_in_ff1, uio_in_ff2, uio_in_ff3;"),
+               ("      uio_in_ff2 <= 8'd0;\n", "      uio_in_ff2 <= 8'd0;\n      uio_in_ff3 <= 8'd0;\n"),
+               ("      uio_in_ff2 <= uio_in_ff1;\n", "      uio_in_ff2 <= uio_in_ff1;\n      uio_in_ff3 <= uio_in_ff2;\n"),
+               ("assign pin_read   = uio_in_ff2[pin_index];", "assign pin_read   = uio_in_ff3[pin_index];")],
+        truth="pin_read taps a third flop: WAIT/INB see uio one cycle late; spec: 2-flop synchronizer, uniformly"),
+    # two bugs at once: the primary causes the reported failure, a decoy
+    # elsewhere is live too (setup checks which one the seed needs)
+    "r3_two_bugs": dict(
+        cls="DUT", file="src/cpu/core.v",
+        edits=[("`OP_TESTBIT: flag <= ra_data[w_bitidx];", "`OP_TESTBIT: flag <= ra_data[3'd7 - w_bitidx];")],
+        decoy=dict(file="test/golden_model.py",
+                   edits=[("                s.flag = not met  # isa.md WAIT row: 0 if met, 1 if timed out; met wins the tie\n",
+                           "                s.flag = expired or not met  # isa.md WAIT row: 0 if met, 1 if timed out\n")]),
+        truth="TEST-bit indexes bits MSB-first (7 - bitidx); a second planted bug (model WAIT tie) is live but not the cause of this seed"),
 }
+
+# Benchmark trees also leave out everything that catalogues known bugs:
+# the curated and blind mutant lists contain several planted edits
+# verbatim (dut_wait_tie is mutant #6), and VAL.md / formal/README.md
+# describe them. Found while building round 3; rounds 1-2 had them.
+BENCH_EXCLUDE_FILES = {"scripts/mutate.py", "scripts/blind_mutate.py", "scripts/formal_mutants.py",
+                       "scripts/redteam_eval.py", "scripts/prove_equiv.py", "formal/equiv_proofs.json",
+                       "docs/VAL.md", "formal/README.md", "blind_mutation_results.jsonl"}
+BENCH_EXCLUDE_DIRS = {"redteam"}
 
 EXCLUDE = {".git", ".venv", "sim_build", "__pycache__", "regression_artifacts", "runs", "triage_bench.py",
            "ledger", "signoff_report.json", "mutation_results.json"}
 
 
-def copy_tree(dst: Path) -> None:
+def copy_tree(dst: Path, bench: bool = False) -> None:
     """Working tree as it is now (committed + uncommitted), minus history
-    and the bench's own ground truth."""
+    and the bench's own ground truth; bench=True also drops the bug
+    catalogues (BENCH_EXCLUDE_*)."""
     files = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=ROOT,
                            capture_output=True, text=True, check=True).stdout.split()
     for f in files:
         if set(Path(f).parts) & EXCLUDE or f.startswith("triage/reports/"):
+            continue
+        if bench and (f in BENCH_EXCLUDE_FILES or set(Path(f).parts) & BENCH_EXCLUDE_DIRS):
             continue
         src = ROOT / f
         if not src.is_file():
@@ -100,28 +168,74 @@ def cmd_setup(a) -> int:
     if dst.exists():
         shutil.rmtree(dst)
     dst.mkdir(parents=True)
-    copy_tree(dst)
-    target = dst / case["file"]
-    text = target.read_text()
-    for old, new in case["edits"]:
-        if text.count(old) != 1:
-            sys.exit(f"[bench] {a.case}: edit anchor not found exactly once in {case['file']}: {old!r}")
-        text = text.replace(old, new)
-    for pattern, repl in case.get("scrub", []):
-        text, n = re.subn(pattern, repl, text, flags=re.S)
-        if n == 0:
-            sys.exit(f"[bench] {a.case}: scrub pattern matched nothing in {case['file']}: {pattern!r}")
-    target.write_text(text)
+    copy_tree(dst, bench=True)
+    contract = dst / "triage" / "AGENT_CONTRACT.md"
+    ctext = contract.read_text()
+    if "docs/VAL.md, " in ctext:
+        contract.write_text(ctext.replace("docs/VAL.md, ", "", 1) + (
+            "\n- **This tree has no docs/VAL.md** (or mutation tooling): benchmark trees leave\n"
+            "  out the catalogues of known bugs. The spec is isa.md and architecture.md.\n"))
+    clean = {}
 
-    # find the first failing seed (the test stops at the first failure)
-    env = dict(os.environ, SEEDS=str(a.seeds), SEED_BASE="1", COV_DIR="/tmp/triage_bench_cov")
+    def plant(spec, name):
+        target = dst / spec["file"]
+        text = clean.setdefault(spec["file"], target.read_text())
+        text = target.read_text()
+        for old, new in spec["edits"]:
+            if text.count(old) != 1:
+                sys.exit(f"[bench] {name}: edit anchor not found exactly once in {spec['file']}: {old!r}")
+            text = text.replace(old, new)
+        for pattern, repl in spec.get("scrub", []):
+            text, n = re.subn(pattern, repl, text, flags=re.S)
+            if n == 0:
+                sys.exit(f"[bench] {name}: scrub pattern matched nothing in {spec['file']}: {pattern!r}")
+        target.write_text(text)
+        return text
+
     act = f"source {ROOT / '.venv/bin/activate'} && " if "VIRTUAL_ENV" not in os.environ else ""
-    r = subprocess.run(["bash", "-c", f"{act}make -C test random"], cwd=dst, env=env, capture_output=True, text=True)
-    arts = sorted((dst / "test" / "regression_artifacts").glob("seed_*/failure.json"))
-    if not arts:
-        print(r.stdout[-2000:])
-        sys.exit(f"[bench] {a.case}: no failing seed in 1..{a.seeds}")
-    failure = json.loads(arts[0].read_text())
+
+    def first_failure(seeds, base=1):
+        """Run the random regression; the first failure.json, or None."""
+        shutil.rmtree(dst / "test" / "regression_artifacts", ignore_errors=True)
+        env = dict(os.environ, SEEDS=str(seeds), SEED_BASE=str(base), COV_DIR="/tmp/triage_bench_cov")
+        r = subprocess.run(["bash", "-c", f"{act}make -C test random"], cwd=dst, env=env, capture_output=True, text=True)
+        arts = sorted((dst / "test" / "regression_artifacts").glob("seed_*/failure.json"))
+        return json.loads(arts[0].read_text()) if arts else None
+
+    primary_text = plant(case, a.case)
+    decoy = case.get("decoy")
+    if not decoy:
+        # the test stops at the first failure
+        failure = first_failure(a.seeds)
+        if not failure:
+            sys.exit(f"[bench] {a.case}: no failing seed in 1..{a.seeds}")
+    else:
+        # two live bugs: pick the first seed that fails with both planted,
+        # fails the same check with the primary alone, and passes with the
+        # decoy alone -- so the primary is provably this seed's cause
+        decoy_text = plant(decoy, a.case + " (decoy)")
+        failure = None
+        for s in range(1, a.seeds + 1):
+            both = first_failure(1, s)
+            if not both:
+                continue
+            (dst / decoy["file"]).write_text(clean[decoy["file"]])
+            alone = first_failure(1, s)
+            (dst / case["file"]).write_text(clean[case["file"]])
+            (dst / decoy["file"]).write_text(decoy_text)
+            decoy_alone = first_failure(1, s)
+            (dst / case["file"]).write_text(primary_text)
+            if alone and alone["check"] == both["check"] and not decoy_alone:
+                failure = both
+                break
+        if not failure:
+            sys.exit(f"[bench] {a.case}: no seed in 1..{a.seeds} isolates the primary bug")
+        # the decoy must still be live: some seed in range fails on it alone
+        (dst / case["file"]).write_text(clean[case["file"]])
+        live = first_failure(a.seeds)
+        (dst / case["file"]).write_text(primary_text)
+        if not live:
+            sys.exit(f"[bench] {a.case}: decoy never fails in 1..{a.seeds}; it would not be live")
     seed = failure["seed"]
     shutil.rmtree(dst / "test" / "regression_artifacts")
     shutil.rmtree(dst / "test" / "sim_build", ignore_errors=True)

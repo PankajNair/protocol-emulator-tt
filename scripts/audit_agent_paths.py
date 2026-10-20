@@ -22,6 +22,7 @@ a human to look at. Exit 0 iff no violation and nothing unresolved.
 """
 
 import argparse
+import os
 import json
 import re
 import sys
@@ -36,6 +37,15 @@ REL_UP = re.compile(r"(?<![\w/.-])((?:\.\./)+[^\s'\"`;|&<>()]*)")
 CD = re.compile(r"\bcd\s+([^\s;&|]+)")
 SYSTEM_OK = ("/usr/", "/bin/", "/opt/homebrew/", "/dev/null",
              "/System/", "/Library/Developer/")
+
+
+def own_task_outputs(path: Path) -> set[str]:
+    """Output files of background commands the agent itself started: the
+    harness reports each as "running in background with ID: <id>" and the
+    agent may read <tasks dir>/<id>.output. Other agents' transcripts
+    live in the same directory and stay off limits."""
+    ids = set(re.findall(r"running in background with ID: (\w+)", path.read_text()))
+    return {f"{i}.output" for i in ids}
 
 
 def tool_calls(path: Path):
@@ -64,7 +74,11 @@ def main() -> int:
     variants = {tree, tree.replace("/private/tmp/", "/tmp/", 1)}
     allowed = list(variants) + [str(Path(p).resolve()) for p in a.allow]
 
+    own = own_task_outputs(a.transcript)
+
     def ok(p: str) -> bool:
+        if Path(p).name in own and Path(p).parent.name == "tasks":
+            return True
         return any(p == t or p.startswith(t.rstrip("/") + "/") for t in allowed)
 
     n, bad, unresolved = 0, [], []
@@ -89,7 +103,7 @@ def main() -> int:
             cds = [c for c in CD.findall(cmd) if c.startswith("/")]
             base = Path(cds[-1]) if cds else Path(tree)
             for p in REL_UP.findall(cmd):
-                full = str((base / p).resolve())
+                full = os.path.normpath(str(base / p))  # lexical: the tree's .venv is a deliberate symlink
                 if not ok(full):
                     bad.append(f"Bash path {p} (= {full})  in: {cmd[:120]!r}")
             if re.search(r"\$\{?[A-Za-z_]|`", cmd):

@@ -26,6 +26,7 @@ Environment: mutation-gate entries by origin; orchestrator cycle outcomes.
 import argparse
 import importlib.util
 import json
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -82,7 +83,9 @@ def agent_metrics(runs: list[dict]) -> list[dict]:
     for r in runs:
         by_agent[r["agent"]].append(r)
     for agent, rs in sorted(by_agent.items()):
-        live = [r for r in rs if r.get("source") == "live"]
+        # runs the parent voided (its own error, e.g. a leaky benchmark
+        # tree) say nothing about the agent and are left out of rates
+        live = [r for r in rs if r.get("source") == "live" and not (r.get("reason") or "").startswith("VOID")]
         versions = Counter(r.get("agent_def_sha") for r in live)
         mins = [r["minutes"] for r in live if r.get("minutes") is not None]
         rows.append({
@@ -152,10 +155,14 @@ def triage_metrics(runs: list[dict]) -> dict:
     rounds = defaultdict(lambda: [0, 0])
     replays = [0, 0]
     for r in runs:
-        if r["agent"] != "triage-debug" or r.get("source") != "live":
+        if r["agent"] != "triage-debug" or r.get("source") != "live" or (r.get("reason") or "").startswith("VOID"):
             continue
         task = r["task"]
-        rnd = "round 2 (scrubbed)" if "round 2" in task else "round 1" if task.startswith("bench") else None
+        m = re.search(r"round (\d+)", task)
+        rnd = None
+        if task.startswith("bench"):
+            n = int(m.group(1)) if m else 1
+            rnd = {1: "round 1", 2: "round 2 (scrubbed)", 3: "round 3 (harder, opaque trees)"}.get(n, f"round {n}")
         for g in r.get("gates", []):
             if g["name"] == "bench-score" and rnd:
                 rounds[rnd][0] += g["passed"]
