@@ -81,7 +81,7 @@ random:
 # agent from docs/ alone, never from the RTL; docs/VAL.md section 21).
 .PHONY: spec
 spec:
-	PYTHONPATH=$(PWD)/../spec_tests:$(PYTHONPATH) $(MAKE) COCOTB_TEST_MODULES=test_spec_conformance
+	PYTHONPATH=$(CURDIR)/../spec_tests:$(PYTHONPATH) $(MAKE) COCOTB_TEST_MODULES=test_spec_conformance
 
 # Board-level tests (tb_board.v): two chips on shared nets.
 .PHONY: board
