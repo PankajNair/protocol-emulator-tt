@@ -63,6 +63,17 @@ the brief.
   synchronizer margin per edge). Verified by `test/test_spi_target.py`
   against an independent mode-0 controller model, which also measures
   that limit (exact at 14, fails at 13).
+- `protocols/onewire.asm` -- 1-Wire controller, standard speed (e.g. a
+  DS18B20 temperature sensor): reset with presence detect, write byte,
+  read byte, driven by the host in lockstep (command byte 1/2/3 over the
+  usual handshake). DQ = pin 0, open-drain, external pull-up. Slot timing
+  is Maxim AN126's recommended set; reads sample ~14 us into the slot.
+  Not a protocol the chip was designed around. Verified by
+  `test/test_onewire.py` against an independent device model that holds
+  the spec's worst case (a 0 held only 15 us, presence at both ends of
+  its window), reads a ROM code with a valid CRC8, and checks every
+  controller pulse and slot against the spec. Late sampling, a long
+  write-1 pulse, a short reset and an early presence sample each fail it.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

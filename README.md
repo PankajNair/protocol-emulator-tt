@@ -26,8 +26,8 @@ protocol is a new program, loaded by the host after fabrication.
   IHP 1 KB SRAM macro.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
   (100/400 kHz), SPI target (the chip as the peripheral, following an
-  external clock), and a WS2812 LED driver, a protocol the chip wasn't
-  designed for. Each is verified in simulation against an independent
+  external clock), and two protocols the chip wasn't designed for: a
+  WS2812 LED driver and a 1-Wire controller. Each is verified in simulation against an independent
   model of the other end.
 - **Verification:** `make signoff`, 15 gates, `STABLE` on the nightly
   run. See [docs/verification.md](docs/verification.md).
