@@ -453,9 +453,12 @@ def cmd_report(a) -> int:
         tag = "proven" if r["id"] in proven else "traced"
         print(f"    {tag:6s} {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']:28s} {equivalent(r)[:60]}")
     sim_only = [r for r in ok if r["sim"] == "survived" and r["formal"].startswith("killed")]
-    print(f"  killed by formal only, not simulation ({len(sim_only)}):")
+    n_pe = sum(r["id"] in proven for r in sim_only)
+    print(f"  killed by formal only, not simulation ({len(sim_only)}; {n_pe} proven never to reach the "
+          f"pins, prove_equiv.py --formal-only; the rest pin-visible or open):")
     for r in sorted(sim_only, key=lambda r: (r["file"], r["line"])):
-        print(f"    {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']}  [{r['formal']}]")
+        tag = "proven" if r["id"] in proven else "open"
+        print(f"    {tag:6s} {r['file']}:{r['line']:<4} {r['group']:5s} {r['desc']}  [{r['formal']}]")
     hung = [r for r in ok if "timeout" in r["sim"] or "timeout" in r["formal"]]
     print(f"  suite timeouts (hangs) ({len(hung)}):")
     for r in hung:

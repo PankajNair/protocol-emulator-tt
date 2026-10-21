@@ -117,10 +117,13 @@ blind-mutate:
 
 # prove-equiv: prove the blind-mutation survivors in blind_mutate.EQUIVALENT
 #          really are equivalent at the pins (sequential miter, BMC +
-#          induction), then the negative control (section 20)
+#          induction), then the negative control; then the same for the
+#          formal-only kills in prove_equiv.FORMAL_ONLY (section 20)
 prove-equiv:
 	python3 scripts/prove_equiv.py
 	python3 scripts/prove_equiv.py --controls
+	python3 scripts/prove_equiv.py --formal-only
+	python3 scripts/prove_equiv.py --formal-only --controls
 
 # ---------------------------------------------------------------------------
 # rtl-coverage: structural line/toggle coverage of src/ under Verilator,

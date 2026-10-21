@@ -1165,8 +1165,51 @@ cycles.
 | Result | Count | Mutants |
 |---|---|---|
 | pin-visible (refuted) | 5 | `uo_out` reset value ×3; `pending_lx_writeback` reset deleted; HOST_GO's rise detector firing one cycle late (`pin_ctrl.v:138`, `!host_go_prev` → `host_go_prev`) |
-| proven pin-equivalent | 3 | `start_fall` (`pin_ctrl.v:137`), which has no consumer; formal kills it only because a prop checks that output directly |
-| undetermined | 27 | no pin difference within 12 cycles, and not proven (no per-mutant allowed-difference list) |
+| proven pin-equivalent | 30 | below; 3 of them are `start_fall` (`pin_ctrl.v:137`), which has no consumer |
+
+**The other 27 (2026-10-21).** At first these were undetermined: no pin
+difference within 12 cycles, and no allowed-difference list to prove
+them with. `prove_equiv.py --formal-only` now proves all of them
+never reach the pins (`make prove-equiv`; recorded in
+`formal/equiv_proofs.json`, 55 proofs in all). Formal kills them because
+a prop checks an internal register directly. Each site in
+`FORMAL_ONLY` has two parts:
+- an allowed-difference set;
+- an invariant explaining why nothing reads the difference.
+
+| Site | Mutants | Why the pins never see it |
+|---|---|---|
+| `core.v:337`, `:359` | 4 | `pc`'s reset value: LOAD never reads `pc`, and START's rise zeroes it (or it is still 0 from reset) |
+| `core.v:338` | 3 | `ir_lo`'s reset value: overwritten by the first FETCH_HI before EXECUTE reads it |
+| `core.v:340` | 1 | `entering_execute` not reset: a stale 1 before the first EXECUTE only reloads the cycle counter |
+| `core.v:178` | 1 | `exec_commit` true outside EXECUTE: the SET/OUTB held in `ir` is re-applied in FETCH, a no-op |
+| `cycle_counter.v:88`, `:90` | 6 | `count`'s reset value, or its load value when `shifted == 0`: the instruction exits on the load cycle, and every later reader reloads first |
+| `pin_ctrl.v:99-102` | 8 | synchronizer reset values: flushed within 2 edges, while the FSM is still in LOAD with no HOST_GO edge |
+| `pin_ctrl.v:128`, `:129` | 4 | edge-detector history reset values: a stale 1 can only fake a fall, and LOAD consumes neither fall |
+
+Two extensions to the miter make this possible:
+- a ghost counter `rcnt` of edges since reset was released;
+- `RESET_FACTS`, design facts about the gold copy right after reset (the
+  flops hold their reset values; the synchronizer reads 0; the FSM is
+  in LOAD; `entering_execute` only in EXECUTE; `ir` is 0 in LOAD).
+
+Like every other invariant, these are asserted, never assumed. The base
+case checks them from reset, and induction keeps them.
+
+**Negative control.** `--formal-only --controls` runs 8 pin-visible
+mutants through the same kind of entries, mostly the entry of their
+own site. Examples:
+- `uio_in_ff1` reset to 8'hFF rather than 8'd1;
+- `count` loaded with `shifted + 1`;
+- `uo_out`'s reset value;
+- the late HOST_GO rise.
+
+Each must be rejected by a real counterexample, never by a tool error,
+and all 8 are.
+
+So every formal-only kill is now explained: 30 never reach the pins,
+4 are reset mutants that the directed reset tests now kill, and
+`pin_ctrl.v:138` is pin-visible but spec-legal (below).
 
 The spec suite kills the 3 `uo_out` mutants, which our own simulation
 missed.

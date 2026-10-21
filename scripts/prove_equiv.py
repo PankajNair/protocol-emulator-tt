@@ -7,6 +7,14 @@ reset makes the mutant chip's pins differ from the original's
 
     prove_equiv.py [--k K] [--only FILE:LINE ...]
     prove_equiv.py --controls        # negative control (CONTROLS below)
+    prove_equiv.py --formal-only [--controls]
+
+--formal-only does the same for the formal-only kills (mutants that
+simulation missed and formal killed via an internal-signal prop): the
+claim is that their difference never reaches the pins, per FORMAL_ONLY's
+allowed-difference sets and invariants. Its --controls runs
+FORMAL_ONLY_CONTROLS, pin-visible mutants through the same kind of
+entries, and requires each to be rejected by a real counterexample.
 
 Negative control: a prover that proves everything is worthless, so
 --controls runs CONTROLS, mutants the campaign killed, each chosen to
@@ -113,6 +121,127 @@ ALLOWED_DIFF = {
 }
 
 
+# Formal-only kills (section 20): mutants simulation missed but formal
+# killed, with no pin difference found within --control-depth cycles.
+# Formal kills them because a prop checks an internal signal; these
+# entries claim the difference never reaches the pins, and `--formal-only`
+# proves it the same way as ALLOWED_DIFF. Invariants are over the gold
+# copy's flops (g_*), the mutant's (m_*) and `rcnt`, a ghost counter of
+# clock edges since reset was released (saturating at 3), all asserted.
+S_FETCH_HI = "2'd2"
+OP_SET, OP_OUTB, OP_DELAY, OP_WAIT, OP_LOAD, OP_LOADX = 5, 12, 9, 10, 14, 18
+
+
+def _eq(n: str) -> str:
+    return f"(g_{re.sub(r'\W', '_', n)} == m_{re.sub(r'\W', '_', n)})"
+
+
+_G = lambda n: "g_" + re.sub(r"\W", "_", n)  # noqa: E731
+_IR, _ST, _EE = _G("u_core.ir"), _G("u_core.state"), _G("u_core.entering_execute")
+_OP = f"{_IR}[15:11]"
+# the cycle counter is read only on the EXECUTE cycles after a DELAY or
+# a timed WAIT loaded it (expired is combinational on the load cycle)
+_COUNT_READ = (f"({_ST} == {S_EXECUTE} && !{_EE} && ({_OP} == 5'd{OP_DELAY} || "
+               f"({_OP} == 5'd{OP_WAIT} && {_IR}[4:0] != 5'd0)))")
+_SYNC = [f"u_pin_ctrl.{n}" for n in ("ui_in_ff1", "ui_in_ff2", "uio_in_ff1", "uio_in_ff2")]
+# design facts out of reset: the cycle after release every flop holds its
+# reset value; one cycle later the uio synchronizer still reads 0, so no
+# START/HOST_GO edge can fire and the FSM is still in LOAD
+RESET_FACTS = (
+    f"(rcnt != 2'd0 || ({' && '.join(f'{_G(n)} == 8\'d0' for n in _SYNC)} && {_ST} == {S_LOAD} && "
+    f"!{_G('u_core.load_ack')} && !{_G('u_pin_ctrl.start_prev')} && !{_G('u_pin_ctrl.host_go_prev')})) && "
+    f"(rcnt > 2'd1 || ({_G('u_pin_ctrl.uio_in_ff2')} == 8'd0 && {_ST} == {S_LOAD})) && "
+    # entering_execute is only ever set for EXECUTE's first cycle; ir is
+    # the reset value until the first EXECUTE
+    f"({_ST} == {S_EXECUTE} || !{_EE}) && ({_ST} != {S_LOAD} || {_IR} == 16'd0)"
+)
+
+
+def _setoutb_idempotent() -> str:
+    """With exec_commit = (state == EXECUTE) || exec_done, a SET or OUTB
+    held in ir is re-applied in the next FETCH_LO/FETCH_HI. That is a
+    no-op iff the pin already holds what it would write; true, because
+    nothing changes drv/mode/the source register in between (a pending
+    LOAD writeback means ir is that LOAD, not a SET/OUTB)."""
+    pin, aux, rd = f"{_IR}[8:6]", f"{_IR}[5]", f"{_IR}[10:9]"
+    regs = lambda b: "(" + " : ".join(  # noqa: E731
+        [f"{rd} == 2'd{r} ? {_G(f'u_core.u_regfile.regs[{r}]')}[{b}]" for r in range(3)]
+        + [f"{_G('u_core.u_regfile.regs[3]')}[{b}]"]) + ")"
+    terms = []
+    for q in (0, 1, 2, 3, 5, 6, 7):  # drv[4] has no reader, so it is not a flop
+        d = _G(f"u_pin_ctrl.drv[{q}]")
+        terms.append(f"({_OP} != 5'd{OP_SET} || {pin} != 3'd{q} || {d} == {aux})")
+        terms.append(f"({_OP} != 5'd{OP_OUTB} || {pin} != 3'd{q} || {d} == ({aux} ? {regs(7)} : {regs(0)}))")
+    for q in (0, 1, 2, 3, 7):  # protocol pins with a mode register
+        terms.append(f"({_OP} != 5'd{OP_SET} || {pin} != 3'd{q} || {rd} == 2'd0 || "
+                     f"{_G(f'u_pin_ctrl.mode[{q}]')} == {rd})")
+    pend = (f"(!{_G('u_core.pending_lx_writeback')} || {_OP} == 5'd{OP_LOAD} || "
+            f"{_OP} == 5'd{OP_LOADX})")
+    return f"(({_ST} != {S_FETCH_LO} && {_ST} != {S_FETCH_HI}) || ({' && '.join(terms)})) && {pend}"
+
+
+FORMAL_ONLY = {
+    # reset value of pc: LOAD never reads pc, and START's rise sets it to 0
+    ("cpu/core.v", 337): (["u_core.pc"], f"{_eq('u_core.pc')} || {_ST} == {S_LOAD}"),
+    # START's rise no longer re-zeroes pc: it is still 0 from reset
+    ("cpu/core.v", 359): ([], f"{_ST} != {S_LOAD} || {_G('u_core.pc')} == 9'd0"),
+    # reset value of ir_lo: overwritten by the first FETCH_HI before EXECUTE reads it
+    ("cpu/core.v", 338): (["u_core.ir_lo"], f"{_eq('u_core.ir_lo')} || {_ST} != {S_EXECUTE}"),
+    # entering_execute not reset: a stale 1 before the first EXECUTE makes
+    # decode see {mem_rdata, ir_lo}, which nothing outside EXECUTE commits;
+    # its only side effect is a counter load, overwritten before it is read
+    ("cpu/core.v", 340): (["u_core.entering_execute", "u_core.u_cycle_counter.count"],
+        f"({_eq('u_core.entering_execute')} || {_ST} != {S_EXECUTE}) && "
+        f"({_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ})"),
+    # exec_commit outside EXECUTE: the SET/OUTB in ir is re-applied, a no-op
+    ("cpu/core.v", 178): ([], _setoutb_idempotent()),
+    # start_fall has no consumer (core.v marks it unused); it is not a flop,
+    # so nothing may differ
+    ("io/pin_ctrl.v", 137): ([], "1'b1"),
+    # count's reset value, and its load value when shifted == 0: the
+    # instruction exits on the load cycle, and every later reader reloads first
+    ("io/cycle_counter.v", 88): (["u_core.u_cycle_counter.count"],
+        f"{_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ}"),
+    ("io/cycle_counter.v", 90): (["u_core.u_cycle_counter.count"],
+        f"{_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ}"),
+    # synchronizer reset values: flushed by the inputs within 2 edges,
+    # while the FSM is still in LOAD with no HOST_GO edge (RESET_FACTS)
+    ("io/pin_ctrl.v", 99): (["u_pin_ctrl.ui_in_ff1", "u_pin_ctrl.ui_in_ff2"],
+        f"({_eq('u_pin_ctrl.ui_in_ff1')} || rcnt == 2'd0) && ({_eq('u_pin_ctrl.ui_in_ff2')} || rcnt <= 2'd1)"),
+    ("io/pin_ctrl.v", 100): (["u_pin_ctrl.ui_in_ff2"], f"{_eq('u_pin_ctrl.ui_in_ff2')} || rcnt == 2'd0"),
+    # uio bit 0 only (the mutant resets to 8'd1): not START, not HOST_GO,
+    # and pin_read in LOAD selects pin 5
+    ("io/pin_ctrl.v", 101): (["u_pin_ctrl.uio_in_ff1", "u_pin_ctrl.uio_in_ff2"],
+        f"({_eq('u_pin_ctrl.uio_in_ff1')} || (rcnt == 2'd0 && ((g_u_pin_ctrl_uio_in_ff1 ^ m_u_pin_ctrl_uio_in_ff1) & 8'hFE) == 8'd0)) && "
+        f"({_eq('u_pin_ctrl.uio_in_ff2')} || (rcnt <= 2'd1 && ((g_u_pin_ctrl_uio_in_ff2 ^ m_u_pin_ctrl_uio_in_ff2) & 8'hFE) == 8'd0))"),
+    ("io/pin_ctrl.v", 102): (["u_pin_ctrl.uio_in_ff2"],
+        f"{_eq('u_pin_ctrl.uio_in_ff2')} || (rcnt == 2'd0 && ((g_u_pin_ctrl_uio_in_ff2 ^ m_u_pin_ctrl_uio_in_ff2) & 8'hFE) == 8'd0)"),
+    # edge-detector history reset values: with the synchronizer at 0 a
+    # stale 1 can only fake a fall, and in LOAD with no ack pending
+    # neither fall is consumed
+    ("io/pin_ctrl.v", 128): (["u_pin_ctrl.start_prev"], f"{_eq('u_pin_ctrl.start_prev')} || rcnt == 2'd0"),
+    ("io/pin_ctrl.v", 129): (["u_pin_ctrl.host_go_prev"], f"{_eq('u_pin_ctrl.host_go_prev')} || rcnt == 2'd0"),
+}
+
+# Negative control for FORMAL_ONLY: mutants with a real pin difference
+# (killed by simulation), each run through the table entry of its own
+# site or a same-shaped one. A table that lets any of them through is
+# too permissive, so `--formal-only --controls` requires none PROVEN.
+FORMAL_ONLY_CONTROLS = [
+    # (mutant id, FORMAL_ONLY key, or an explicit (allowed, invariant))
+    ("io/pin_ctrl.v:101:4474:CONST:\"8'd255\"", ("io/pin_ctrl.v", 101)),  # START/HOST_GO bits too
+    ("io/pin_ctrl.v:101:4460:DEL:';'", ("io/pin_ctrl.v", 101)),
+    ("io/pin_ctrl.v:102:4500:CONST:\"8'd255\"", ("io/pin_ctrl.v", 102)),
+    ("io/cycle_counter.v:90:4344:ARITH:'+'", ("io/cycle_counter.v", 90)),  # count loaded wrong, then read
+    ("io/cycle_counter.v:90:4346:CONST:\"24'd2\"", ("io/cycle_counter.v", 90)),
+    ("cpu/core.v:349:13658:CONST:\"8'd1\"",
+     (["u_core.uo_out_reg"], f"{_eq('u_core.uo_out_reg')} || rcnt == 2'd0")),  # reset value on the pins
+    ("cpu/core.v:350:13670:DEL:';'",
+     (["u_core.pending_lx_writeback"], f"{_eq('u_core.pending_lx_writeback')} || rcnt == 2'd0")),
+    ("io/pin_ctrl.v:138:5887:BIT:''", ([], "1'b1")),  # HOST_GO rise a cycle late
+]
+
+
 def rtl_sha() -> str:
     import hashlib
     h = hashlib.sha256()
@@ -184,6 +313,8 @@ def miter(gp: dict, mp: dict, allowed: list[str], invariant: str | None) -> str:
         "    if (m_u_mem_rst_n && m_u_mem_we) dr_m <= m_u_mem_wdata;",
         "    else if (m_u_mem_rst_n) dr_m <= mem_arr[m_u_mem_addr];",
         "  end",
+        "  reg [1:0] rcnt;  // clock edges since reset was released, saturating",
+        "  always @(posedge clk) rcnt <= !rst_n ? 2'd0 : (rcnt == 2'd3 ? 2'd3 : rcnt + 2'd1);",
         "  initial assume (!rst_n);",
         "  initial assume (dr_g == dr_m);",
         "  always @(*) begin",
@@ -222,7 +353,8 @@ def smtbmc(smt2: Path, k: int, induction: bool) -> tuple[bool, str]:
     return "Status: PASSED" in out, out
 
 
-def prove(mu: dict, gold_il: Path, gp: dict, k: int, work: Path, refute_depth: int = 0) -> tuple[str, str]:
+def prove(mu: dict, gold_il: Path, gp: dict, k: int, work: Path, refute_depth: int = 0,
+          table: dict | None = None) -> tuple[str, str]:
     d = work / sid(mu["id"])
     d.mkdir()
     src = d / "src"
@@ -230,7 +362,12 @@ def prove(mu: dict, gold_il: Path, gp: dict, k: int, work: Path, refute_depth: i
     f = src / mu["file"]
     f.write_text(blind_mutate.apply(f.read_text(), mu))
     mp = build_chip(src, "chip_gate", d / "gate.il")
-    allowed, inv = ALLOWED_DIFF.get((mu["file"], mu["line"]), ([], None))
+    if table is None:
+        allowed, inv = ALLOWED_DIFF.get((mu["file"], mu["line"]), ([], None))
+    else:
+        allowed, inv = table[(mu["file"], mu["line"])]
+        # the claim's own facts hold only out of reset (async2sync)
+        inv = f"!rst_n || (({inv}) && {RESET_FACTS})"
     (d / "miter.v").write_text(miter(gp, mp, allowed, inv))
     smt2 = {}
     for name, define in (("claims", ""), ("full", "-DSTRENGTHEN ")):
@@ -259,6 +396,31 @@ def prove(mu: dict, gold_il: Path, gp: dict, k: int, work: Path, refute_depth: i
     return "PROVEN", ""
 
 
+def formal_only_controls(by_id: dict, a) -> int:
+    missing = [c for c, _ in FORMAL_ONLY_CONTROLS if c not in by_id]
+    if missing:
+        sys.exit(f"[prove_equiv] control mutant(s) no longer generated: {missing}")
+    work = Path(tempfile.mkdtemp(prefix="prove_equiv_ctl_"))
+    try:
+        gp = build_chip(ROOT / "src", "chip_gold", work / "gold.il")
+        bad = 0
+        for cid, entry in FORMAL_ONLY_CONTROLS:
+            mu = by_id[cid]
+            table = {(mu["file"], mu["line"]): FORMAL_ONLY[entry] if isinstance(entry, tuple) and
+                     isinstance(entry[1], int) else entry}
+            status, detail = prove(mu, work / "gold.il", gp, a.k, work, 0, table)
+            # rejected only by a real counterexample, never by a tool error
+            rejected = status == "INCONCLUSIVE" and "Assert failed" in detail
+            bad += not rejected
+            print(f"{'REJECTED' if rejected else 'NOT REJECTED':12s} {status:13s} "
+                  f"{mu['file']}:{mu['line']:<4} {mu['group']:5s} {mu['desc']}", flush=True)
+        n = len(FORMAL_ONLY_CONTROLS)
+        print(f"[prove_equiv] formal-only controls: REJECTED {n - bad}/{n} pin-visible mutants (k={a.k})")
+        return 0 if bad == 0 else 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--k", type=int, default=20)
@@ -266,14 +428,26 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     ap.add_argument("--controls", action="store_true", help="negative control: CONTROLS must be refuted")
     ap.add_argument("--control-depth", type=int, default=12)
+    ap.add_argument("--formal-only", action="store_true",
+                    help="prove the formal-only kills in FORMAL_ONLY never reach the pins")
     a = ap.parse_args()
     gen = blind_mutate.generate(0, 1)[0]
+    by_id = {mu["id"]: mu for mu in gen}
+    if a.controls and a.formal_only:
+        return formal_only_controls(by_id, a)
     if a.controls:
-        by_id = {mu["id"]: mu for mu in gen}
         missing = [c for c, _ in CONTROLS if c not in by_id]
         if missing:
             sys.exit(f"[prove_equiv] control mutant(s) no longer generated: {missing}")
         muts = [by_id[c] for c, _ in CONTROLS]
+    elif a.formal_only:
+        rows = blind_mutate.load(blind_mutate.DEFAULT_OUT)
+        sites = set(FORMAL_ONLY)
+        if a.only:
+            sites &= {(s.rsplit(":", 1)[0], int(s.rsplit(":", 1)[1])) for s in a.only}
+        muts = [mu for mu in gen if (mu["file"], mu["line"]) in sites and mu["id"] in rows
+                and rows[mu["id"]].get("status") == "ok" and rows[mu["id"]]["sim"] == "survived"
+                and rows[mu["id"]]["formal"].startswith("killed")]
     else:
         # the campaign's survivors of every gate that EQUIVALENT explains
         rows = blind_mutate.load(blind_mutate.DEFAULT_OUT)
@@ -289,7 +463,8 @@ def main() -> int:
         results = []
         recorded = {}
         for mu in muts:
-            status, detail = prove(mu, work / "gold.il", gp, a.k, work, a.control_depth if a.controls else 0)
+            status, detail = prove(mu, work / "gold.il", gp, a.k, work, a.control_depth if a.controls else 0,
+                                   FORMAL_ONLY if a.formal_only else None)
             results.append(status)
             if not a.controls:
                 recorded[mu["id"]] = status
