@@ -45,6 +45,7 @@ against an independent model of the other end:
 | `uart_selftest.asm` | loopback self-test (TX jumpered to RX), for bring-up |
 | `spi.asm` | SPI controller, modes 0-3, full duplex, about 1 MHz by default |
 | `i2c.asm` | I2C controller, 7-bit addressing, reads and writes, clock stretching, 100 or 400 kHz |
+| `spi_target.asm` | SPI target (peripheral), mode 0, up to 1.5 MHz: the chip follows an external clock |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
@@ -83,7 +84,7 @@ the firmware:
 | Protocol | `uio[0]` | `uio[1]` | `uio[2]` | `uio[3]` |
 |---|---|---|---|---|
 | UART | TX | RX | | |
-| SPI | MOSI | MISO | SCLK | CS |
+| SPI (controller or target) | MOSI | MISO | SCLK | CS |
 | I2C | SDA | SCL | | |
 | WS2812 | DIN | | | |
 

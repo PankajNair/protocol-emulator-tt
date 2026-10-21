@@ -64,6 +64,13 @@ file stays focused on memory/area/pipeline/pin-level system integration.
   reasoning (externally-driven clock breaks the `DELAY`-self-pacing
   assumption everything else here relies on). Same "last resort, not
   dropped" treatment as 10M Ethernet below.
+  **Update (2026-10-21): SPI target works in firmware**
+  (`firmware/protocols/spi_target.asm`). Following an external clock with
+  `WAIT` on SCLK edges needs no hardware change; it just has a lower speed
+  limit than self-paced protocols. Measured: exact up to a 28-cycle SCLK
+  period (1.79 MHz) with a phase-locked controller in simulation, rated
+  1.5 MHz for an asynchronous one. Targets that need two pins watched at
+  once (I2C target's START/STOP detection) remain deferred.
 
 ## Open questions
 

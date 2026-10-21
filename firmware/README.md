@@ -51,6 +51,18 @@ the brief.
   cycle-exact to the budget in the file header. Verified by
   `test/test_ws2812.py` against an independent decoder written from the
   datasheet, over a 255-byte frame covering every bit pair.
+- `protocols/spi_target.asm` -- SPI target (peripheral), mode 0: the chip
+  follows an external controller's clock with `WAIT` on SCLK instead of
+  pacing edges itself. MOSI/MISO/SCLK/CS = pins 0-3, MISO Hi-Z while CS is
+  high. One register is the shift register, so each transaction replies
+  0x96 and then echoes every byte one byte late; the last byte received
+  is shown on `uo_out`. Survives clock pauses of any length while CS is
+  low. Speed: exact up to a 14-cycle SCLK half period (1.79 MHz) in
+  simulation, where the controller is phase-locked to the chip clock;
+  rated 1.5 MHz for a real, asynchronous controller (one cycle of
+  synchronizer margin per edge). Verified by `test/test_spi_target.py`
+  against an independent mode-0 controller model, which also measures
+  that limit (exact at 14, fails at 13).
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →
