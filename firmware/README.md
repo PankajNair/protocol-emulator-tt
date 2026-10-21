@@ -1,5 +1,29 @@
 # Firmware
 
+## Host side
+
+`host/pe_host.py` -- the host library: load a program, start it, talk to
+it. Runs on the Tiny Tapeout demo board in MicroPython (TT SDK):
+
+```python
+import pe_host
+h = pe_host.Host(pe_host.TTDemoBoardIO())   # selects the project, 50 MHz clock
+h.load_hex("uart.hex")                      # asm.py -o uart.hex; copy to the board
+h.send(0x41)                                # byte to the firmware
+b = h.recv()                                # byte from the firmware
+```
+
+Reload after any reset, power-down or deselect: the program lives in
+SRAM. The boot and handshake protocols are written once, as generators
+of pin operations; `test/test_host_loader.py` runs the same generators
+against the RTL (loading, talking, reloading, a 522-byte image with a
+data region, and a timeout instead of a hang when the firmware doesn't
+answer), and catches a wrong boot echo (mutation #19) and a dead
+HOST_STATUS (#15). Only the thin SDK adapter, `TTDemoBoardIO`, is
+untested until a chip exists.
+
+## Programs
+
 Protocol implementations as programs for the custom ISA (`src/cpu/isa_defs.v`),
 not fixed hardware blocks. This is the "programmable, not fixed logic" part of
 the brief.

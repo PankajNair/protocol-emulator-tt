@@ -16,7 +16,7 @@ protocol is a new program, loaded by the host after fabrication.
 | Instruction set | [docs/isa.md](docs/isa.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Protocol timing budget | [docs/protocol_timing.md](docs/protocol_timing.md) |
-| Assembler and example firmware | [firmware/](firmware/README.md) |
+| Assembler, example firmware, demo-board host library | [firmware/](firmware/README.md) |
 | Verification approach | [docs/verification.md](docs/verification.md) (full reference: [docs/VAL.md](docs/VAL.md)) |
 | How AI tools were used | [docs/ai_usage.md](docs/ai_usage.md) |
 

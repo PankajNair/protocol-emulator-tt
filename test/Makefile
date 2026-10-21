@@ -64,8 +64,9 @@ endif
 
 # List test modules to run, separated by commas and without the .py suffix:
 # test: directed RTL tests; test_uart / test_ws2812 / test_spi_target / test_onewire:
-# end-to-end protocol firmware on the RTL against independent models
-COCOTB_TEST_MODULES = test,test_uart,test_ws2812,test_spi_target,test_onewire
+# end-to-end protocol firmware on the RTL against independent models;
+# test_host_loader: the demo-board host library (firmware/host/) on the RTL
+COCOTB_TEST_MODULES = test,test_uart,test_ws2812,test_spi_target,test_onewire,test_host_loader
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim

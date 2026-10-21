@@ -53,6 +53,10 @@ against an independent model of the other end:
 
 All signals are 3.3 V logic. The clock is 50 MHz.
 
+The host library `firmware/host/pe_host.py` does all of the following
+on the Tiny Tapeout demo board (MicroPython); the steps below are what it
+does, for any other host.
+
 **Load a program.**
 1. Hold `rst_n` low, then release it. The chip starts in LOAD mode with
    HOST_STATUS (`uio[5]`) low and all protocol pins Hi-Z.
