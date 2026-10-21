@@ -42,6 +42,15 @@ the brief.
   CPHA 0 (~2.08 MHz), 15 for CPHA 1 (~1.67 MHz). The CPHA variants differ
   in instruction order, selected with the assembler's `.if`. Verified
   against an independent slave model for every mode (`test/test_spi.py`).
+- `protocols/ws2812.asm` -- WS2812 / WS2812B LED driver: a frame of GRB
+  bytes from the data region (up to 255 bytes, 85 LEDs) sent on pin 0,
+  then a 300 us latch; the host can ask for a resend. Not a protocol the
+  chip was designed around: a single-wire pulse-width code at 400/800 ns
+  high times, written from the existing ISA. Every pulse is inside the
+  datasheet's +-150 ns windows, including the byte-boundary bits, and
+  cycle-exact to the budget in the file header. Verified by
+  `test/test_ws2812.py` against an independent decoder written from the
+  datasheet, over a 255-byte frame covering every bit pair.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

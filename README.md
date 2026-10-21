@@ -25,7 +25,8 @@ protocol is a new program, loaded by the host after fabrication.
 - **RTL:** complete (`src/`): sequencer core, pin control, boot loader,
   IHP 1 KB SRAM macro.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
-  (100/400 kHz), each verified in simulation against an independent
+  (100/400 kHz), and a WS2812 LED driver, a protocol the chip wasn't
+  designed for. Each is verified in simulation against an independent
   model of the other end.
 - **Verification:** `make signoff`, 15 gates, `STABLE` on the nightly
   run. See [docs/verification.md](docs/verification.md).

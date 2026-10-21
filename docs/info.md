@@ -45,6 +45,7 @@ against an independent model of the other end:
 | `uart_selftest.asm` | loopback self-test (TX jumpered to RX), for bring-up |
 | `spi.asm` | SPI controller, modes 0-3, full duplex, about 1 MHz by default |
 | `i2c.asm` | I2C controller, 7-bit addressing, reads and writes, clock stretching, 100 or 400 kHz |
+| `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
 
@@ -84,11 +85,15 @@ the firmware:
 | UART | TX | RX | | |
 | SPI | MOSI | MISO | SCLK | CS |
 | I2C | SDA | SCL | | |
+| WS2812 | DIN | | | |
 
 - **I2C needs pull-up resistors** on SDA and SCL (for example 4.7 kΩ to
   3.3 V at 100 kHz, 2.2 kΩ at 400 kHz): the chip drives them open-drain.
 - UART, SPI and the host pins need no external parts at 3.3 V. Other
   voltage levels need a level shifter on a Pmod.
+- **WS2812 LEDs powered from 5 V need a level shifter** on DIN (for
+  example a 74AHCT125): their input high threshold is 0.7 x VDD = 3.5 V,
+  above the chip's 3.3 V output.
 - The host can be any microcontroller with 19 GPIOs: 8 to drive `ui_in`,
   8 to read `uo_out`, plus HOST_GO, HOST_STATUS and START/HOST_ERROR.
   The microcontroller on the Tiny Tapeout demo board can drive and read
