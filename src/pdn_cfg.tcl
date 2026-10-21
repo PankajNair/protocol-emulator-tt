@@ -4,8 +4,8 @@
 # harness), so the grid is vertical Metal4 stripes over Metal1 rails, and
 # the macro (RM_IHPSG13_1P_1024x8_c2_bm_bist) brings VDD!, VDDARRAY! and
 # VSS! out as vertical Metal4 columns: the same layer, so the grid can
-# only reach them by touching them. pdngen keeps the core grid out of the
-# macro and its halo; this file then bridges the gap.
+# only reach them by touching them. pdngen keeps the core grid off the
+# (FIXED) macro; this file then bridges any gap.
 #
 # Column map (macro LEF, macro coordinates, unflipped):
 #   VSS!       12 columns, full height
@@ -87,14 +87,9 @@ if { $::env(PDN_ENABLE_RAILS) == 1 } {
         -layers "$::env(PDN_RAIL_LAYER) $::env(PDN_VERTICAL_LAYER)"
 }
 
-# The macro grid only keeps the core grid (and its halo) off the macro;
-# the connection is the bridges below, not a pdngen layer connect.
-define_pdn_grid \
-    -macro \
-    -default \
-    -name macro \
-    -starts_with POWER \
-    -halo "$::env(PDN_HORIZONTAL_HALO) $::env(PDN_VERTICAL_HALO)"
+# No macro grid: pdngen rejects one with no shapes (PDN-0233), and a
+# FIXED macro already keeps the core grid off it. The connection is the
+# bridges below, not a pdngen layer connect.
 
 proc pe_macro_power {} {
     set block [ord::get_db_block]
@@ -102,7 +97,7 @@ proc pe_macro_power {} {
     set dbu [$block getDbUnitsPerMicron]
     set um [expr {1.0 / $dbu}]
     set overlap [expr {int(0.5 * $dbu)}]       ;# bridge reaches 0.5 um into pin and stripe
-    set max_reach [expr {int(40.0 * $dbu)}]    ;# halo is 10 um; anything farther is a misfit
+    set max_reach [expr {int(40.0 * $dbu)}]    ;# stripes end at or near the macro edge; farther is a misfit
     set nmacros 0
     foreach inst [$block getInsts] {
         if { ![[$inst getMaster] isBlock] } { continue }
