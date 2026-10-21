@@ -1096,3 +1096,38 @@ async def test_halt_holds_pins(dut):
         assert int(dut.uio_out.value) == out, f"uio_out moved after HALT (cycle {c})"
         assert int(dut.uo_out.value) == 0x5D, f"uo_out moved after HALT (cycle {c})"
     dut._log.info("all pins held their driven state through 100 cycles of input noise after HALT")
+
+
+@cocotb.test()
+async def test_pc_upper_half(dut):
+    """The PC, the return register and next-PC are 9 bits wide (docs/isa.md
+    "Branch" row): words 256-511 fetch bytes 512-1023 -- the data region
+    -- and execute them like any other code. No other test runs code
+    there, so every pc[8] bug (an 8-bit next_pc, a truncated retaddr, a
+    wrap at 255) passed every simulation gate (RTL coverage, docs/VAL.md
+    section 22). The boot image is padded so it lands code at:
+      word 0    JMP 255
+      word 255  LDI R0,0x11      -- then falls through 255 -> 256
+      word 256  OUT R0           (0x11)
+      word 257  CALL 400         -- retaddr = 258, pc[8] set both ways
+      word 258  OUT R0           (0x5A, set by the subroutine)
+      word 259  JMP 10           -- back across into the low half
+      word 10   CALL 20          -- retaddr = 11 (bit 8 clears)
+      word 11   OUT R0           (0x33)
+      word 12   HALT
+      word 20   LDI R0,0x33 / RET
+      word 400  LDI R0,0x5A / RET
+    """
+    words = [asm.halt()] * 402
+    words[0] = asm.jmp(255)
+    words[255:260] = [asm.ldi(0, 0x11), asm.out(0), asm.call(400), asm.out(0), asm.jmp(10)]
+    words[10:13] = [asm.call(20), asm.out(0), asm.halt()]
+    words[20:22] = [asm.ldi(0, 0x33), asm.ret()]
+    words[400:402] = [asm.ldi(0, 0x5A), asm.ret()]
+    await reset_and_boot(dut, words)
+    await run_to_value(dut, 0x11, max_cycles=40)
+    await run_to_value(dut, 0x5A, max_cycles=40)
+    await run_to_value(dut, 0x33, max_cycles=60)
+    await ClockCycles(dut.clk, 20)
+    assert int(dut.uo_out.value) == 0x33, "uo_out moved after HALT"
+    dut._log.info("code in words 255-401 ran: fall-through to 256, CALL/RET above 255, JMP back")

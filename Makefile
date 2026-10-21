@@ -4,7 +4,7 @@
 # formal flow (formal, vacuity), mirroring the sibling
 # 5-Stage-Pipelined-RISC-V-Processor project's conventions.
 
-.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove tieoffs blind-mutate prove-equiv
+.PHONY: formal vacuity coverage coverage-gate mutate signoff ledger orchestrate metrics prove tieoffs blind-mutate prove-equiv rtl-coverage
 
 MUTATE_SEEDS ?= 50
 
@@ -121,3 +121,13 @@ blind-mutate:
 prove-equiv:
 	python3 scripts/prove_equiv.py
 	python3 scripts/prove_equiv.py --controls
+
+# ---------------------------------------------------------------------------
+# rtl-coverage: structural line/toggle coverage of src/ under Verilator,
+#          merged over directed, spec and random suites; fails on any hole
+#          not in scripts/rtl_coverage.py's WAIVED (section 22)
+# ---------------------------------------------------------------------------
+RTL_COV_SEEDS ?= 100
+rtl-coverage:
+	python3 scripts/rtl_coverage.py run --seeds $(RTL_COV_SEEDS)
+	python3 scripts/rtl_coverage.py gate

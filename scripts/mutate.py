@@ -247,6 +247,14 @@ MUTANTS = [
         edits=[("      pending_lx_writeback  <= 1'b0;\n      pending_lx_rd",
                 "      pending_lx_rd")],
     ),
+    dict(
+        id=26, file="cpu/core.v",
+        desc="sequential next-PC computed in 8 bits (pc 255 wraps to 0)",
+        hazard="words 256-511 unreachable by fall-through; pc[8] (docs/isa.md Branch row)",
+        bug_ref="RTL-coverage hole: pc[8] never toggled; passed directed, spec and random; test_pc_upper_half",
+        edits=[("                                      pc + 9'd1;",
+                "                                      {1'b0, pc[7:0] + 8'd1};")],
+    ),
 ]
 
 

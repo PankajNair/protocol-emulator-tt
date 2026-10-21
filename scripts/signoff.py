@@ -14,6 +14,9 @@ Gates:
   determinism   same random seeds twice -> byte-identical coverage results
   formal        make prove: every props file PROVEN (BMC + k-induction)
   vacuity       make vacuity, 100% of covers reached
+  tieoffs       SRAM macro static pins tied as expected
+  rtl_coverage  make rtl-coverage: Verilator line/toggle coverage of src/,
+                every hole closed or waived with a proven/structural reason
   mutation      scripts/mutate.py, score >= threshold, nothing errored
 
 Not covered here (run separately, recorded in docs/VAL.md): GDS hardening,
@@ -116,6 +119,16 @@ def gate_tieoffs(timeout):
     return rc == 0, {"ports": f"{m.group(1)}/{m.group(2)}" if m else None}, out
 
 
+def gate_rtl_coverage(timeout):
+    # structural line/toggle coverage of src/ under Verilator, merged over
+    # directed, spec and random suites; every hole closed or waived
+    rc, out = sh("make rtl-coverage", timeout)
+    m = re.search(r"line (\d+)/(\d+)  toggle (\d+)/(\d+)  waived (\d+)  unwaived (\d+)", out)
+    info = {"line": f"{m.group(1)}/{m.group(2)}", "toggle": f"{m.group(3)}/{m.group(4)}",
+            "waived": int(m.group(5)), "unwaived": int(m.group(6))} if m else {}
+    return rc == 0 and "RTL COVERAGE GATE PASS" in out, info, out
+
+
 def gate_vacuity(timeout):
     rc, out = sh("make vacuity", timeout)
     m = re.findall(r"(\d+)/(\d+) covers reached", out)
@@ -154,6 +167,7 @@ def main() -> int:
         ("formal", lambda: gate_formal(1800)),
         ("vacuity", lambda: gate_vacuity(1800)),
         ("tieoffs", lambda: gate_tieoffs(60)),
+        ("rtl_coverage", lambda: gate_rtl_coverage(1800)),
         ("mutation", lambda: gate_mutation(args.mutate_seeds, 5400)),
     ]
 

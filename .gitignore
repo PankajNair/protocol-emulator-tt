@@ -21,3 +21,5 @@ ledger/.open/
 test/.triage.lock
 orchestrate_state.json
 blind_mutation_results.jsonl
+build/
+test/coverage.dat

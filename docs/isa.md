@@ -160,6 +160,13 @@ both now have real hardware targets, see
 is the one genuinely unused encoding space left in the design.) The
 spare encoding range is headroom, not currently meaningful.
 
+What the hardware does there: the PC, the CALL return register and
+next-PC are all 9 bits, and word `w` is fetched from bytes `2w`/`2w+1`.
+A branch, CALL, RET or fall-through past word 255 lands in words
+256-511, fetches the data region (bytes 512-1023) and executes it like
+any other code. Falling through from word 255 goes to 256, not 0, and
+a CALL from there returns to the full 9-bit address.
+
 `RET` is a separate 0-operand opcode (jumps to the return-address
 register, no operand needed).
 

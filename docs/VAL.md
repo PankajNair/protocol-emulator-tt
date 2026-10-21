@@ -172,6 +172,10 @@ writeback) came from the full blind census (section 20). They survived
 every simulation gate, and only formal killed them. The new directed
 reset tests (section 21) now kill both in simulation as well.
 
+#26 (sequential next-PC computed in 8 bits) came from RTL coverage
+(section 22): `pc[8]` never toggled, and the mutant passed directed,
+spec and 100 random seeds. `test_pc_upper_half` kills it.
+
 ## 6. Formal / vacuity gate
 
 Plain `yosys` + `yosys-smtbmc` + `z3`, no SymbiYosys. Immediate
@@ -216,7 +220,8 @@ simulation, now kills all 23 of the original mutation-gate mutants
 (`scripts/formal_mutants.py`), up from 16 before the datapath and boot
 files: the 7 former blind spots (#3 INB, #7 LOADX, #12 SHIFT; boot-path
 writes and echo #10, #19, #22, #23) are each killed by a proven
-property. It also kills #24 and #25 (section 21), which makes 25/25.
+property. It also kills #24 and #25 (section 21) and #26 (section 22), which
+makes 26/26.
 
 **`[deep]` covers (2026-10-18).** A cover whose state lies beyond BMC
 depth may be tagged `[deep]` on its source line. `make vacuity` counts an
@@ -474,6 +479,7 @@ shadow of the driver state.
 | `vacuity` | `make vacuity`: every cover reached, or `[deep]` with simulation evidence |
 | `tieoffs` | `scripts/check_tieoffs.py`: SRAM macro static pins as validated (section 20) |
 | `spec` | `make -C test spec`: the spec-only conformance suite passes (section 21) |
+| `rtl_coverage` | `make rtl-coverage`: Verilator line/toggle coverage of `src/`, every hole closed or waived (section 22) |
 | `mutation` | `scripts/mutate.py` (directed + random + board), score >= threshold, nothing errored |
 
 The determinism gate exists because a failing random seed is only useful if
@@ -1190,3 +1196,72 @@ sees the ack, and the spec never states the ack's cycle latency. A
 directed test pinning 4 edges would over-specify the design, so this
 mutant stays a formal-only kill: `agent_pin_ctrl_sync_depth_props.v`
 is deliberately stricter than the spec.
+
+## 22. RTL (structural) coverage
+
+The functional bins (section 3) measure what the stimulus meant to
+exercise. `scripts/rtl_coverage.py` measures what the RTL actually did,
+under Verilator 5 (`--coverage-line --coverage-toggle`):
+- every line/branch block executed;
+- every bit of every signal toggled both ways.
+
+A hole is a line no test reached, or a bit no test moved: a place where
+a bug could hide from every simulation gate.
+
+`make rtl-coverage` (sign-off gate `rtl_coverage`, about 30 s):
+1. builds the testbench under Verilator with coverage on;
+2. runs directed + UART, the spec suite, random (100 seeds) and each
+   stimulus profile (50 seeds);
+3. merges the per-suite `.dat` files across hierarchy and scores only
+   `src/`;
+4. fails on any hole not in `WAIVED`, and on any waiver that no longer
+   matches a hole (stale).
+
+The board suite is not included. `tb_board.v` models floating nets and
+pull-ups as X/Z, which 2-state Verilator cannot.
+
+**First run (2026-10-21).** Line 132/134, toggle 1379/1406, 29 holes.
+
+| Holes | Verdict |
+|---|---|
+| `pc[8]`, `retaddr[8]`, `next_pc[8]` (6) | **real gap**: no test ran code above word 255 |
+| `start_fall` in core, pin_ctrl, top (6) | unreachable, proven (below) |
+| `uio_out[4]`/`uio_oe[4]` (8), `uio_oe[5]` 1→0 (2) | constant by construction (HOST_GO fixed input, HOST_STATUS fixed output) |
+| `state` case defaults, core.v:304/427 (2) | unreachable: all four 2-bit encodings have their own arm |
+| `_unused` lint sinks (4), `ena` 1→0 (1) | drive nothing; the harness holds `ena` high |
+
+**The real gap.** The PC, the return register and next-PC are 9 bits.
+Words 256-511 fetch bytes 512-1023 (the data region) and execute them.
+docs/isa.md says no hardware guard stops this. No test put code there,
+so a next-PC computed in 8 bits passed every simulation gate:
+directed 43/43, spec 62/62, random 100 seeds. Formal did kill it, via 3
+of the 10 props files.
+
+`test_pc_upper_half` boots a padded image that:
+- falls through from word 255 to 256;
+- CALLs and RETs above 255;
+- JMPs back to the low half and CALLs from there, so bit 8 clears in
+  both `pc` and `retaddr`.
+
+It kills all three truncations tried (fall-through, return address,
+branch target). Mutation-gate entry #26 guards it. docs/isa.md now
+states the 9-bit behaviour.
+
+**The `start_fall` proof.** `rtl_coverage.py prove` injects
+`assert (!start_fall)` into a scratch copy of `src/` and runs BMC (depth
+30) plus k-induction. The SRAM is a blackbox whose read data is a free
+input, an over-approximation, so unreachability carries over to the
+chip. Induction needs two invariants, both asserted, never assumed:
+- `!(mode_load && start_prev)`;
+- `!(halted && state == S_LOAD)` (the FSM freezes while halted).
+
+Negative control: with the `mode_load` gate removed, BMC finds a
+counterexample. `gate` re-runs the proof every time, so the waiver
+cannot outlive the RTL it describes.
+
+**After.** Line 132/134 and toggle 1385/1406. All 23 remaining holes are
+waived, each with its reason in `WAIVED`. Removing the directed suite's
+data makes the gate fail with 22 unwaived holes (pc[8], DELAY's top
+counter bits, and others): the random and spec suites alone do not
+reach them.
+
