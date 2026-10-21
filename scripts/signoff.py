@@ -6,7 +6,7 @@ verdict and key numbers, writes signoff_report.json, exits non-zero if any
 gate fails.
 
 Gates:
-  directed      make -C test -B            all directed + UART end-to-end tests pass
+  directed      make -C test -B            directed, protocol firmware end to end, host library
   pytest        golden-model self-check + assembler unit tests pass
   board         make -C test board          loopback, two-chip link, I2C, SPI pass
   cov_default   make coverage-gate (100 seeds), default generator closure

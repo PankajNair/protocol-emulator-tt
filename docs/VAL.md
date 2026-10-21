@@ -20,8 +20,12 @@ without adding checking power.
 
 | Suite | File | What it asks | Run |
 |---|---|---|---|
-| Directed | `test/test.py` (28 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
+| Directed | `test/test.py` (37 tests) | Does this specific sequence/edge case work? One test per opcode plus targeted hazards (CALL/RET misuse, flag immunity, WAIT flag polarity, boot echo/saturation, uio[6] driver gate, the 5-phase host IN/OUT handshake, HALT holding every pin). Host-facing waits are bounded and require `uio_oe` to be driving. | `make -C test` |
 | UART end-to-end | `test/test_uart.py` | Does the shipped UART firmware (`firmware/protocols/uart.asm` TX, `uart_rx.asm` RX, assembled by `firmware/isa/asm.py`) move bytes correctly on the real RTL? TX: Independent receiver model on the TX pin (start-edge detect, centre sampling, stop-bit check, re-arm after the stop sample), 115200 / 57600 / 9600 baud, per-edge timing deviation measured against docs/protocol_timing.md. RX: transmitter model on the RX pin, back-to-back frames, sender baud error +-2%, framing error + resync. | part of `make -C test` |
+| WS2812 end-to-end | `test/test_ws2812.py` (2 tests) | Does `ws2812.asm` drive an LED chain correctly? An independent decoder written from the WS2812B datasheet (each pulse in its +-150 ns window, latch on > 50 us low), plus the exact cycle budget from the firmware header. Demo frame with host resend; a 255-byte frame with every bit pair inside a byte and across a boundary. | part of `make -C test` |
+| SPI target end-to-end | `test/test_spi_target.py` (3 tests) | Does `spi_target.asm` follow an external controller's clock? Independent mode-0 controller model; 1 MHz echo, back-to-back transactions, a long clock pause with CS low, and the measured speed limit (exact at a 14-cycle half period, fails at 13). | part of `make -C test` |
+| 1-Wire end-to-end | `test/test_onewire.py` (5 tests) | Does `onewire.asm` work against a spec-worst-case device (a 0 held only 15 us, presence at both ends of its window)? Presence, no device, READ ROM with CRC8, byte writes, unknown command; every controller pulse and slot checked against the spec. | part of `make -C test` |
+| Host library | `test/test_host_loader.py` (4 tests) | Does the demo-board host library (`firmware/host/pe_host.py`) load and talk to the chip? The same protocol generators the board runs, driven on the DUT's pins: load + send/recv, a 522-byte image with a data region, reload, timeout instead of hang. | part of `make -C test` |
 | Board self-tests | `test/test_board.py` on `tb_board.v` | Does the two-chip board testbench resolve nets like real wires (floating = x, pull-ups, wired-AND, contention flagged), wire loopback correctly, and run each chip on its own clock? Checked before anything is built on it. | `make -C test board` |
 | Assembler | `test/test_assembler.py` (pytest) | Every mnemonic encodes identically to `isa_asm`; labels, `.equ`/`-D`, DELAY/WAIT cycle encoding, data region, error cases. | `pytest test/test_assembler.py` |
 | Random differential | `test/test_random.py` | Does every generated program agree with the golden model, instruction by instruction? | `make -C test random SEEDS=n` |
@@ -332,6 +336,35 @@ isn't enabled on this repo; unrelated to the design.
 Not done: hardening runs only in the GDS workflow (dispatched manually),
 and the random/profile regressions don't run at gate level.
 
+**Port to IHP SG13CMOS5L (2026-10-21), the competition's process.** The
+numbers above are SG13G2. The competition shuttle is CMOS5L
+(`tt-gds-action@ihp-cmos5l`, `pdk: ihp-sg13cmos5l`), whose tile routes
+only Metal1-Metal4: no TopMetal, so the power grid is vertical Metal4
+stripes, and the SRAM brings its supplies out as vertical Metal4
+columns on that same layer. The macro itself is unchanged (the PDK's
+CMOS5L SRAM library is the SG13G2 one); the RTL is unchanged.
+
+- Floorplan: macro flipped (`FS`) at (3.36, 60.48) so its signal pins face
+  the logic; grid phased onto its left-array column pairs (width 2.1,
+  spacing 3.52, pitch 33.72, offset 6.145).
+- `src/pdn_cfg.tcl` bridges grid stripes to every supply column that
+  reaches the macro's top or bottom edge, and fails the run if a stripe
+  crosses the macro outside a same-net column or if VDD!, VDDARRAY! or
+  VSS! is left unconnected. The split VDD!/VDDARRAY! columns have
+  macro-internal Metal4 in the gap between them, so no stripe may run
+  straight through. First result: VSS! 4 bridges, VDD! 2, VDDARRAY! 2.
+- It then keeps the tile's power pins only on full-height stripes
+  (precheck requires each to reach both tile edges).
+
+First full CMOS5L hardening (run 39606563369): no setup or hold
+violations in any corner at 50 MHz (worst setup slack 3.36 ns, slow
+corner), LVS clean, routing DRC clean, gate-level test passing. Precheck
+failed only on the power-pin rule, fixed in the pin pass above. STA
+flags max slew on three SRAM inputs (A_DIN[0], A_WEN, A_MEN; 0.88 ns vs
+the macro's 0.595 ns characterization limit, slow corner) and max load
+on A_DOUT[6] (3-5% over): long routes to the macro's pins, addressed by
+repairing again after global routing (`RUN_POST_GRT_DESIGN_REPAIR`).
+
 ## 12. Protocol-level verification
 
 `test/test_uart.py` runs the real UART transmitter firmware end to end:
@@ -366,7 +399,28 @@ Found while writing it: without an idle-wait (`WAIT RX,1`) before
 hunting for the start edge, the frame after a framing error is misframed
 (0x7E received as 0xF3) because the line is still low.
 
-Not yet covered: SPI, I2C (firmware not written).
+SPI and I2C controllers run on the board testbench (section 13).
+
+**Protocols the chip wasn't designed for, and the target role
+(2026-10-21).** The architecture planned UART, SPI and I2C, controller
+role only. Three more, each from the existing ISA with no hardware
+change, each checked against an independent model of the other end and
+shown to fail on injected bugs:
+
+| Firmware | Checked against | Result | Fails on |
+|---|---|---|---|
+| `ws2812.asm` (LED chain, 20 instructions) | decoder written from the WS2812B datasheet | every pulse inside its +-150 ns window, incl. byte-boundary bits; cycle-exact to the header's budget | DELAY one cycle long (mutation #1: still inside the datasheet windows, caught by the exact budget), OUTB on the wrong bit |
+| `spi_target.asm` (SPI peripheral, mode 0) | mode-0 controller model | exact up to a 28-cycle SCLK period (1.79 MHz, phase-locked); rated 1.5 MHz for an asynchronous controller | inverted WAIT timeout flag. Dropping a synchronizer flop does not move the limit (instruction count bounds it) and is caught elsewhere |
+| `onewire.asm` (1-Wire controller) | device model at the spec's worst case | presence, READ ROM with a valid CRC8, writes; every pulse and slot in spec | sampling 4 us late, a long write-1 pulse, a 450 us reset, an early presence sample; mutations #3, #9 |
+
+The SPI target supersedes the architecture's "target roles deferred"
+decision for SPI (docs/architecture.md); I2C target, which needs two
+pins watched at once, stays deferred.
+
+The host side is covered too: `firmware/host/pe_host.py` writes the boot
+and handshake protocols once, as generators of pin operations, so the
+code the demo board runs is the code `test/test_host_loader.py` runs on
+the DUT. Mutation #19 (late boot echo) and #15 (dead HOST_STATUS) fail it.
 
 ## 13. Board testbench (loopback and chip-to-chip)
 
@@ -471,7 +525,7 @@ shadow of the driver state.
 
 | Gate | Pass criterion |
 |---|---|
-| `directed` | `make -C test -B`: all directed + UART end-to-end tests pass |
+| `directed` | `make -C test -B`: all directed tests, the protocol firmware end to end (UART, WS2812, SPI target, 1-Wire) and the host library pass (58) |
 | `pytest` | golden-model self-check + assembler unit tests pass |
 | `board` | `make -C test board`: loopback, two-chip link, I2C, SPI pass |
 | `cov_default` | `make coverage-gate`, 100 seeds |
