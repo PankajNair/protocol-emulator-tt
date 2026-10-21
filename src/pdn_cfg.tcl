@@ -220,23 +220,31 @@ proc pe_trim_power_pins {} {
         if { $net eq "NULL" } { continue }
         set sig [$net getSigType]
         if { $sig ne "POWER" && $sig ne "GROUND" } { continue }
+        # A BPin holds one box per stripe; rebuild each BPin from its
+        # full-height boxes only.
         set kept 0
         set dropped 0
         foreach bpin [$bterm getBPins] {
-            set full 1
+            set full [list]
             foreach box [$bpin getBoxes] {
                 if { [$box yMin] > [$die yMin] + $reach || [$box yMax] < [$die yMax] - $reach } {
-                    set full 0
+                    incr dropped
+                } else {
+                    lappend full [list [$box getTechLayer] [$box xMin] [$box yMin] [$box xMax] [$box yMax]]
                 }
             }
-            if { $full } {
+            set status [$bpin getPlacementStatus]
+            odb::dbBPin_destroy $bpin
+            if { [llength $full] == 0 } { continue }
+            set nb [odb::dbBPin_create $bterm]
+            $nb setPlacementStatus $status
+            foreach f $full {
+                lassign $f layer x0 y0 x1 y1
+                odb::dbBox_create $nb $layer $x0 $y0 $x1 $y1
                 incr kept
-            } else {
-                odb::dbBPin_destroy $bpin
-                incr dropped
             }
         }
-        puts "PEPDN pins [$bterm getName]: kept $kept full-height, dropped $dropped partial"
+        puts "PEPDN pins [$bterm getName]: kept $kept full-height pin shape(s), dropped $dropped partial"
         if { $kept == 0 } {
             error "PEPDN: no full-height pin left for [$bterm getName]"
         }
