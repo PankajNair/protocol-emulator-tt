@@ -31,42 +31,30 @@
   "//": "https://tinytapeout.com/faq/#how-can-i-map-an-additional-external-clock-to-one-of-the-gpios",
   "CLOCK_PORT": "clk",
 
-  "//": "SRAM hard macro (src/mem/mem.v instance u_mem.sram). Integration recipe from",
-  "//": "urish/ttihp-sram-test, flow-validated in our own 6x4 floorplan in commit 2e113b4.",
+  "//": "SRAM hard macro (src/mem/mem.v instance u_mem.sram), IHP SG13CMOS5L.",
+  "//": "Files come from the PDK the flow installs (sg13cmos5l_sram links to sg13g2_sram,",
+  "//": "the same macro), so they always match what precheck checks against.",
+  "//": "FS (flipped vertically): the 70 signal pins on the macro's bottom edge face up,",
+  "//": "towards the logic and the tile's I/O pins on the top edge. x = 3.36 phases the",
+  "//": "macro's Metal4 supply columns onto the PDN grid below; y is a row boundary,",
+  "//": "leaving rows under the macro for the grid stripes that feed VDDARRAY!.",
   "MACROS": {
     "RM_IHPSG13_1P_1024x8_c2_bm_bist": {
       "instances": {
         "u_mem.sram": {
-          "location": [42, 80],
-          "orientation": "R90"
+          "location": [3.36, 60.48],
+          "orientation": "FS"
         }
       },
-      "gds": [
-        "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist.gds"
-      ],
-      "lef": [
-        "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist.lef"
-      ],
+      "gds": ["pdk_dir::libs.ref/sg13cmos5l_sram/gds/RM_IHPSG13_1P_1024x8_c2_bm_bist.gds"],
+      "lef": ["pdk_dir::libs.ref/sg13cmos5l_sram/lef/RM_IHPSG13_1P_1024x8_c2_bm_bist.lef"],
       "lib": {
-        "nom_*": [
-          "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist_typ_1p20V_25C.lib"
-        ],
-        "min_*": [
-          "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist_fast_1p32V_m55C.lib"
-        ],
-        "max_*": [
-          "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist_slow_1p08V_125C.lib"
-        ],
-        "*": [
-          "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist_typ_1p20V_25C.lib"
-        ]
+        "*_typ_*":  ["pdk_dir::libs.ref/sg13cmos5l_sram/lib/RM_IHPSG13_1P_1024x8_c2_bm_bist_typ_1p20V_25C.lib"],
+        "*_fast_*": ["pdk_dir::libs.ref/sg13cmos5l_sram/lib/RM_IHPSG13_1P_1024x8_c2_bm_bist_fast_1p32V_m55C.lib"],
+        "*_slow_*": ["pdk_dir::libs.ref/sg13cmos5l_sram/lib/RM_IHPSG13_1P_1024x8_c2_bm_bist_slow_1p08V_125C.lib"]
       },
-      "nl": [
-        "dir::./RM_IHPSG13_1P_1024x8_c2_bm_bist.v"
-      ],
-      "spice": [
-        "dir::../macro/RM_IHPSG13_1P_1024x8_c2_bm_bist/RM_IHPSG13_1P_1024x8_c2_bm_bist.cdl"
-      ]
+      "nl": ["dir::./RM_IHPSG13_1P_1024x8_c2_bm_bist.v"],
+      "spice": ["pdk_dir::libs.ref/sg13cmos5l_sram/cdl/RM_IHPSG13_1P_1024x8_c2_bm_bist.cdl"]
     }
   },
   "PDN_MACRO_CONNECTIONS": [
@@ -74,14 +62,27 @@
     "u_mem.sram VPWR VGND VDDARRAY! VSS!"
   ],
 
-  "//": "Custom PDN config: SRAM power pins are on Metal4, need Metal4<->TopMetal1 connection",
+  "//": "PDN: CMOS5L tiles have Metal4 only (no TopMetal), so the grid is vertical Metal4",
+  "//": "stripes and the macro's supplies are vertical Metal4 columns. The macro's left",
+  "//": "array has VDD/VSS column pairs 5.62 apart repeating every 11.24 (LEF). Width 2.1",
+  "//": "fits inside the 2.81 columns, spacing 3.52 gives the 5.62 pair distance, pitch",
+  "//": "33.72 = 3 x 11.24, and offset 6.145 puts stripe centres at 2.88 + 6.145 = 9.025 =",
+  "//": "3.36 + 5.665, the first VDD column's centre (and 33.72 later, the fourth's).",
+  "//": "pdn_cfg.tcl bridges those stripes to the columns across the macro halo and fails",
+  "//": "the run if any supply pin is left unconnected or a stripe crosses the macro.",
+  "FP_PDN_VWIDTH": 2.1,
+  "FP_PDN_VSPACING": 3.52,
+  "FP_PDN_VOFFSET": 6.145,
   "PDN_CFG": "dir::pdn_cfg.tcl",
 
   "//": "SRAM GDS has no PR boundary layer; read full GDS instead of blackbox",
   "MAGIC_MACRO_STD_CELL_SOURCE": "PDK",
 
-  "//": "SRAM macro internals trigger massive DRC in Magic; skip (KLayout DRC also skipped)",
+  "//": "SRAM macro internals trigger DRC in Magic and overlap reports at the",
+  "//": "VDD!/VDDARRAY! boundary (known, per the CMOS5L SRAM walkthrough); precheck",
+  "//": "runs its own DRC on the final GDS",
   "ERROR_ON_MAGIC_DRC": false,
+  "ERROR_ON_ILLEGAL_OVERLAPS": false,
 
   "//": "Blackbox SRAM macros during SPICE extraction for LVS, as the macros are not LVS clean",
   "MAGIC_EXT_ABSTRACT_CELLS": ["RM_IHPSG13_.*"],
@@ -113,7 +114,7 @@
   "FP_IO_HLENGTH": 2,
   "FP_IO_VLENGTH": 2,
 
-  "FP_PDN_VPITCH": 38.87,
+  "FP_PDN_VPITCH": 33.72,
 
   "//": "Clock",
   "RUN_CTS": 1,
