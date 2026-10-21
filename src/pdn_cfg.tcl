@@ -22,6 +22,8 @@
 #      the nearest same-net stripe beyond the halo whose width lies inside
 #      the column and draws a Metal4 bridge between them,
 #   3. fails unless every supply pin (VDD!, VDDARRAY!, VSS!) got a bridge.
+# `pe_trim_power_pins` then keeps the tile's VPWR/VGND pins only on
+# stripes that span the tile, as precheck requires.
 # A misaligned grid therefore stops the run here instead of producing a
 # chip with an unpowered SRAM array.
 #
@@ -203,6 +205,44 @@ proc pe_macro_power {} {
     puts "PEPDN checked $nmacros macro(s)"
 }
 
+# Tiny Tapeout precheck requires every power pin to run from the bottom
+# edge of the tile to the top (within 10 um). pdngen puts a pin on every
+# stripe, including the pieces of the stripes the macro cuts in two; drop
+# those pins (the stripes stay, joined to the grid through the rails and
+# the bridges) and fail if a supply is left with no full-height pin.
+proc pe_trim_power_pins {} {
+    set block [ord::get_db_block]
+    set dbu [$block getDbUnitsPerMicron]
+    set die [$block getDieArea]
+    set reach [expr {int(10.0 * $dbu)}]
+    foreach bterm [$block getBTerms] {
+        set net [$bterm getNet]
+        if { $net eq "NULL" } { continue }
+        set sig [$net getSigType]
+        if { $sig ne "POWER" && $sig ne "GROUND" } { continue }
+        set kept 0
+        set dropped 0
+        foreach bpin [$bterm getBPins] {
+            set full 1
+            foreach box [$bpin getBoxes] {
+                if { [$box yMin] > [$die yMin] + $reach || [$box yMax] < [$die yMax] - $reach } {
+                    set full 0
+                }
+            }
+            if { $full } {
+                incr kept
+            } else {
+                odb::dbBPin_destroy $bpin
+                incr dropped
+            }
+        }
+        puts "PEPDN pins [$bterm getName]: kept $kept full-height, dropped $dropped partial"
+        if { $kept == 0 } {
+            error "PEPDN: no full-height pin left for [$bterm getName]"
+        }
+    }
+}
+
 # Run the bridge pass right after librelane's own pdngen call.
 if { [info commands ::pe_pdngen_orig] eq "" } {
     rename ::pdngen ::pe_pdngen_orig
@@ -210,6 +250,7 @@ if { [info commands ::pe_pdngen_orig] eq "" } {
         set rc [catch { ::pe_pdngen_orig {*}$args } msg opts]
         if { $rc } { return -options $opts $msg }
         pe_macro_power
+        pe_trim_power_pins
         return $msg
     }
 }
