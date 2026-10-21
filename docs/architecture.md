@@ -39,7 +39,7 @@ file stays focused on memory/area/pipeline/pin-level system integration.
   ~0.92mm^2 (1289.28 x 710.64 um), core ~0.902mm^2. The brief's
   ~1000 logic-cells/tile budget was unverified -- **now validated** via
   two flow-validation runs (git history: commits `03b7bf6`/`2e113b4`):
-  a trivial adder confirmed the flow works end-to-end on CMOS5L (53
+  a trivial adder confirmed the flow works end-to-end on IHP SG13G2 (53
   cells, 565.6 um^2 post-place), and the SRAM macro instantiated
   standalone confirmed its real placed cost -- 50,172 um^2 total
   (macro + wrapper logic), just **5.6% of the core area**, matching its

@@ -2,58 +2,53 @@
 
 # Protocol Emulator ASIC
 
-Entry for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/):
-a programmable, firmware-driven protocol emulator (UART/SPI/I2C baseline,
-USB-LS/10M-Ethernet stretch) built on a tiny pin-oriented CPU, rather than
-fixed protocol logic. Built on the [Tiny Tapeout](https://tinytapeout.com)
-IHP Verilog template.
+Entry for the [Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/),
+built on the [Tiny Tapeout](https://tinytapeout.com) flow for the IHP
+SG13CMOS5L shuttle (6x4 tiles).
 
-Status: ISA, sequencer core, pin control and memory are implemented
-(`src/`), with the real IHP SRAM hard macro. The design hardens cleanly
-through the TinyTapeout flow (timing met at all corners, 0 DRC/LVS,
-precheck passes; docs/VAL.md section 11). The verification environment covers directed tests, randomized
-differential testing against a golden model with coverage, a mutation-
-testing gate, and formal properties, with AI agents extending stimulus,
-coverage and properties under per-directory contracts; see
-[docs/VAL.md](docs/VAL.md). Design docs:
-[docs/isa.md](docs/isa.md), [docs/architecture.md](docs/architecture.md);
-protocol-firmware plan: [firmware/README.md](firmware/README.md).
+A small, cycle-exact sequencer CPU that bit-bangs serial protocols from
+firmware. UART, SPI and I2C are programs, not hardware blocks: a new
+protocol is a new program, loaded by the host after fabrication.
 
-- [Read the documentation for project](docs/info.md)
+| | |
+|---|---|
+| Datasheet (pins, loading, host protocol, external parts) | [docs/info.md](docs/info.md) |
+| Instruction set | [docs/isa.md](docs/isa.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
+| Protocol timing budget | [docs/protocol_timing.md](docs/protocol_timing.md) |
+| Assembler and example firmware | [firmware/](firmware/README.md) |
+| Verification approach | [docs/verification.md](docs/verification.md) (full reference: [docs/VAL.md](docs/VAL.md)) |
+| How AI tools were used | [docs/ai_usage.md](docs/ai_usage.md) |
 
-## What is Tiny Tapeout?
+## Status
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+- **RTL:** complete (`src/`): sequencer core, pin control, boot loader,
+  IHP 1 KB SRAM macro.
+- **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
+  (100/400 kHz), each verified in simulation against an independent
+  model of the other end.
+- **Verification:** `make signoff`, 15 gates, `STABLE` on the nightly
+  run. See [docs/verification.md](docs/verification.md).
+- **Physical design:** hardened through the Tiny Tapeout flow on IHP
+  SG13G2 (timing met at all corners, DRC/LVS clean, precheck passing).
+  The port to SG13CMOS5L, the competition process, is in progress on
+  branch `cmos5l-port`.
 
-To learn more and get started, visit https://tinytapeout.com.
+## Quick start
 
-## Set up your Verilog project
+```sh
+python3.13 -m venv .venv && .venv/bin/pip install -r test/requirements.txt
+source .venv/bin/activate
+make -C test                 # directed tests (Icarus Verilog)
+make signoff                 # every verification gate (~75 min)
+python3 firmware/isa/asm.py firmware/protocols/uart.asm -o uart.hex   # boot image, one hex byte per line
+```
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+Formal and RTL-coverage gates also need yosys, yosys-smtbmc, z3 and
+Verilator ([OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build)).
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+## About Tiny Tapeout
 
-## Enable GitHub actions to build the results page
-
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
-
-## Resources
-
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
-
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+Tiny Tapeout is an educational project that makes it easier and cheaper
+than ever to get digital and analog designs manufactured on a real chip.
+See https://tinytapeout.com.
