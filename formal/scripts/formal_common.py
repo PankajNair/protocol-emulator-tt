@@ -73,6 +73,11 @@ DEFAULT_DEPTH = 20
 # source lists. Empty by default -- most targets here are leaves.
 EXTRA_SRCS = {
     "protocol_cpu_core": ["cpu/regfile.v", "io/cycle_counter.v"],
+    # chip-level props: the whole design, with the SRAM macro replaced by
+    # formal/models/sram_anyseq.v (read data unconstrained every cycle)
+    "tt_um_pankajnair_protocol_emulator": ["cpu/regfile.v", "io/cycle_counter.v", "cpu/core.v",
+                                           "io/pin_ctrl.v", "mem/mem.v",
+                                           "../formal/models/sram_anyseq.v"],
 }
 
 # Debug output ports a checker is permitted to observe on a target
@@ -134,6 +139,12 @@ DEBUG_PORTS = {
     "cycle_counter": {
         "count": ("logic [23:0]", None),
     },
+    # Added for agent_top_pin_contract_props.v: the core->pin_ctrl LOAD
+    # flag on top.v's own wire, asserted equal to the checker's pin-only
+    # ghost (checks the wiring as well as strengthening induction).
+    "tt_um_pankajnair_protocol_emulator": {
+        "mode_load": ("logic", None),
+    },
     "pin_ctrl": {
         "mode": ("logic [7:0][1:0]", 8),
         "drv":  ("logic [7:0]", 8),
@@ -155,6 +166,12 @@ DEBUG_PORTS = {
 # debug copy threads it out as dbg_<name>).
 # {target: {name: (inst, child_module, child_sig, packed_type, n_elems)}}
 CHILD_DEBUG_PORTS = {
+    # agent_top_pin_contract_props.v's induction strengthening, assert-only
+    "tt_um_pankajnair_protocol_emulator": {
+        "core_halted":    ("u_core", "protocol_cpu_core", "halted", "logic", None),
+        "core_load_ack":  ("u_core", "protocol_cpu_core", "load_ack", "logic", None),
+        "pc_seen_fall":   ("u_pin_ctrl", "pin_ctrl", "seen_start_fall", "logic", None),
+    },
     "protocol_cpu_core": {
         "rf_regs":   ("u_regfile", "regfile", "regs", "logic [3:0][7:0]", 4),
         "cnt_count": ("u_cycle_counter", "cycle_counter", "count", "logic [23:0]", None),

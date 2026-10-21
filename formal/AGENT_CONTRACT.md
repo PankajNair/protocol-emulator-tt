@@ -73,4 +73,8 @@ same toolchain, same yosys/z3 install):
   `core.v` CALL/RET misuse flag (`agent_core_call_ret_misuse_props.v`, 17/17);
   `core.v` LOOP + flag-writer set (`agent_core_loop_flag_props.v`, 22/22);
   `core.v` WAIT exit timing + tie rule (`agent_core_wait_props.v`, 16/16).
+- **Chip-level props** bind to `tt_um_pankajnair_protocol_emulator`
+  (`agent_top_pin_contract_props.v`): EXTRA_SRCS reads the whole design
+  with `formal/models/sram_anyseq.v` in place of the SRAM macro, and
+  child-instance state is reached through CHILD_DEBUG_PORTS.
 - **Candidate next targets**: none open; see formal/README.md.

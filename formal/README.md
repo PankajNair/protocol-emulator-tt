@@ -138,6 +138,23 @@ elaborated on this yosys build).
 With these two, formal alone kills all 23 mutation-gate mutants
 (`python3 scripts/formal_mutants.py`).
 
+- **Chip-level pin contract -- done, proven.**
+  `agent_top_pin_contract_props.v` (written in the parent session): the
+  whole chip (core + pin_ctrl + top.v wiring) checked from its pins, with
+  the SRAM replaced by `formal/models/sram_anyseq.v` (read data free every
+  cycle, so every program). From a pin-only ghost: HOST_GO always an
+  input and HOST_STATUS always an output; protocol pins and uio[6] Hi-Z
+  throughout LOAD; HOST_ERROR's enable exactly "run mode and START has
+  fallen"; reset pin state; the boot ack on HOST_STATUS cycle-exact
+  (2 cycles after HOST_GO's synchronized edge); top.v's `mode_load` equal
+  to the pin-level LOAD. 12 asserts, 10/10 covers. Fails on 5 of 6 top.v
+  wiring slips injected in scratch copies (START/HOST_GO edges crossed,
+  HOST_GO rise/fall crossed, `mode_load` tied off, `set_value`/`outb_bit`
+  crossed, `start_fall` into `start_rise`); the sixth, `pin_index` bit
+  order reversed, leaves LOAD's pin 5 (`101`) unchanged and only moves
+  run-mode pins, which depend on the program -- out of scope here,
+  killed by `test_halt_holds_pins`.
+
 **`[deep]` covers.** A cover beyond BMC depth may carry `[deep]` on its
 line if the file has a `// deep-evidence: <test>` header naming an
 existing `async def <test>` in `test/*.py` that reaches the state.
