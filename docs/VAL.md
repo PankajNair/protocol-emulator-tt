@@ -1309,7 +1309,7 @@ a bug could hide from every simulation gate.
 
 `make rtl-coverage` (sign-off gate `rtl_coverage`, about 30 s):
 1. builds the testbench under Verilator with coverage on;
-2. runs directed + UART, the spec suite, random (100 seeds) and each
+2. runs the directed suite, the spec suite, random (100 seeds) and each
    stimulus profile (50 seeds);
 3. merges the per-suite `.dat` files across hierarchy and scores only
    `src/`;

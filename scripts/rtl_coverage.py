@@ -16,7 +16,8 @@ from every simulation gate.
     rtl_coverage.py prove                                  the unreachability proof a waiver cites
 
 Suites (each a Verilator build with --coverage-line --coverage-toggle):
-  directed   test.py + test_uart.py
+  directed   the default directed suite (test/Makefile: test.py and the
+             protocol firmware / host library end-to-end modules)
   spec       spec_tests/ (the spec-only conformance suite)
   random     test_random.py, default generator, --seeds seeds
   <profile>  test_random.py under each STIM_PROFILE, --seeds/2 seeds
@@ -103,7 +104,7 @@ def suite_cmd(name: str, seeds: int) -> tuple[str, dict]:
     env = {}
     base = f"make -C {TEST} SIM=verilator EXTRA_ARGS='{VFLAGS}'"
     if name == "directed":
-        return f"{base} SIM_BUILD=sim_build/vcov COCOTB_TEST_MODULES=test,test_uart", env
+        return f"{base} SIM_BUILD=sim_build/vcov", env  # test/Makefile's default module list
     if name == "spec":
         return f"{base} SIM_BUILD=sim_build/vcov spec", env
     if name == "board":
