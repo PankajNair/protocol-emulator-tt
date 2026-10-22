@@ -364,8 +364,14 @@ corner), LVS clean, routing DRC clean, gate-level test passing. Precheck
 failed only on the power-pin rule, fixed in the pin pass above. STA
 flags max slew on three SRAM inputs (A_DIN[0], A_WEN, A_MEN; 0.88 ns vs
 the macro's 0.595 ns characterization limit, slow corner) and max load
-on A_DOUT[6] (3-5% over): long routes to the macro's pins, addressed by
-repairing again after global routing (`RUN_POST_GRT_DESIGN_REPAIR`).
+on A_DOUT[6] (3-5% over): long routes to the macro's pins, ~250-310 um
+from minimum-size drivers by the top-edge I/O. Repairing again after
+global routing alone (`RUN_POST_GRT_DESIGN_REPAIR`) found the violations
+but inserted nothing, because long-wire buffering is off by default
+(max wire length 0); with `DESIGN_REPAIR_MAX_WIRE_LENGTH` and
+`GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH` at 200 um, run 39845603878 has no
+max slew or max cap violations in any corner, no setup or hold
+violations, LVS clean, precheck and the gate-level test passing.
 
 ## 12. Protocol-level verification
 

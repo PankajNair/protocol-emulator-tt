@@ -33,9 +33,11 @@ protocol is a new program, loaded by the host after fabrication.
 - **Verification:** `make signoff`, 16 gates, `STABLE` on the nightly
   run. See [docs/verification.md](docs/verification.md).
 - **Physical design:** hardened through the Tiny Tapeout flow on IHP
-  SG13G2 (timing met at all corners, DRC/LVS clean, precheck passing).
-  The port to SG13CMOS5L, the competition process, is in progress on
-  branch `cmos5l-port`.
+  SG13CMOS5L, the competition process: timing met at 50 MHz in all
+  corners with no slew or load violations, LVS clean, precheck and
+  gate-level test passing. The SRAM's Metal4 supply columns are bridged
+  to the Metal4-only tile grid by a checked PDN script
+  ([docs/VAL.md](docs/VAL.md) section 11).
 
 ## Quick start
 
