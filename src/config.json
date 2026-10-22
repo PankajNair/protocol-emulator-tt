@@ -23,6 +23,11 @@
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
   "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
 
+  "//": "Repair slew/cap again after global routing, with real wire lengths: without it",
+  "//": "the long routes to the SRAM's top-edge pins left A_DIN[0]/A_WEN/A_MEN above the",
+  "//": "macro's characterized input slew and A_DOUT[6] above its max load (run 39606563369)",
+  "RUN_POST_GRT_DESIGN_REPAIR": 1,
+
   "//": "RUN_LINTER, LINTER_INCLUDE_PDK_MODELS - Disabling the linter is not recommended!",
   "RUN_LINTER": 1,
   "LINTER_INCLUDE_PDK_MODELS": 1,
