@@ -25,6 +25,8 @@ without adding checking power.
 | WS2812 end-to-end | `test/test_ws2812.py` (2 tests) | Does `ws2812.asm` drive an LED chain correctly? An independent decoder written from the WS2812B datasheet (each pulse in its +-150 ns window, latch on > 50 us low), plus the exact cycle budget from the firmware header. Demo frame with host resend; a 255-byte frame with every bit pair inside a byte and across a boundary. | part of `make -C test` |
 | SPI target end-to-end | `test/test_spi_target.py` (3 tests) | Does `spi_target.asm` follow an external controller's clock? Independent mode-0 controller model; 1 MHz echo, back-to-back transactions, a long clock pause with CS low, and the measured speed limit (exact at a 14-cycle half period, fails at 13). | part of `make -C test` |
 | 1-Wire end-to-end | `test/test_onewire.py` (5 tests) | Does `onewire.asm` work against a spec-worst-case device (a 0 held only 15 us, presence at both ends of its window)? Presence, no device, READ ROM with CRC8, byte writes, unknown command; every controller pulse and slot checked against the spec. | part of `make -C test` |
+| PS/2 host end-to-end | `test/test_ps2_host.py` (2 tests) | Does `ps2_host.asm` receive from a keyboard model that owns the clock and honours the inhibit? Back-to-back scan codes with the chip holding the keyboard off; bad parity and bad stop frames dropped with HOST_ERROR. | part of `make -C test` |
+| NEC IR end-to-end | `test/test_nec_ir.py` (1 test) | Does `nec_ir.asm` send a frame an IR receiver decodes? Receiver model demodulates the carrier (every period within 38 kHz +-2%) and decodes NEC with typical tolerances. | `make -C test slow` (own sign-off gate) |
 | Host library | `test/test_host_loader.py` (4 tests) | Does the demo-board host library (`firmware/host/pe_host.py`) load and talk to the chip? The same protocol generators the board runs, driven on the DUT's pins: load + send/recv, a 522-byte image with a data region, reload, timeout instead of hang. | part of `make -C test` |
 | Board self-tests | `test/test_board.py` on `tb_board.v` | Does the two-chip board testbench resolve nets like real wires (floating = x, pull-ups, wired-AND, contention flagged), wire loopback correctly, and run each chip on its own clock? Checked before anything is built on it. | `make -C test board` |
 | Assembler | `test/test_assembler.py` (pytest) | Every mnemonic encodes identically to `isa_asm`; labels, `.equ`/`-D`, DELAY/WAIT cycle encoding, data region, error cases. | `pytest test/test_assembler.py` |
@@ -403,7 +405,7 @@ SPI and I2C controllers run on the board testbench (section 13).
 
 **Protocols the chip wasn't designed for, and the target role
 (2026-10-21).** The architecture planned UART, SPI and I2C, controller
-role only. Three more, each from the existing ISA with no hardware
+role only. Five more, each from the existing ISA with no hardware
 change, each checked against an independent model of the other end and
 shown to fail on injected bugs:
 
@@ -412,6 +414,8 @@ shown to fail on injected bugs:
 | `ws2812.asm` (LED chain, 20 instructions) | decoder written from the WS2812B datasheet | every pulse inside its +-150 ns window, incl. byte-boundary bits; cycle-exact to the header's budget | DELAY one cycle long (mutation #1: still inside the datasheet windows, caught by the exact budget), OUTB on the wrong bit |
 | `spi_target.asm` (SPI peripheral, mode 0) | mode-0 controller model | exact up to a 28-cycle SCLK period (1.79 MHz, phase-locked); rated 1.5 MHz for an asynchronous controller | inverted WAIT timeout flag. Dropping a synchronizer flop does not move the limit (instruction count bounds it) and is caught elsewhere |
 | `onewire.asm` (1-Wire controller) | device model at the spec's worst case | presence, READ ROM with a valid CRC8, writes; every pulse and slot in spec | sampling 4 us late, a long write-1 pulse, a 450 us reset, an early presence sample; mutations #3, #9 |
+| `nec_ir.asm` (NEC IR transmitter) | IR receiver + NEC decoder model | frame decodes; carrier 38.11 kHz, 33% duty, every period in band; leader 8983/4503 us | complement bytes sent uninverted; a carrier 3% fast in one burst (caught only once every period is checked, not the average) |
+| `ps2_host.asm` (PS/2 keyboard receiver) | keyboard model that owns the clock and honours the inhibit | scan codes in order, keyboard held off while the host is busy; bad frames dropped | no inhibit (bytes lost); parity check inverted. Found a real firmware race: re-arming before its own CLK release had passed the input synchronizer |
 
 The SPI target supersedes the architecture's "target roles deferred"
 decision for SPI (docs/architecture.md); I2C target, which needs two
@@ -525,7 +529,8 @@ shadow of the driver state.
 
 | Gate | Pass criterion |
 |---|---|
-| `directed` | `make -C test -B`: all directed tests, the protocol firmware end to end (UART, WS2812, SPI target, 1-Wire) and the host library pass (58) |
+| `directed` | `make -C test -B`: all directed tests, the protocol firmware end to end (UART, WS2812, SPI target, 1-Wire, PS/2) and the host library pass (60) |
+| `slow_protocols` | `make -C test slow`: protocol tests too slow to rerun per mutant (NEC IR, one 68 ms frame) |
 | `pytest` | golden-model self-check + assembler unit tests pass |
 | `board` | `make -C test board`: loopback, two-chip link, I2C, SPI pass |
 | `cov_default` | `make coverage-gate`, 100 seeds |

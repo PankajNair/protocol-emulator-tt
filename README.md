@@ -26,10 +26,11 @@ protocol is a new program, loaded by the host after fabrication.
   IHP 1 KB SRAM macro.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
   (100/400 kHz), SPI target (the chip as the peripheral, following an
-  external clock), and two protocols the chip wasn't designed for: a
-  WS2812 LED driver and a 1-Wire controller. Each is verified in simulation against an independent
+  external clock), and four protocols the chip wasn't designed for: a
+  WS2812 LED driver, a 1-Wire controller, an NEC IR remote transmitter
+  and a PS/2 keyboard receiver. Each is verified in simulation against an independent
   model of the other end.
-- **Verification:** `make signoff`, 15 gates, `STABLE` on the nightly
+- **Verification:** `make signoff`, 16 gates, `STABLE` on the nightly
   run. See [docs/verification.md](docs/verification.md).
 - **Physical design:** hardened through the Tiny Tapeout flow on IHP
   SG13G2 (timing met at all corners, DRC/LVS clean, precheck passing).

@@ -98,6 +98,27 @@ the brief.
   its window), reads a ROM code with a valid CRC8, and checks every
   controller pulse and slot against the spec. Late sampling, a long
   write-1 pulse, a short reset and an early presence sample each fail it.
+- `protocols/nec_ir.asm` -- NEC infrared remote transmitter: the host
+  gives an address and a command, the firmware sends one NEC frame on
+  pin 0 on a 38.11 kHz, 33% duty carrier generated in firmware (drive an
+  IR LED through a transistor). The complement bytes go through a copy
+  of the send routine with the branch flipped (there is no NOT).
+  Verified by `test/test_nec_ir.py` against an independent receiver
+  model (demodulates the carrier, decodes NEC with typical tolerances,
+  checks every carrier period within 38 kHz +-2%): leader 8983/4503 us.
+  A frame takes a minute to simulate, so this runs as its own sign-off
+  gate (`make -C test slow`), not per mutant.
+- `protocols/ps2_host.asm` -- PS/2 host, receive side (keyboard or
+  mouse): follows the device's clock, checks start/parity/stop (parity
+  counted with LOOP as a decrement, no XOR), and pulls CLK low after each
+  frame -- PS/2's inhibit -- until the host has taken the byte, so the
+  device buffers instead of the chip. DATA = pin 0, CLK = pin 1,
+  open-drain. Verified by `test/test_ps2_host.py` against an independent
+  keyboard model that honours the inhibit: back-to-back scan codes, and
+  bad parity / bad stop frames dropped with HOST_ERROR. The test found a
+  real firmware bug: after releasing CLK the firmware must wait to see it
+  high, or its own low (still in the input synchronizer) reads as the
+  next start bit.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

@@ -63,10 +63,10 @@ TOPLEVEL = tb
 endif
 
 # List test modules to run, separated by commas and without the .py suffix:
-# test: directed RTL tests; test_uart / test_ws2812 / test_spi_target / test_onewire:
+# test: directed RTL tests; test_uart / test_ws2812 / test_spi_target / test_onewire / test_ps2_host:
 # end-to-end protocol firmware on the RTL against independent models;
 # test_host_loader: the demo-board host library (firmware/host/) on the RTL
-COCOTB_TEST_MODULES = test,test_uart,test_ws2812,test_spi_target,test_onewire,test_host_loader
+COCOTB_TEST_MODULES = test,test_uart,test_ws2812,test_spi_target,test_onewire,test_ps2_host,test_host_loader
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
@@ -90,3 +90,10 @@ spec:
 .PHONY: board
 board:
 	$(MAKE) BOARD=yes COCOTB_TEST_MODULES=test_board,test_uart_selftest,test_uart_link,test_i2c,test_spi
+
+# Protocol tests too slow for the default suite (which the mutation gate
+# reruns once per mutant): NEC IR simulates a 68 ms frame, ~1 minute.
+# Run once per sign-off as its own gate.
+.PHONY: slow
+slow:
+	$(MAKE) COCOTB_TEST_MODULES=test_nec_ir

@@ -32,7 +32,7 @@ that doesn't depend on the AI's own judgement.
   that way, among them: the HOST_ERROR pin could never be driven
   (commit `142ab71`), and boot writes past the end of SRAM weren't
   blocked (`boot_full`).
-- **The checks are executable.** `make signoff` runs 15 gates (directed,
+- **The checks are executable.** `make signoff` runs 16 gates (directed,
   spec-only, board, coverage, determinism, formal proof, vacuity,
   tie-offs, RTL coverage, mutation) and writes one verdict. The AI
   can't declare its own work done; the gates do, and they run in the

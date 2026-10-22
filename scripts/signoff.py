@@ -7,6 +7,7 @@ gate fails.
 
 Gates:
   directed      make -C test -B            directed, protocol firmware end to end, host library
+  slow_protocols make -C test slow         protocol tests too slow to rerun per mutant (NEC IR)
   pytest        golden-model self-check + assembler unit tests pass
   board         make -C test board          loopback, two-chip link, I2C, SPI pass
   cov_default   make coverage-gate (100 seeds), default generator closure
@@ -160,6 +161,7 @@ def main() -> int:
         ("directed", lambda: gate_cocotb("make -C test -B", 1200)),
         ("pytest", lambda: gate_pytest(300)),
         ("spec", lambda: gate_cocotb("make -C test spec", 900)),
+        ("slow_protocols", lambda: gate_cocotb("make -C test slow", 900)),
         ("board", lambda: gate_cocotb("make -C test board", 1800)),
         ("cov_default", lambda: gate_coverage("", 100, 1800)),
         *[(f"cov_{p}", (lambda p=p: gate_coverage(p, 50, 1800))) for p in PROFILES],

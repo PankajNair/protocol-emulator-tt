@@ -47,6 +47,8 @@ against an independent model of the other end:
 | `i2c.asm` | I2C controller, 7-bit addressing, reads and writes, clock stretching, 100 or 400 kHz |
 | `spi_target.asm` | SPI target (peripheral), mode 0, up to 1.5 MHz: the chip follows an external clock |
 | `onewire.asm` | 1-Wire controller (e.g. DS18B20): reset/presence, write and read bytes; a protocol the chip wasn't designed for |
+| `nec_ir.asm` | NEC IR remote transmitter, 38 kHz carrier generated in firmware |
+| `ps2_host.asm` | PS/2 keyboard/mouse receiver: follows the device's clock, inhibits it while busy |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
@@ -93,10 +95,17 @@ the firmware:
 | I2C | SDA | SCL | | |
 | WS2812 | DIN | | | |
 | 1-Wire | DQ | | | |
+| NEC IR | IR LED (via transistor) | | | |
+| PS/2 host | DATA | CLK | | |
 
 - **I2C needs pull-up resistors** on SDA and SCL (for example 4.7 kΩ to
   3.3 V at 100 kHz, 2.2 kΩ at 400 kHz): the chip drives them open-drain.
 - **1-Wire needs a pull-up** on DQ (4.7 kΩ to 3.3 V), for the same reason.
+- **IR LED** on `uio[0]` through an NPN transistor or MOSFET and a current
+  resistor: a GPIO pin cannot supply LED current.
+- **PS/2 devices are 5 V open-collector:** use a bidirectional
+  open-drain level shifter (the kind used for I2C) on DATA and CLK, with
+  the 5 V pull-ups on the device side.
 - UART, SPI and the host pins need no external parts at 3.3 V. Other
   voltage levels need a level shifter on a Pmod.
 - **WS2812 LEDs powered from 5 V need a level shifter** on DIN (for
