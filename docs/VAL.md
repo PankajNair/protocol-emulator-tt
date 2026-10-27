@@ -1307,6 +1307,29 @@ directed test pinning 4 edges would over-specify the design, so this
 mutant stays a formal-only kill: `agent_pin_ctrl_sync_depth_props.v`
 is deliberately stricter than the spec.
 
+**Pass 3 (run `20261027-162848-spec-conformance`): XOR and ADD.**
+After the ISA change (section 23), the same agent, again in its own tree
+with only the four docs, `tb.v` and its own suite, added 13 tests for
+XOR/ADD from the updated isa.md text and moved its 3-cycle check's
+"reserved 19" case to 21:
+- values and edge cases (wrap, carry both ways, Rd = Rs, zero), all 16
+  register pairs, the flag rules (XOR holds it, ADD writes the carry,
+  last writer wins against CMP/TEST-bit/WAIT, CALL clobbering), and
+  the idioms the doc names: increment, 16-bit sum, MOV, CRC-8 both
+  bitwise and table-driven.
+- Result: 75/75 against the RTL on the first run. On its own the suite
+  kills the three XOR/ADD mutants (#27: 8 failing tests, #28: 8, #29: 6).
+- Audit: 19 tool calls, 0 outside the tree; 4 flagged UNRESOLVED were
+  quoted heredocs (`<<'EOF'`, no shell expansion) editing its own files,
+  read and cleared by the parent.
+- It found 4 stale passages in isa.md the ISA change had missed, now
+  fixed: the status line and format section still said 19 opcodes; the
+  register-file note still said "there is no XOR"; the ports bullet
+  still said no opcode needs 2 reads + 1 write (XOR/ADD do; the 2R1W
+  regfile handles it); the reg-reg section listed only CMP/LOADX and
+  didn't say what the 7 reserved bits do (now: ignored on decode, which
+  its `test_xor_add_reserved_field_ignored` confirms on the RTL).
+
 ## 22. RTL (structural) coverage
 
 The functional bins (section 3) measure what the stimulus meant to

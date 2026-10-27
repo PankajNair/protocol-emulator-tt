@@ -25,7 +25,11 @@ except ImportError:  # pragma: no cover
 # isa.md Opcode table, `value` column.
 OP = dict(NOP=0, HALT=1, RET=2, BRANCH=3, LDI=4, SET=5, OUT=6, IN=7,
           SHIFT=8, DELAY=9, WAIT=10, TEST=11, OUTB=12, INB=13, LOAD=14,
-          STORE=15, LOOP=16, CMP=17, LOADX=18)
+          STORE=15, LOOP=16, CMP=17, LOADX=18,
+          # isa.md Opcode table rows `19` XOR and `20` ADD, both reg-reg
+          # ("Resolved (2026-10-23): XOR and ADD added (opcodes 19 and 20,
+          # reg-reg format)").
+          XOR=19, ADD=20)
 RESERVED_OPS = list(range(21, 32))  # isa.md: `21-31` reserved
 # (parent edit 2026-10-23: was 19-31 until XOR/ADD took 19 and 20; this list
 # follows the doc mechanically. Spec tests FOR XOR/ADD are left to an
@@ -207,6 +211,43 @@ class Asm:
 
     def loadx(self, rd, rs, reserved7=0):
         self.raw(enc_rr(OP["LOADX"], rd, rs, reserved7))
+
+    def xor(self, rd, rs, reserved7=0):
+        # isa.md XOR row: `Rd <= Rd ^ Rs`, reg-reg format.
+        self.raw(enc_rr(OP["XOR"], rd, rs, reserved7))
+
+    def add(self, rd, rs, reserved7=0):
+        # isa.md ADD row: `Rd <= (Rd + Rs) mod 256`, flag = carry out.
+        self.raw(enc_rr(OP["ADD"], rd, rs, reserved7))
+
+
+# ---------------------------------------------------------------------------
+# Pure reference values for XOR/ADD (isa.md rows 19 and 20)
+# ---------------------------------------------------------------------------
+def ref_xor(rd, rs):
+    """isa.md XOR row: `Rd <= Rd ^ Rs`; flag untouched."""
+    return (rd ^ rs) & 0xFF
+
+
+def ref_add(rd, rs):
+    """isa.md ADD row: `Rd <= (Rd + Rs) mod 256`; 'sets the shared flag to
+    the carry out (1 iff Rd + Rs > 255)'. Returns (result, flag)."""
+    return (rd + rs) & 0xFF, 1 if rd + rs > 255 else 0
+
+
+def crc8(data, poly=0x07, init=0x00):
+    """Plain MSB-first CRC-8 (no reflection, no final XOR). Independent of
+    the ISA; used only as the oracle for the firmware CRC idioms."""
+    crc = init
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def crc8_table(poly=0x07):
+    return [crc8([i], poly) for i in range(256)]
 
 
 # ---------------------------------------------------------------------------
@@ -597,12 +638,17 @@ def _selftest():
     a.loop(1, 2)
     a.cmp(1, 2)
     a.loadx(0, 3)
-    a.raw(enc_0op(19)); a.raw(enc_0op(31))
+    a.raw(enc_0op(21)); a.raw(enc_0op(31))
+    a.xor(2, 1); a.add(3, 0); a.xor(1, 1, 0x7F); a.add(0, 3, 0x2A)
     expect = [0x0000, 0x0800, 0x1000,
               0x1814, 0x1815, 0x1816, 0x1817, 0x1FFF,
               0x22A5, 0x2BE0, 0x3600, 0x3C00, 0x4001, 0x4AA2,
               0x5120, 0x57FF, 0x5C05, 0x6020, 0x6A40, 0x77FF, 0x7900,
-              0x8009, 0x8B00, 0x9180, 0x9800, 0xF800]
+              0x8009, 0x8B00, 0x9180, 0xA800, 0xF800,
+              # hand-derived: XOR=10011 ADD=10100, Rd=word[10:9], Rs=word[8:7]
+              # 10011 10 01 0000000 / 10100 11 00 0000000 /
+              # 10011 01 01 1111111 / 10100 00 11 0101010
+              0x9C80, 0xA600, 0x9AFF, 0xA1AA]
     got = a.words()
     assert got == expect, [f"{g:#06x}/{e:#06x}" for g, e in zip(got, expect) if g != e]
     # field-level cross-check against the independent slicer
@@ -613,6 +659,24 @@ def _selftest():
     d = _decode(enc_rr(OP["CMP"], 3, 1, 0x55))
     assert (d["op"], d["rd"], d["rs"], d["res"]) == (17, 3, 1, 0x55)
     assert words_to_bytes([0x22A5, 0x0800]) == [0xA5, 0x22, 0x00, 0x08]
+    for (op, rd, rs, res) in ((19, 2, 1, 0), (20, 3, 0, 0), (19, 1, 1, 0x7F), (20, 0, 3, 0x2A)):
+        w = enc_rr(op, rd, rs, res)
+        d = _decode(w)
+        assert (d["op"], d["rd"], d["rs"], d["res"]) == (op, rd, rs, res)
+    assert OP["XOR"] == 19 and OP["ADD"] == 20
+    assert RESERVED_OPS == list(range(21, 32))
+    assert not set(OP.values()) & set(RESERVED_OPS) and len(OP) + len(RESERVED_OPS) == 32
+    # reference models (isa.md rows: wrap mod 256; carry iff sum > 255)
+    assert ref_add(0xFF, 0x01) == (0x00, 1) and ref_add(0x7F, 0x80) == (0xFF, 0)
+    assert ref_add(0x80, 0x80) == (0x00, 1) and ref_add(0xFF, 0xFF) == (0xFE, 1)
+    assert ref_add(0, 0) == (0, 0) and ref_xor(0xA5, 0x5A) == 0xFF and ref_xor(0x3C, 0x3C) == 0
+    # CRC-8/poly 0x07 published check value over "123456789"
+    assert crc8(b"123456789") == 0xF4, hex(crc8(b"123456789"))
+    t = crc8_table()
+    c = 0
+    for b in b"123456789":
+        c = t[c ^ b]
+    assert c == 0xF4 and t[0] == 0 and t[1] == 0x07
     # labels resolve to word indices
     b = Asm(); b.jmp("t"); b.nop(); b.label("t"); b.halt()
     assert b.words()[0] == enc_branch(3, 2, 0)

@@ -15,7 +15,8 @@ import cocotb
 
 from spec_helpers import (Asm, Chip, KEEP, PP, OD, INPUT, PIN_GO, PIN_STATUS,
                           PIN_ERROR, PROTOCOL_PINS, RESERVED_OPS, OP, enc_0op,
-                          delay_cycles, fw_send, fw_recv, fw_ack, fw_out_flag)
+                          delay_cycles, fw_send, fw_recv, fw_ack, fw_out_flag,
+                          ref_add, ref_xor, crc8, crc8_table)
 
 PROTO_AND_ERR = (0, 1, 2, 3, 6, 7)
 
@@ -1200,7 +1201,14 @@ def _uniform_cases():
         ("LOOP falls through", lambda a: a.ldi(1, 1), lambda a: a.loop(1, "far"), None),
         ("LOOP taken", lambda a: a.ldi(1, 2), lambda a: nopskip(a, lambda x: x.loop(1, "tgt")), None),
         ("DELAY 0", None, lambda a: a.delay(0, 0), None),
-        ("reserved 19", None, lambda a: a.raw(enc_0op(19, 0x7FF)), None),
+        # isa.md: reserved range is now `21-31` (19 and 20 became XOR/ADD).
+        ("reserved 21", None, lambda a: a.raw(enc_0op(21, 0x7FF)), None),
+        # isa.md rows 19/20 are reg-reg ops; architecture.md: 'Uniform 3
+        # cycles/instruction for everything -- ... register ops, all of it'.
+        ("XOR", None, lambda a: a.xor(1, 2), None),
+        ("XOR Rd,Rd", None, lambda a: a.xor(1, 1), None),
+        ("ADD no carry", None, lambda a: a.add(1, 2), None),
+        ("ADD carry", lambda a: (a.ldi(1, 0xFF), a.ldi(2, 0x01)), lambda a: a.add(1, 2), None),
         ("reserved 31", None, lambda a: a.raw(enc_0op(31, 0x123)), None),
     ]
     return [(n, p, m, 6) for (n, p, m, _t) in c]
@@ -1615,3 +1623,470 @@ async def test_uart_rx_idiom(dut):
             await chip.clk()
         chip.set_ext(1, (data >> (7 - k)) & 1)
     assert await chip.wait_uo(1, timeout=400) == [data]
+
+
+# ===========================================================================
+# XOR (opcode 19) and ADD (opcode 20) -- isa.md, added 2026-10-23
+# ===========================================================================
+# Spec text these tests rely on (isa.md):
+#  * Register file, Resolved note: "XOR and ADD added (opcodes 19 and 20,
+#    reg-reg format) ... `ADD Rd,Rs` (flag = carry out) gives increments,
+#    multi-byte sums and additive checksums, and `MOV` is now `XOR Rd,Rd` +
+#    `ADD Rd,Rs`".
+#  * Row 19: "`Rd <= Rd ^ Rs`. Does not touch the shared flag (like
+#    LOOP/SHIFT), so a flag tested before an XOR survives it ... `XOR Rd,Rd`
+#    clears Rd."
+#  * Row 20: "`Rd <= (Rd + Rs) mod 256`; sets the shared flag to the carry
+#    out (1 iff Rd + Rs > 255), so BEQ/BNE after an ADD branch on carry ...
+#    A fourth flag-writer alongside CMP/TEST-bit/WAIT. With `LDI Rx,1` it is
+#    the increment the ISA lacked".
+#  * Reg-reg format: `opcode(5) | Rd(2) | Rs(2) | reserved(7)`, MSB-first
+#    (so Rd = word[10:9], Rs = word[8:7]).
+#  * Branch format, CALL: "CALL also silently clobbers the shared flag if the
+#    subroutine uses CMP/TEST-bit/WAIT/ADD internally".
+# Flag observation uses fw_out_flag (BEQ = cond 01 = "if flag set").
+
+def _others(*regs):
+    return [r for r in range(4) if r not in regs]
+
+
+def _emit_rr_case(a, op, i, rd, rs, x, y, pre_flag):
+    """LDI operands, force the flag to pre_flag, run op, then report
+    (0x10*(i%16)) | flag, Rd, and Rs (if distinct) over the OUT handshake.
+    The flag is reported first: fw_send's WAITs write the flag."""
+    s, t = _others(rd, rs)[:2]
+    if pre_flag:
+        a.cmp(s, s)                   # isa.md CMP: flag = (Rd==Rs) = 1
+    else:
+        a.ldi(s, 0); a.ldi(t, 1)
+        a.cmp(s, t)                   # flag = 0
+    a.ldi(rd, x)
+    if rs != rd:
+        a.ldi(rs, y)
+    getattr(a, op)(rd, rs)
+    fw_out_flag(a, s, 0x10 * (i % 16))
+    fw_ack(a)
+    fw_send(a, rd)
+    if rs != rd:
+        fw_send(a, rs)
+
+
+def _expect_rr_case(op, i, rd, rs, x, y, pre_flag):
+    if rd == rs:
+        y = x
+    if op == "xor":
+        res, flag = ref_xor(x, y), pre_flag      # row 19: flag untouched
+    else:
+        res, flag = ref_add(x, y)                # row 20: flag = carry out
+    out = [0x10 * (i % 16) | flag, res]
+    if rs != rd:
+        out.append(y)                            # Rs is only read
+    return out
+
+
+async def _run_rr_cases(chip, op, cases, chunk=7):
+    """cases: (rd, rs, x, y, pre_flag). Returns list of mismatches."""
+    fails = []
+    for base in range(0, len(cases), chunk):
+        part = cases[base:base + chunk]
+        a = Asm()
+        exp = []
+        for j, c in enumerate(part):
+            _emit_rr_case(a, op, base + j, *c)
+            exp.append(_expect_rr_case(op, base + j, *c))
+        a.halt()
+        assert len(a.words()) <= 256, "harness bug: program exceeds program space"
+        await chip.run(a)
+        for c, e in zip(part, exp):
+            got = await chip.host_read_n(len(e))
+            if got != e:
+                fails.append((op, c, [hex(v) for v in got], [hex(v) for v in e]))
+    return fails
+
+
+@cocotb.test()
+async def test_xor_values(dut):
+    """isa.md row 19: 'Rd <= Rd ^ Rs'; 'XOR Rd,Rd clears Rd'; 'Does not touch
+    the shared flag' (pre-flag alternated, must survive -- also for a zero
+    result, i.e. XOR sets no zero flag). Rs is only read (reg-reg format:
+    the result goes to Rd). Edge values: all-zero, all-ones, equal values in
+    different registers, complementary patterns, single top/bottom bits."""
+    chip = await new_chip(dut)
+    cases = [(0, 1, 0x00, 0x00, 1), (0, 1, 0xFF, 0xFF, 0), (2, 3, 0xA5, 0x5A, 1),
+             (3, 2, 0xFF, 0x00, 0), (1, 0, 0x80, 0x01, 1), (0, 2, 0x0F, 0xFF, 0),
+             (1, 3, 0x01, 0x01, 1), (2, 0, 0x7E, 0x81, 0), (3, 1, 0x00, 0xC3, 1),
+             # Rd == Rs: 'XOR Rd,Rd clears Rd'
+             (1, 1, 0xA5, None, 0), (3, 3, 0xFF, None, 1), (0, 0, 0x00, None, 1),
+             (2, 2, 0x80, None, 0)]
+    fails = await _run_rr_cases(chip, "xor", cases)
+    assert not fails, f"XOR (op, case(rd,rs,x,y,preflag), got, expected): {fails}"
+
+
+@cocotb.test()
+async def test_add_values_and_carry(dut):
+    """isa.md row 20: 'Rd <= (Rd + Rs) mod 256; sets the shared flag to the
+    carry out (1 iff Rd + Rs > 255)'. The flag is preset to the opposite of
+    the expected carry so ADD must write it in both directions (0->1 and
+    1->0). Edge values: sum exactly 255 (no carry), 256 (wraps to 0 with
+    carry), 510 (max), 0+0 (zero result, no carry: the flag is carry, not
+    zero), and the 0x7F/0x80 sign boundary (no overflow flag). Rd == Rs
+    doubles Rd (carry = old bit 7)."""
+    chip = await new_chip(dut)
+    raw = [(0, 1, 0x00, 0x00), (0, 1, 0xFF, 0x01), (1, 0, 0x01, 0xFF), (2, 3, 0xFF, 0xFF),
+           (3, 2, 0x80, 0x80), (0, 2, 0x7F, 0x01), (1, 3, 0x7F, 0x80), (2, 1, 0x80, 0x7F),
+           (3, 0, 0xFF, 0x00), (0, 3, 0x00, 0xFF), (1, 2, 0x01, 0xFE), (2, 0, 0x02, 0xFE),
+           (3, 1, 0xF0, 0x0F), (0, 1, 0xF0, 0x11), (1, 0, 0x5A, 0xA5), (2, 3, 0x5A, 0xA6),
+           # Rd == Rs: Rd <= 2*Rd mod 256, carry = old bit 7
+           (1, 1, 0x80, None), (3, 3, 0x7F, None), (0, 0, 0xC0, None), (2, 2, 0x00, None),
+           (0, 0, 0xFF, None)]
+    cases = []
+    for (rd, rs, x, y) in raw:
+        _r, c = ref_add(x, x if rd == rs else y)
+        cases.append((rd, rs, x, y, 1 - c))
+    fails = await _run_rr_cases(chip, "add", cases)
+    assert not fails, f"ADD (op, case(rd,rs,x,y,preflag), got, expected): {fails}"
+
+
+@cocotb.test()
+async def test_xor_add_register_field_matrix(dut):
+    """isa.md Reg-reg format 'opcode(5) | Rd(2) | Rs(2) | reserved(7)',
+    MSB-first ('remaining fields pack down from word[10:0] in the order
+    shown'), and rows 19/20 write Rd only. All 16 (Rd, Rs) pairs for both
+    opcodes with R0..R3 = 0x11/0x22/0x44/0x88 (disjoint bits), reading all
+    four registers back: the right register is written, with the right
+    value, and no other register changes."""
+    chip = await new_chip(dut)
+    init = [0x11, 0x22, 0x44, 0x88]
+    fails = []
+    for op in ("xor", "add"):
+        pairs = [(rd, rs) for rd in range(4) for rs in range(4)]
+        for base in (0, 8):
+            a = Asm()
+            exp = []
+            for (rd, rs) in pairs[base:base + 8]:
+                for r in range(4):
+                    a.ldi(r, init[r])
+                getattr(a, op)(rd, rs)
+                for r in range(4):
+                    fw_send(a, r)
+                regs = list(init)
+                regs[rd] = (ref_xor if op == "xor" else lambda p, q: ref_add(p, q)[0])(init[rd], init[rs])
+                exp.append(((rd, rs), regs))
+            a.halt()
+            await chip.run(a)
+            for (pair, regs) in exp:
+                got = await chip.host_read_n(4)
+                if got != regs:
+                    fails.append((op.upper(), pair, [hex(v) for v in got], [hex(v) for v in regs]))
+    assert not fails, f"(op, (Rd,Rs), R0..R3 got, expected): {fails}"
+
+
+@cocotb.test()
+async def test_xor_preserves_tested_flag_idiom(dut):
+    """isa.md row 19: 'a flag tested before an XOR survives it -- the shape a
+    bitwise CRC loop needs (TEST-bit the bit, XOR the polynomial in, branch
+    on the earlier test)'. Both flag polarities, with XOR results that are
+    zero and nonzero, and a run of several XORs."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x80); a.ldi(1, 0x80); a.ldi(2, 0x01)
+    a.test(0, 7)                 # flag 1
+    a.xor(0, 1)                  # result 0
+    fw_out_flag(a, 3, 0x10)      # 0x11
+    a.test(0, 7)                 # R0 = 0 -> flag 0
+    a.xor(0, 2)                  # result 0x01 (nonzero)
+    a.xor(1, 1)                  # result 0
+    a.xor(2, 0)                  # R2 = 0x01 ^ 0x01 = 0
+    fw_out_flag(a, 3, 0x20)      # 0x20
+    a.test(0, 0)                 # R0 = 0x01 -> flag 1
+    a.xor(0, 0)
+    a.xor(0, 0)
+    fw_out_flag(a, 3, 0x30)      # 0x31
+    a.halt()
+    await chip.run(a)
+    assert await chip.wait_uo(3) == [0x11, 0x20, 0x31]
+
+
+@cocotb.test()
+async def test_add_flag_shared_with_other_writers(dut):
+    """isa.md: ADD is 'A fourth flag-writer alongside CMP/TEST-bit/WAIT';
+    CMP row: 'one flag register, last write wins'; WAIT row: 'Every WAIT
+    writes the shared flag on exit ... 0 if the pin condition was met, 1 if
+    it timed out'. LOOP/SHIFT/XOR 'locked to not touch the flag' (Branch
+    format CALL notes), so a carry survives them; LDI/OUT/STORE/LOAD are not
+    in the named writer set (LOOP row: 'keeps the set of flag-writers small
+    and named ... not any instruction')."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xFF); a.ldi(1, 0x01); a.ldi(2, 0x00)
+    # ADD carry then CMP unequal -> 0
+    a.ldi(3, 0xFF); a.add(3, 1); a.cmp(0, 1); fw_out_flag(a, 3, 0x10)        # 0x10
+    # CMP equal then ADD no carry -> 0
+    a.cmp(0, 0); a.ldi(3, 0x10); a.add(3, 1); fw_out_flag(a, 3, 0x20)        # 0x20
+    # TEST bit=1 then ADD no carry -> 0
+    a.test(0, 3); a.ldi(3, 0x00); a.add(3, 2); fw_out_flag(a, 3, 0x30)       # 0x30
+    # ADD carry then TEST bit=0 -> 0
+    a.ldi(3, 0x80); a.add(3, 3); a.test(2, 0); fw_out_flag(a, 3, 0x40)       # 0x40
+    # CMP unequal then ADD carry -> 1
+    a.cmp(0, 1); a.ldi(3, 0x01); a.add(3, 0); fw_out_flag(a, 3, 0x50)        # 0x51
+    # WAIT timeout (pin 2 low) -> 1, then ADD no carry -> 0
+    a.wait(2, 1, 5, 0); a.ldi(3, 0x01); a.add(3, 1); fw_out_flag(a, 3, 0x60)  # 0x60
+    # ADD carry -> 1, then WAIT met (pin 7 high) -> 0
+    a.ldi(3, 0xFF); a.add(3, 0); a.wait(7, 1, 5, 0); fw_out_flag(a, 3, 0x70)  # 0x70
+    # WAIT met -> 0, then ADD carry -> 1
+    a.wait(7, 1); a.ldi(3, 0xFF); a.add(3, 0); fw_out_flag(a, 3, 0x80)       # 0x81
+    # ADD carry survives XOR, SHIFT, LOOP (falls through), LDI, OUT, STORE, LOAD
+    a.ldi(3, 0xFF); a.add(3, 1)
+    a.xor(3, 0); a.shift(3, False); a.ldi(2, 1); a.loop(2, "far1"); a.ldi(2, 0)
+    a.out(2); a.store(0, 3); a.load(2, 3)
+    fw_out_flag(a, 3, 0x90)                                                    # 0x91
+    # ADD no-carry (0) survives the same instructions
+    a.ldi(3, 0x01); a.add(3, 1)
+    a.xor(3, 0); a.shift(3, True); a.ldi(2, 1); a.loop(2, "far1"); a.ldi(2, 0)
+    a.out(2); a.store(0, 3); a.load(2, 3)
+    fw_out_flag(a, 3, 0xA0)                                                    # 0xA0
+    a.halt()
+    a.label("far1")
+    a.ldi(0, 0xEE); a.out(0); a.halt()
+    await chip.run(a, ext={7: 1})
+    exp = [0x10, 0x20, 0x30, 0x40, 0x51, 0x60, 0x70, 0x81, 0x00, 0x91, 0x00, 0xA0]
+    # (uo_hist compresses repeats; each 'OUT R2' of 0 shows as one 0x00)
+    hist = await chip.wait_uo(len(exp), timeout=4000)
+    assert hist == exp, f"flag sequence {[hex(v) if isinstance(v, int) else v for v in hist]}"
+
+
+@cocotb.test()
+async def test_call_flag_clobber_add_not_xor(dut):
+    """isa.md Branch format: 'CALL also silently clobbers the shared flag if
+    the subroutine uses CMP/TEST-bit/WAIT/ADD internally ... BEQ branches on
+    that result, not the one the caller set up'; 'now that LOOP/SHIFT/XOR are
+    locked to not touch the flag'. TEST-bit sets flag 1; a subroutine doing a
+    carry-free ADD returns flag 0; one doing only XORs returns flag 1; one
+    doing a carrying ADD after the caller set flag 0 returns 1."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0x80); a.ldi(1, 0x01)
+    a.test(0, 7); a.call("s_add"); fw_out_flag(a, 3, 0x10)     # 0x10 (clobbered)
+    a.test(0, 7); a.call("s_xor"); fw_out_flag(a, 3, 0x20)     # 0x21 (preserved)
+    a.test(0, 0); a.call("s_addc"); fw_out_flag(a, 3, 0x30)    # 0x31 (clobbered)
+    a.halt()
+    a.label("s_add")
+    a.ldi(2, 0x01); a.add(2, 1); a.ret()
+    a.label("s_xor")
+    a.ldi(2, 0xFF); a.xor(2, 2); a.xor(2, 0); a.ret()
+    a.label("s_addc")
+    a.ldi(2, 0xFF); a.add(2, 1); a.ret()
+    await chip.run(a)
+    assert await chip.wait_uo(3) == [0x10, 0x21, 0x31]
+
+
+@cocotb.test()
+async def test_add_increment_wraps_once_in_256(dut):
+    """isa.md row 20: 'With LDI Rx,1 it is the increment the ISA lacked';
+    'mod 256' and 'carry out (1 iff Rd + Rs > 255)'. 256 increments from 0
+    (LOOP with Rd=0 runs the body 256 times, LOOP row) must bring R0 back
+    to 0 with exactly one carry, on the 256th increment (0xFF -> 0x00).
+    The carry path records the LOOP counter: on the 256th body pass it is 1
+    (entered 0, the LOOP row says 'writes 255 and branches', so pass k sees
+    (1 - k) mod 256)."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0); a.ldi(1, 1); a.ldi(2, 0); a.ldi(3, 0)
+    a.store(3, 0)                     # carry-position record, starts 0
+    a.label("body")
+    a.add(0, 1)
+    a.bne("nc")                       # cond 10: flag clear -> no carry
+    a.add(3, 1)                       # carry count
+    a.store(2, 0)                     # LOOP counter at the carry
+    a.label("nc")
+    a.loop(2, "body")
+    fw_send(a, 0)
+    fw_send(a, 3)
+    a.load(2, 0)
+    fw_send(a, 2)
+    a.halt()
+    await chip.run(a)
+    got = await chip.host_read_n(3, timeout=40000)
+    assert got == [0x00, 0x01, 0x01], f"(R0 after 256 incs, carries, counter at carry) = {got}"
+
+
+@cocotb.test()
+async def test_add_multibyte_sum(dut):
+    """isa.md Resolved note / row 20: ADD 'gives increments, multi-byte sums
+    and additive checksums'; 'BEQ/BNE after an ADD branch on carry'. A 16-bit
+    sum of data bytes (R1:R0) propagates each carry with BNE + ADD R1,1.
+    Bytes come from the data region preloaded at boot (isa.md Data memory)."""
+    chip = await new_chip(dut)
+    msg = [0xFF, 0xFF, 0x01, 0x80, 0x80, 0x7F, 0x00, 0xFE, 0x02, 0xFF, 0x01, 0xFF]
+    data = list(DATA)
+    data[:len(msg)] = msg
+    a = Asm()
+    a.ldi(0, 0); a.ldi(1, 0); a.ldi(3, 1)
+    for k in range(len(msg)):
+        a.load(2, k)
+        a.add(0, 2)
+        n = a.fresh()
+        a.bne(n)
+        a.add(1, 3)
+        a.label(n)
+    fw_send(a, 0)
+    fw_send(a, 1)
+    a.halt()
+    await chip.run(a, data=data)
+    s = sum(msg)
+    got = await chip.host_read_n(2)
+    assert got == [s & 0xFF, (s >> 8) & 0xFF], f"16-bit sum {got}, expected {s:#06x}"
+
+
+@cocotb.test()
+async def test_mov_idiom_xor_then_add(dut):
+    """isa.md Register file Resolved note: 'MOV is now XOR Rd,Rd + ADD Rd,Rs
+    (2 instructions, no memory round trip)'. Rd ends equal to Rs, Rs is
+    unchanged, and (row 20) the flag is the carry of 0 + Rs, i.e. 0 -- even
+    if it was 1 before."""
+    chip = await new_chip(dut)
+    a = Asm()
+    exp = []
+    for i, (rd, rs, v) in enumerate([(0, 1, 0xA5), (2, 3, 0xFF), (3, 0, 0x80), (1, 2, 0x00)]):
+        s = _others(rd, rs)[0]
+        a.ldi(rd, 0x5C)
+        a.ldi(rs, v)
+        a.cmp(s, s)                   # flag 1
+        a.xor(rd, rd)
+        a.add(rd, rs)
+        fw_out_flag(a, s, 0x10 * (i + 1))
+        fw_ack(a)
+        fw_send(a, rd)
+        fw_send(a, rs)
+        exp += [0x10 * (i + 1), v, v]
+    a.halt()
+    await chip.run(a)
+    got = await chip.host_read_n(len(exp))
+    assert got == exp, f"MOV idiom {[hex(x) for x in got]}, expected {[hex(x) for x in exp]}"
+
+
+MSG = list(b"123456789")
+
+
+@cocotb.test()
+async def test_crc8_bitwise_idiom(dut):
+    """isa.md row 19: XOR 'makes table-driven and bitwise CRC direct'; the
+    bitwise shape it names: 'TEST-bit the bit, XOR the polynomial in, branch
+    on the earlier test'. CRC-8 (poly 0x07, MSB-first) over "123456789"
+    (check value 0xF4), reporting the running CRC after each byte. Relies on
+    SHIFT left with 0 fill (SHIFT row), XOR not touching the flag, and
+    LOOP's count."""
+    chip = await new_chip(dut)
+    data = list(DATA)
+    data[:len(MSG)] = MSG
+    a = Asm()
+    a.ldi(0, 0)                       # crc
+    a.ldi(2, 0x07)                    # polynomial
+    for k in range(len(MSG)):
+        a.load(1, k)
+        a.xor(0, 1)
+        a.ldi(3, 8)
+        top, keep = a.fresh(), a.fresh()
+        a.label(top)
+        a.test(0, 7)                  # flag = msb
+        a.shift(0, False)
+        a.xor(0, 2)                   # tentatively XOR the polynomial in
+        a.beq(keep)                   # msb was 1: keep it
+        a.xor(0, 2)                   # msb was 0: undo
+        a.label(keep)
+        a.loop(3, top)
+        fw_send(a, 0)
+    a.halt()
+    assert len(a.words()) <= 256
+    await chip.run(a, data=data)
+    exp = [crc8(MSG[:k + 1]) for k in range(len(MSG))]
+    assert exp[-1] == 0xF4
+    got = await chip.host_read_n(len(MSG))
+    assert got == exp, f"running CRC-8 {[hex(x) for x in got]}, expected {[hex(x) for x in exp]}"
+
+
+@cocotb.test()
+async def test_crc8_table_driven_idiom(dut):
+    """isa.md Register file CRC note: 'Table-driven CRC needs crc ^ byte to
+    index the table'; Resolved note: 'XOR Rd,Rs makes table-driven and
+    bitwise CRC direct'; LOADX: 'address = 512 + Rs ... the first 256 bytes
+    of the data region' (Data memory: 'a clean fit for a standard 256-entry
+    byte-wide CRC lookup table'), preloaded through the boot stream. The
+    message sits at data offset 256+ (LOAD's fixed-address range). The LOADX
+    reading the XOR result in the very next instruction also checks that
+    XOR's write is visible immediately (no trailing writeback is stated for
+    it, unlike LOAD/LOADX)."""
+    chip = await new_chip(dut)
+    data = crc8_table() + MSG + [0] * (256 - len(MSG))
+    a = Asm()
+    a.ldi(0, 0)
+    for k in range(len(MSG)):
+        a.load(1, 256 + k)
+        a.xor(1, 0)                   # index = byte ^ crc
+        a.loadx(0, 1)                 # crc = T[index]
+        fw_send(a, 0)
+    a.halt()
+    await chip.run(a, data=data)
+    exp = [crc8(MSG[:k + 1]) for k in range(len(MSG))]
+    got = await chip.host_read_n(len(MSG))
+    assert got == exp, f"table CRC-8 {[hex(x) for x in got]}, expected {[hex(x) for x in exp]}"
+
+
+@cocotb.test()
+async def test_xor_add_result_visible_to_next_instruction(dut):
+    """architecture.md: 'Uniform 3 cycles/instruction'; the only stated
+    trailing writeback is LOAD/LOADX's ('LOAD/LOADX are the one case where
+    that distinction matters').
+    ASSUMPTION: XOR/ADD, as register ops not named there, complete within
+    their own EXECUTE, so the very next instruction (OUT, CMP, STORE, TEST,
+    OUTB, SHIFT, another XOR/ADD, LOADX) reads the new value, and a BEQ right
+    after ADD sees the new carry."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.set(0, 0, PP); a.delay(10)
+    a.ldi(0, 0x0F); a.ldi(1, 0xF0); a.ldi(2, 0x01)
+    a.xor(0, 1); a.out(0); fw_ack(a)                            # FF
+    a.ldi(3, 0)
+    a.add(0, 2); a.cmp(0, 3); fw_out_flag(a, 3, 0x10); fw_ack(a)  # R0=0==R3(0)->0x11
+    a.ldi(3, 0)
+    a.add(1, 1); a.store(1, 9); a.load(3, 9); fw_send(a, 3)     # E0
+    a.xor(1, 2); a.test(1, 0); fw_out_flag(a, 3, 0x20); fw_ack(a)  # E1 bit0=1 -> 0x21
+    a.ldi(3, 0x7F); a.add(3, 2); a.outb(3, 0, 7); a.delay(20)   # 0x80 -> pin0 = 1
+    a.add(3, 3); a.shift(3, True); a.add(3, 2); a.xor(3, 2); fw_send(a, 3)  # 00 ->00->01->00
+    a.ldi(3, 0xFF); a.add(3, 2); a.beq("c"); a.ldi(3, 0xEE)
+    a.label("c")
+    fw_send(a, 3)                                               # 00 (carry taken)
+    a.ldi(3, 0x10); a.ldi(2, 0x05); a.add(3, 2); a.loadx(1, 3); fw_send(a, 1)  # DATA[0x15]
+    a.halt()
+    await chip.run(a, data=DATA)
+    got = await chip.host_read_n(7)
+    assert chip.pin_hist(0)[-1] == "1", f"OUTB after ADD: pin0 {chip.pin_hist(0)}"
+    assert got == [0xFF, 0x11, 0xE0, 0x21, 0x00, 0x00, DATA[0x15]], f"{[hex(x) for x in got]}"
+
+
+@cocotb.test()
+async def test_xor_add_reserved_field_ignored(dut):
+    """isa.md Reg-reg format: 'opcode(5) | Rd(2) | Rs(2) | reserved(7)' --
+    '7 bits still unused/reserved'.
+    AMBIGUOUS: the doc never says what nonzero reserved bits do for a
+    reg-reg op (ignored, like NOP's 'low 11 bits are don't-care', or an
+    illegal encoding). Tested reading: ignored -- XOR/ADD with reserved =
+    0x7F/0x55/0x2A give the same results and flag as with 0, and the pins
+    are untouched (an illegal encoding would 'execute as NOP')."""
+    chip = await new_chip(dut)
+    a = Asm()
+    a.ldi(0, 0xC3); a.ldi(1, 0x3C); a.ldi(2, 0x80)
+    a.xor(0, 1, 0x7F); fw_send(a, 0)                            # FF
+    a.cmp(3, 3)                                                 # flag 1
+    a.xor(1, 1, 0x55); fw_out_flag(a, 3, 0x10); fw_ack(a)       # 0x11 (untouched)
+    fw_send(a, 1)                                               # 00
+    a.add(2, 2, 0x7F); fw_out_flag(a, 3, 0x20); fw_ack(a)       # 0x80+0x80 -> carry 0x21
+    fw_send(a, 2)                                               # 00
+    a.ldi(2, 0x40); a.add(2, 0, 0x2A); fw_out_flag(a, 3, 0x30); fw_ack(a)  # 0x40+0xFF=0x13F -> 0x31
+    fw_send(a, 2)                                               # 3F
+    a.halt()
+    await chip.run(a)
+    got = await chip.host_read_n(7)
+    assert got == [0xFF, 0x11, 0x00, 0x21, 0x00, 0x31, 0x3F], f"{[hex(x) for x in got]}"
+    for p in (0, 1, 2, 3, 7):
+        assert chip.pin_hist(p, 1) == ["Z"], f"XOR/ADD with reserved bits touched uio[{p}]"
