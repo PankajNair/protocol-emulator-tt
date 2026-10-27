@@ -53,6 +53,7 @@ against an independent model of the other end:
 | `nec_ir.asm` | NEC IR remote transmitter, 38 kHz carrier generated in firmware |
 | `ps2_host.asm` | PS/2 keyboard/mouse receiver: follows the device's clock, inhibits it while busy |
 | `can_tx.asm` | CAN 2.0A transmitter, 50 kbit/s: stuffing, CRC-15, ACK, arbitration, bit-error detection |
+| `can_rx.asm` | CAN 2.0A receiver, 50 kbit/s: resyncs to the transmitter's clock, destuffing, CRC and form checks, ACKs good frames |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test

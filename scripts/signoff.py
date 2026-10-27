@@ -7,7 +7,7 @@ gate fails.
 
 Gates:
   directed      make -C test -B            directed, protocol firmware end to end, host library
-  slow_protocols make -C test slow         protocol tests too slow to rerun per mutant (NEC IR, CAN)
+  slow_protocols make -C test slow         protocol tests too slow to rerun per mutant (NEC IR, CAN TX/RX)
   pytest        golden-model self-check + assembler unit tests pass
   board         make -C test board          loopback, two-chip link, I2C, SPI pass
   cov_default   make coverage-gate (100 seeds), default generator closure

@@ -27,7 +27,8 @@ protocol is a new program, loaded by the host after fabrication.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
   (100/400 kHz), SPI target (the chip as the peripheral, following an
   external clock), and five protocols the chip wasn't designed for: a
-  CAN 2.0A transmitter (stuffing, CRC-15, arbitration), a WS2812 LED
+  CAN 2.0A transmitter and receiver (stuffing, CRC-15, arbitration,
+  clock resync), a WS2812 LED
   driver, a 1-Wire controller, an NEC IR remote transmitter and a PS/2
   keyboard receiver. Each is verified in simulation against an independent
   model of the other end.

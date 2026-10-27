@@ -134,6 +134,20 @@ the brief.
   error, and every chip edge exactly on the bit grid. An unbalanced pad
   (3 cycles), a wrong polynomial, stuffing after 6, and RTL mutants #27/#28
   each fail it.
+- `protocols/can_rx.asm` -- CAN 2.0A receiver, 50 kbit/s: receives
+  standard data frames, checks stuffing (stuff error), CRC-15 (run over the
+  received CRC too: a good frame leaves remainder 0) and frame form
+  (delimiters, EOF), ACKs good frames on the bus, and hands each frame to
+  the host (status, then ID, DLC, data). Follows the transmitter's clock
+  as CAN requires: hard sync on SOF, then resync on every
+  recessive-to-dominant edge (`WAIT RX,0` with a timeout after each
+  recessive bit). No indexed store, so received bytes go through a shift
+  FIFO read back with `LOADX`. 253 of the 256 program words. Verified by
+  `test/test_can_rx.py` against an independent transmitter node: frames
+  of 0-8 bytes, transmitters 1% slow and 1% fast, and CRC, stuff and form
+  errors each reported and not ACKed. With resync disabled the nominal
+  frames still pass but the +-1% ones fail; a wrong polynomial or a
+  missing ACK fail everywhere.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

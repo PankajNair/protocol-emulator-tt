@@ -422,6 +422,7 @@ shown to fail on injected bugs:
 | `onewire.asm` (1-Wire controller) | device model at the spec's worst case | presence, READ ROM with a valid CRC8, writes; every pulse and slot in spec | sampling 4 us late, a long write-1 pulse, a 450 us reset, an early presence sample; mutations #3, #9 |
 | `nec_ir.asm` (NEC IR transmitter) | IR receiver + NEC decoder model | frame decodes; carrier 38.11 kHz, 33% duty, every period in band; leader 8983/4503 us | complement bytes sent uninverted; a carrier 3% fast in one burst (caught only once every period is checked, not the average) |
 | `can_tx.asm` (CAN 2.0A transmitter, 50 kbit/s) | wired-AND bus: receiver node (destuffing, own CRC-15, ACKs only good frames), competing transmitter, error injector | frames 0-8 bytes incl. stuffing-heavy, no ACK, lost arbitration, bit error; every chip edge exactly on the 1000-cycle grid | an unbalanced 3-cycle pad, a wrong CRC polynomial, stuffing after 6; RTL #27/#28 (XOR/ADD) |
+| `can_rx.asm` (CAN 2.0A receiver, 50 kbit/s) | independent transmitter node, nominal and +-1% bit time; faults injected | frames 0-8 bytes decoded and ACKed; follows +-1% transmitters by resyncing on edges; CRC, stuff and form errors reported, not ACKed | resync disabled (nominal passes, +-1% fails); wrong polynomial; no ACK. Found two bugs while being written: a CRC register clobbered by the carry step (firmware), and a stuff-error injection that wasn't one (test) |
 | `ps2_host.asm` (PS/2 keyboard receiver) | keyboard model that owns the clock and honours the inhibit | scan codes in order, keyboard held off while the host is busy; bad frames dropped | no inhibit (bytes lost); parity check inverted. Found a real firmware race: re-arming before its own CLK release had passed the input synchronizer |
 
 The SPI target supersedes the architecture's "target roles deferred"
@@ -537,7 +538,7 @@ shadow of the driver state.
 | Gate | Pass criterion |
 |---|---|
 | `directed` | `make -C test -B`: all directed tests, the protocol firmware end to end (UART, WS2812, SPI target, 1-Wire, PS/2) and the host library pass (60) |
-| `slow_protocols` | `make -C test slow`: protocol tests too slow to rerun per mutant (NEC IR, one 68 ms frame; CAN, five 50 kbit/s scenarios) |
+| `slow_protocols` | `make -C test slow`: protocol tests too slow to rerun per mutant (NEC IR, one 68 ms frame; CAN transmit and receive, 50 kbit/s) |
 | `pytest` | golden-model self-check + assembler unit tests pass |
 | `board` | `make -C test board`: loopback, two-chip link, I2C, SPI pass |
 | `cov_default` | `make coverage-gate`, 100 seeds |
