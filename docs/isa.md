@@ -73,6 +73,15 @@ protocol-bit-banging primitives the audit's scenario generator targets.
   read, 0 writes), `LOADX` reads Rs and writes Rd (1 read, 1 write) --
   none of the three change the port-count conclusion.
 - **Reset value: all registers 0.**
+- **Resolved (2026-10-23): `XOR` and `ADD` added** (opcodes 19 and 20,
+  reg-reg format), taking the one-instruction option above rather than a
+  CRC peripheral: a generic ALU pair keeps every checksum a firmware
+  choice instead of fixing one polynomial in silicon. `XOR Rd,Rs` makes
+  table-driven and bitwise CRC direct; `ADD Rd,Rs` (flag = carry out) gives
+  increments, multi-byte sums and additive checksums, and `MOV` is now
+  `XOR Rd,Rd` + `ADD Rd,Rs` (2 instructions, no memory round trip). The
+  decision was taken for flexibility, not for one protocol: most protocols
+  carry some checksum.
 
 ## Undefined opcode behavior
 
@@ -185,14 +194,14 @@ ones were, so: stated here. Firmware must not nest calls; nothing in
 hardware stops it from trying.
 
 **`CALL` also silently clobbers the shared flag if the subroutine uses
-`CMP`/`TEST-bit`/`WAIT` internally** (every `WAIT` writes the flag, not
+`CMP`/`TEST-bit`/`WAIT`/`ADD` internally** (every `WAIT` writes the flag, not
 just a timed one -- see its row). Concretely: `TEST-bit R0,7` / `CALL
 send_byte` / `BEQ was_one` -- if `send_byte` does its own `TEST-bit`/
-`CMP`/`WAIT` anywhere (likely, since those are the only flag-writers),
+`CMP`/`WAIT`/`ADD` anywhere (likely, since those are the only flag-writers),
 `BEQ` branches on *that* result, not
 the one the caller set up. This is the one real flag-clobber hazard in
 the ISA -- confirmed to be CALL-shaped specifically, not a general "any
-intervening instruction" hazard, now that `LOOP`/`SHIFT` are locked to
+intervening instruction" hazard, now that `LOOP`/`SHIFT`/`XOR` are locked to
 not touch the flag (their rows in the Opcode table) and `WAIT`'s
 flag-write is a deliberate, documented tradeoff (its own row) rather
 than an oversight. **`LOAD`/`STORE`/`LOADX` do *not* actually fix this,
@@ -200,7 +209,7 @@ or enable nested calls -- an earlier draft overclaimed both, caught by
 a later audit.** They let firmware save/restore R0-R3 (real GPR values)
 around a `CALL`, which is genuinely useful, but neither the flag nor
 the return-address register is a GPR, and nothing reads either of them
-*out* -- `CMP`/`TEST-bit`/`WAIT` only ever *write* the flag, `BRANCH`
+*out* -- `CMP`/`TEST-bit`/`WAIT`/`ADD` only ever *write* the flag, `BRANCH`
 only *consumes* it, and `RET` is the only thing that ever reads the
 return-address register (by jumping to it, not by exposing its value).
 `STORE` has nothing to `STORE` in either case. Actually fixing this
@@ -281,16 +290,19 @@ out to be needed).
 | `13` | INB | reg+imm | **locked** | set Rd[bit] = pin's current value, other bits of Rd untouched. `imm` = pin_index(3) + bit_select(1). Mirror of `OUTB` for the receive path. Validated by the 100-scenario audit -- **ordering with `SHIFT` is the opposite of `OUTB`'s**, see "Worked idioms"; this asymmetry, undocumented until now, caused the single most common bug across the whole audit (7/15 flagged scenarios made the identical mistake). |
 | `14` | LOAD | reg+imm | locked | read data memory into Rd. Address = `512 + imm` (imm(9) reaches the full 512-byte data region -- see "Data memory"). Added alongside `STORE`/`LOADX` to fix a real gap an adversarial design review found: no ALU, no `MOV`, and no data memory meant registers alone couldn't hold cross-subroutine or accumulator state, making the "longer programs, not more opcodes" philosophy (Overview) false for anything needing more live state than 4 registers -- a CRC accumulator being the sharpest example. |
 | `15` | STORE | reg+imm | locked | write Rd's value to data memory, address = `512 + imm`. Note: the `Rd` field holds the *source* register here, same field position as `LOAD`'s destination, just read instead of written. |
-| `16` | LOOP | addr+Rd | locked | decrement Rd, branch if nonzero. Rd is 8 bits and the decrement wraps: entered with Rd = 0, `LOOP` writes 255 and branches, so a loop body runs 256 times. **Does not touch the shared flag** -- the branch decision is internal to `LOOP` itself, no reason to also expose it through the flag `CMP`/`TEST-bit`/`BRANCH` share. Locked alongside `SHIFT`'s flag behavior above, for the same reason: keeps the set of flag-writers small and *named* (`CMP`, `TEST-bit`, and `WAIT` -- see its row -- not "any instruction"), so the "flag-clobber hazard is CALL-shaped/WAIT-shaped, not general-instruction-shaped" finding (Branch format section) stays true rather than becoming conditional. |
+| `16` | LOOP | addr+Rd | locked | decrement Rd, branch if nonzero. Rd is 8 bits and the decrement wraps: entered with Rd = 0, `LOOP` writes 255 and branches, so a loop body runs 256 times. **Does not touch the shared flag** -- the branch decision is internal to `LOOP` itself, no reason to also expose it through the flag `CMP`/`TEST-bit`/`BRANCH` share. Locked alongside `SHIFT`'s flag behavior above, for the same reason: keeps the set of flag-writers small and *named* (`CMP`, `TEST-bit`, `WAIT` and, since 2026-10-23, `ADD` -- see their rows -- not "any instruction"), so the "flag-clobber hazard is CALL-shaped/WAIT-shaped, not general-instruction-shaped" finding (Branch format section) stays true rather than becoming conditional. |
 | `17` | CMP | reg-reg | locked (speculative) | Equality only: sets the shared flag to `(Rd==Rs)`. Same physical flag as `TEST-bit` -- one flag register, last write wins, not separate state per opcode. Not used by any baseline UART/SPI/I2C master-mode path found so far (`LOOP` covers counters, `TEST-bit`+branch covers the I2C ACK check) -- kept for future protocols (JTAG state compare, CAN ID filter), not pulling weight yet on baseline. |
 | `18` | LOADX | reg-reg | locked | read data memory into Rd, address = `512 + Rs` (register-indexed -- Rs's full 8-bit range reaches the first 256 bytes of the data region). What makes lookup by a runtime-computed index possible at all -- `LOAD`/`STORE`'s `imm` is compile-time-only, can't be indexed by a runtime value. Solves table *storage*, not table *computation*: a CRC table still needs an `XOR` to compute the index in the first place, which doesn't exist yet -- see Register file's CRC note. An earlier draft of this row called CRC tables "actually usable" via `LOADX` alone; corrected. |
-| `19-31` | *reserved* | -- | -- | Unassigned. Executes as `NOP` + sets the illegal-opcode flag if ever fetched (Undefined opcode behavior, above) -- same "safe by construction" treatment as every other unimplemented encoding in this design. |
+| `19` | XOR | reg-reg | locked | `Rd <= Rd ^ Rs`. **Does not touch the shared flag** (like `LOOP`/`SHIFT`), so a flag tested before an `XOR` survives it -- the shape a bitwise CRC loop needs (`TEST-bit` the bit, `XOR` the polynomial in, branch on the earlier test). `XOR Rd,Rd` clears Rd. Added 2026-10-23 (Register file). |
+| `20` | ADD | reg-reg | locked | `Rd <= (Rd + Rs) mod 256`; **sets the shared flag to the carry out** (1 iff Rd + Rs > 255), so `BEQ`/`BNE` after an `ADD` branch on carry -- multi-byte sums and checksums. A fourth flag-writer alongside `CMP`/`TEST-bit`/`WAIT`. With `LDI Rx,1` it is the increment the ISA lacked (counting up previously meant `LOOP`'s decrement). Added 2026-10-23 (Register file). |
+| `21-31` | *reserved* | -- | -- | Unassigned. Executes as `NOP` + sets the illegal-opcode flag if ever fetched (Undefined opcode behavior, above) -- same "safe by construction" treatment as every other unimplemented encoding in this design. |
 
-**19 opcodes total** (16 validated by the 100-scenario audit, above,
-plus `LOAD`/`STORE`/`LOADX` added by a later adversarial design review)
--- comfortably inside the 32-slot 5-bit opcode space, 13 slots spare.
-Numeric values assigned by format grouping for readability (`0-2`
-0-operand, `3` branch, `4-15` reg+imm, `16` addr+Rd, `17-18` reg-reg) --
+**21 opcodes total** (16 validated by the 100-scenario audit, above,
+plus `LOAD`/`STORE`/`LOADX` added by a later adversarial design review,
+plus `XOR`/`ADD` added 2026-10-23) -- inside the 32-slot 5-bit opcode
+space, 11 slots spare. Numeric values assigned by format grouping for
+readability (`0-2` 0-operand, `3` branch, `4-15` reg+imm, `16` addr+Rd,
+`17-20` reg-reg) --
 hardware cost is identical for any assignment, a 5-bit decoder doesn't
 care about grouping, this is purely for a human reading the table.
 
@@ -335,8 +347,8 @@ map), bytes 512-1023 are data, reached via `LOAD`/`STORE`/`LOADX`.
   needed.
 - Enables (not designed here -- these are firmware/assembler
   conventions, not ISA-level decisions): CRC lookup table *storage and
-  indexed lookup* (not full CRC computation -- still needs an `XOR`
-  that doesn't exist yet, see Register file's CRC note), spill space
+  indexed lookup* (and, since `XOR` was added, the computation too --
+  see Register file's CRC note), spill space
   for values that don't fit in 4 live registers, and saving/restoring
   R0-R3 around a `CALL`. **Does not enable a software stack for the
   flag or the return address, or nested subroutine calls** -- an

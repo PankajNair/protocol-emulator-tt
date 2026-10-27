@@ -68,7 +68,7 @@ elaborated on this yosys build).
 
 - **`core.v` illegal-opcode detection -- done, proven.**
   `agent_core_illegal_opcode_props.v` (assertion-formal agent): the
-  sticky `illegal_op_flag` rises only after a reserved-opcode (19-31)
+  sticky `illegal_op_flag` rises only after a reserved-opcode (21-31)
   commit, always rises after one, stays set until reset, and a
   reserved-opcode commit is a true NOP (no mem write, no pin request, no
   regfile write, PC+1, other flags and `uo_out` unchanged). The

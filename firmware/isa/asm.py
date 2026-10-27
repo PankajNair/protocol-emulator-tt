@@ -38,6 +38,8 @@ Syntax (follows docs/isa.md's own examples):
     LOAD Rd, addr | STORE Rd, addr   addr: data-region offset 0-511
     LOOP label, Rd
     CMP Rd, Rs | LOADX Rd, Rs
+    XOR Rd, Rs                    Rd = Rd ^ Rs (flag untouched)
+    ADD Rd, Rs                    Rd = Rd + Rs mod 256, flag = carry out
 
 Pins are numbers 0-7 or names; HOST_GO=4, HOST_STATUS=5, HOST_ERROR=6
 are predefined. Mnemonics and register/mode names are case-insensitive.
@@ -339,9 +341,10 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
         elif mn == "LOOP":
             need(o, 2, where, "LOOP label, Rd")
             w = asm.loop_(label(o[0], where), _reg(o[1], where))
-        elif mn in ("CMP", "LOADX"):
+        elif mn in ("CMP", "LOADX", "XOR", "ADD"):
             need(o, 2, where, f"{mn} Rd, Rs")
-            w = (asm.cmp_ if mn == "CMP" else asm.loadx)(_reg(o[0], where), _reg(o[1], where))
+            enc = {"CMP": asm.cmp_, "LOADX": asm.loadx, "XOR": asm.xor_, "ADD": asm.add}[mn]
+            w = enc(_reg(o[0], where), _reg(o[1], where))
         else:
             raise AsmError(f"{where}: unknown mnemonic {mn!r}")
         prog.words.append(w)

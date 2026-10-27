@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: © 2026 Pankaj Nair
 # SPDX-License-Identifier: Apache-2.0
-"""STIM_PROFILE=illegal_mix -- reserved opcodes 19-31 sprinkled into
+"""STIM_PROFILE=illegal_mix -- reserved opcodes 21-31 sprinkled into
 otherwise-normal programs (test/stim/AGENT_CONTRACT.md requested
 profile #3).
 
@@ -13,13 +13,13 @@ debug_flag_bins.illegal_op are EXPECTED_OPEN.
 Real-world condition modelled: a corrupted firmware image -- a bit-rot
 or bad-flash word, a garbled boot-stream byte, or execution running
 into data. Such words don't have tidy operands, so every reserved word
-gets a uniformly random opcode in 19..31 AND uniformly random 11
+gets a uniformly random opcode in 21..31 AND uniformly random 11
 operand bits. That matters beyond realism: the RTL decodes operand
 fields combinationally regardless of opcode, so a reserved word whose
 rd/pin/imm bits look like a real instruction's is exactly where a
 leaked side effect (a register/pin/flag/timer write gated on the wrong
 opcode bits) would hide. The golden model predicts NOP + flag for all
-of 19..31 (reference_model_scope), so any such leak is a mismatch.
+of 21..31 (reference_model_scope), so any such leak is a mismatch.
 
 How: call random_gen.generate_program() UNCHANGED, then overwrite a
 small number of its existing LEAF words IN PLACE (same approach as
@@ -61,7 +61,7 @@ import random
 import isa_asm as asm
 import random_gen
 
-RESERVED_OPCODES = range(19, 32)
+RESERVED_OPCODES = range(21, 32)
 EXTRA_MAX = 3
 MAX_FRACTION = 0.12  # of eligible leaf words
 

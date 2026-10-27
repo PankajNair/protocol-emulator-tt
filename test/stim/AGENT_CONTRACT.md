@@ -8,7 +8,7 @@ output_naming: "profile_<name>.py"
 output_signature: "optional generate_program(seed: int, max_delay_mantissa: dict, max_wait_mantissa: dict) -> list[int]; optional make_stimulus(seed: int, boot_exit_cycle: int, max_cycle: int) -> object with raw_ui_in(t), raw_uio_in(t), io_read(t) -> (ui_in_sync, uio_in_sync) -- export at least one"
 gate_command: "SEEDS=200 STIM_PROFILE=<name> make -C test random && make coverage STIM_PROFILE=<name> COV_SEEDS=100 && make mutate"
 gate_threshold: "200/200 seeds pass; targeted bins HIT (or materially raised, with numbers); mutation score no lower than baseline; git diff on protected_paths empty. Once accepted, the parent adds the profile's target bins to scripts/merge_coverage.py PROFILE_REQUIRED and CI gates them on every run (make coverage-gate STIM_PROFILE=<name>) -- say in your report which bins those should be."
-reference_model_scope: "test/golden_model.py predicts all 19 opcodes + reserved 19-31 (NOP + illegal_op_flag), given io_read. It does NOT model: pin_index 4/5/6 (HOST_GO/STATUS/ERROR role semantics, self-loopback), the per-byte LOAD boot handshake (test_random.py's fast_boot pokes SRAM directly), or unbounded WAIT termination."
+reference_model_scope: "test/golden_model.py predicts all 21 opcodes + reserved 21-31 (NOP + illegal_op_flag), given io_read. It does NOT model: pin_index 4/5/6 (HOST_GO/STATUS/ERROR role semantics, self-loopback), the per-byte LOAD boot handshake (test_random.py's fast_boot pokes SRAM directly), or unbounded WAIT termination."
 existing_examples: [test/random_gen.py, test/io_stimulus.py]
 ---
 
@@ -54,7 +54,7 @@ Real project notes (quirks a generic subagent can't know on its own):
   2. `wide_timing` -- DELAY/WAIT exponents 2/3 with small mantissas
      (exp 2 x mantissa 1 = 1024 cycles). Opens `delay_exp_bins.2/3`,
      `wait_exp_bins.2/3` (currently EXPECTED_OPEN).
-  3. `illegal_mix` -- reserved opcodes 19-31 (random operand bits too)
+  3. `illegal_mix` -- reserved opcodes 21-31 (random operand bits too)
      sprinkled into otherwise-normal programs. Opens
      `opcode_bins.ILLEGAL`, `debug_flag_bins.illegal_op`.
   4. `nested_flow` -- branches/LOOPs inside LOOP bodies, termination

@@ -17,8 +17,13 @@
 //   LOOP  (16) Rd = word[1:0]; Rd <= Rd - 1 (mod 256)
 //   LOAD  (14) Rd <= dmem[512 + word[8:0]]
 //   LOADX (18) Rd <= dmem[512 + Rs]
+//   XOR   (19) Rd <= Rd ^ Rs
+//   ADD   (20) Rd <= Rd + Rs (mod 256)   (its carry goes to the flag,
+//              checked in agent_core_loop_flag_props.v, not here)
 //   every other opcode (NOP, HALT, RET, BRANCH, SET, OUT, DELAY, WAIT,
-//   TEST-bit, OUTB, STORE, CMP, reserved 19-31): no register write.
+//   TEST-bit, OUTB, STORE, CMP, reserved 21-31): no register write.
+//   (XOR/ADD added 2026-10-23 with the ISA change; before it this file
+//   held 19-31 to no write.)
 // Timing (docs/architecture.md Pipeline): single EXECUTE cycle for every
 // writer above; LOAD/LOADX issue the data address during EXECUTE and
 // their writeback "trails by exactly 1 cycle, into the following
@@ -90,6 +95,8 @@ module core_datapath_props (
   localparam OP_LOOP    = 5'd16;
   localparam OP_CMP     = 5'd17;
   localparam OP_LOADX   = 5'd18;
+  localparam OP_XOR     = 5'd19;
+  localparam OP_ADD     = 5'd20;
 
   // ======================================================================
   // Environment: genuine reset at step 0 (async reset). Free after.
@@ -135,6 +142,8 @@ module core_datapath_props (
   wire c_loop  = entering && (g_op == OP_LOOP);
   wire c_load  = entering && (g_op == OP_LOAD);
   wire c_loadx = entering && (g_op == OP_LOADX);
+  wire c_xor   = entering && (g_op == OP_XOR);
+  wire c_add   = entering && (g_op == OP_ADD);
 
   // Trailing-writeback bookkeeping: previous cycle was a LOAD / LOADX
   // EXECUTE (single cycle, commits on entry).
@@ -165,6 +174,10 @@ module core_datapath_props (
       exp_data = g_bit7 ? {pin_read, old_rd[6:0]} : {old_rd[7:1], pin_read};
     end else if (c_loop) begin
       exp_we = 1'b1; exp_addr = g_lrd; exp_data = old_lp - 8'd1;
+    end else if (c_xor) begin
+      exp_we = 1'b1; exp_data = old_rd ^ val_rs;
+    end else if (c_add) begin
+      exp_we = 1'b1; exp_data = old_rd + val_rs;
     end else if (rst_n && p_lx && state == S_FETCH_LO) begin
       exp_we = 1'b1; exp_addr = p_lx_rd; exp_data = mem_rdata;
     end
@@ -210,7 +223,7 @@ module core_datapath_props (
       cover (entering && g_op == OP_CMP);
       cover (entering && g_op == OP_BRANCH);
       cover (entering && g_op == OP_NOP);
-      cover (entering && g_op >= 5'd19);
+      cover (entering && g_op >= 5'd21);
       cover (in_exec && !entering && cur_op_r == OP_DELAY);
       cover (state == S_FETCH_LO && !p_lx);
       cover (state == S_LOAD && p_valid);
@@ -244,6 +257,13 @@ module core_datapath_props (
       cover (c_inb &&  g_bit7 && !pin_read &&  old_rd[7]);
       cover (c_inb && !g_bit7 &&  pin_read && !old_rd[0] && old_rd[7:1] != 7'd0);
       cover (c_inb && !g_bit7 && !pin_read &&  old_rd[0]);
+      // XOR: Rd = Rs (clears) and Rd != Rs with differing values;
+      // ADD: with and without carry out, and Rd = Rs (doubles).
+      cover (c_xor && g_rd == g_rs && old_rd != 8'd0);
+      cover (c_xor && g_rd != g_rs && old_rd != val_rs && val_rs != 8'd0);
+      cover (c_add && g_rd != g_rs && ({1'b0, old_rd} + {1'b0, val_rs}) > 9'd255);
+      cover (c_add && g_rd != g_rs && ({1'b0, old_rd} + {1'b0, val_rs}) <= 9'd255 && val_rs != 8'd0);
+      cover (c_add && g_rd == g_rs && old_rd != 8'd0);
       cover (c_loop && old_lp == 8'd0);
       cover (c_loop && old_lp >  8'd1);
       // Trailing writebacks.

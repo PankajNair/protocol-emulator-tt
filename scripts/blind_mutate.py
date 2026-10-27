@@ -174,20 +174,20 @@ OPS = [
 # exact text: if the RTL changes there, the entry stops matching and the
 # survivor is reported as unexplained again.
 EQUIVALENT = {
-    ("cpu/core.v", 207): ("reg_w_data = 8'd0;",
+    ("cpu/core.v", 210): ("reg_w_data = 8'd0;",
         "default write data of the regfile mux; every opcode that sets reg_w_en also sets reg_w_data"),
-    ("cpu/core.v", 281): ("mem_addr_c  = 10'd0;",
+    ("cpu/core.v", 292): ("mem_addr_c  = 10'd0;",
         "default SRAM address; the byte it reads lands in FETCH_LO, used there only for a pending "
         "LOAD/LOADX writeback, and those set their own address"),
-    ("cpu/core.v", 283): ("mem_wdata_c = 8'd0;", "default write data; only read when mem_we_c is 1, which sets it"),
-    ("cpu/core.v", 318): ("assign set_mode  = (state == S_LOAD) ? 2'd0 : w_rd;",
+    ("cpu/core.v", 294): ("mem_wdata_c = 8'd0;", "default write data; only read when mem_we_c is 1, which sets it"),
+    ("cpu/core.v", 329): ("assign set_mode  = (state == S_LOAD) ? 2'd0 : w_rd;",
         "LOAD-mode ack drives pin 5, whose oe/out are hardwired by role; mode[5] is never read"),
-    ("cpu/core.v", 339): ("ir                    <= 16'd0;",
+    ("cpu/core.v", 350): ("ir                    <= 16'd0;",
         "EXECUTE's first cycle decodes the live {mem_rdata, ir_lo} and latches ir; before that, ir only "
         "feeds logic gated on state == S_EXECUTE"),
-    ("cpu/core.v", 351): ("pending_lx_rd         <= 2'd0;",
+    ("cpu/core.v", 362): ("pending_lx_rd         <= 2'd0;",
         "only read while pending_lx_writeback is 1, which reset clears and LOAD/LOADX set together with it"),
-    ("cpu/core.v", 437): ("wire _unused = &{start_fall, illegal_op_flag, call_ret_misuse_flag, 1'b0};",
+    ("cpu/core.v", 449): ("wire _unused = &{start_fall, illegal_op_flag, call_ret_misuse_flag, 1'b0};",
         "lint tie-off with no reader"),
     ("cpu/isa_defs.v", 47): ("`define OP_NOP    5'd0", "macro referenced only in comments"),
     ("cpu/isa_defs.v", 229): ("`define SHIFT_RIGHT  1'b1", "macro referenced only in comments (core.v tests SHIFT_LEFT)"),

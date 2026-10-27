@@ -142,7 +142,7 @@ module protocol_cpu_core (
   wire [1:0] w_rs         = word[`RS_HI:`RS_LO];
   wire       w_shift_dir  = word[`SHIFT_DIR_BIT];
 
-  wire opcode_recognized = (opcode <= 5'd18);
+  wire opcode_recognized = (opcode <= 5'd20);
 
   // -----------------------------------------------------------------
   // Shared DELAY/WAIT countdown counter. Declared before the regfile
@@ -202,6 +202,9 @@ module protocol_cpu_core (
   reg  [7:0] reg_w_data;
   reg        reg_w_en;
 
+  // ADD's 9-bit sum: low byte to Rd, bit 8 (carry out) to the flag.
+  wire [8:0] add_sum = {1'b0, ra_data} + {1'b0, rb_data};
+
   always @(*) begin
     reg_w_sel  = w_rd;
     reg_w_data = 8'd0;
@@ -229,6 +232,14 @@ module protocol_cpu_core (
         reg_w_en   = 1'b1;
         reg_w_sel  = w_loop_rd;
         reg_w_data = ra_data - 8'd1;
+      end
+      `OP_XOR: begin
+        reg_w_en   = 1'b1;
+        reg_w_data = ra_data ^ rb_data;
+      end
+      `OP_ADD: begin
+        reg_w_en   = 1'b1;
+        reg_w_data = add_sum[7:0];
       end
       default: ;
     endcase
@@ -400,6 +411,7 @@ module protocol_cpu_core (
                 `OP_CMP:     flag <= (ra_data == rb_data);
                 `OP_TESTBIT: flag <= ra_data[w_bitidx];
                 `OP_WAIT:    flag <= wait_condition_met ? 1'b0 : 1'b1;
+                `OP_ADD:     flag <= add_sum[8];
                 default: ;
               endcase
 

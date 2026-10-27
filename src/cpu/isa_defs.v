@@ -71,8 +71,10 @@
 // Reg-reg format: opcode(5) | Rd(2) | Rs(2) | reserved(7)
 `define OP_CMP    5'd17
 `define OP_LOADX  5'd18
+`define OP_XOR    5'd19   // Rd <= Rd ^ Rs; flag untouched
+`define OP_ADD    5'd20   // Rd <= Rd + Rs (mod 256); flag <= carry out
 
-// 5'd19-5'd31: reserved/unimplemented. Decode as OP_NOP (see
+// 5'd21-5'd31: reserved/unimplemented. Decode as OP_NOP (see
 // "Undefined opcode behavior" below) -- never add a case for these,
 // let them fall through to the illegal-opcode default.
 
@@ -238,10 +240,10 @@
 `define BITSEL_BIT7  1'b1
 
 // ---------------------------------------------------------------------
-// Undefined opcode behavior (docs/isa.md): any of the 13 unassigned
-// 5-bit values (19-31) decodes as OP_NOP and sets the sticky
+// Undefined opcode behavior (docs/isa.md): any of the 11 unassigned
+// 5-bit values (21-31) decodes as OP_NOP and sets the sticky
 // illegal-opcode flag (formal/debug-visibility only, not
 // firmware-readable). core.v's opcode case statement should have an
 // explicit `default` arm that does exactly this -- not rely on
-// synthesis inferring it, and not add cases for 19-31.
+// synthesis inferring it, and not add cases for 21-31.
 // ---------------------------------------------------------------------

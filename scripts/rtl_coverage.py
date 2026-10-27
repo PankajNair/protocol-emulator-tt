@@ -65,8 +65,8 @@ _OE5 = ("constant 1 by construction: uio[5] is HOST_STATUS, a fixed output (pin_
 _UNUSED = "lint sink (`_unused` reduction of deliberately unconnected inputs), drives nothing"
 _ENA = "the TinyTapeout harness holds ena high whenever the design is powered; unused by the design"
 WAIVED: dict[tuple[str, str, int, str], str] = {
-    ("cpu/core.v", "line", 304, "case"): _UNREACH_CASE,
-    ("cpu/core.v", "line", 427, "case"): _UNREACH_CASE,
+    ("cpu/core.v", "line", 315, "case"): _UNREACH_CASE,
+    ("cpu/core.v", "line", 439, "case"): _UNREACH_CASE,
     **{(f, "toggle", n, f"start_fall:{e}"): _START_FALL
        for f, n in (("cpu/core.v", 74), ("io/pin_ctrl.v", 84), ("top.v", 38)) for e in ("0->1", "1->0")},
     **{(f, "toggle", n, f"{s}[4]:{e}"): _CONST0
@@ -75,7 +75,7 @@ WAIVED: dict[tuple[str, str, int, str], str] = {
     ("io/pin_ctrl.v", "toggle", 64, "uio_oe[5]:1->0"): _OE5,
     ("top.v", "toggle", 19, "uio_oe[5]:1->0"): _OE5,
     **{(f, "toggle", n, f"_unused:{e}"): _UNUSED
-       for f, n in (("cpu/core.v", 437), ("top.v", 98)) for e in ("0->1", "1->0")},
+       for f, n in (("cpu/core.v", 449), ("top.v", 98)) for e in ("0->1", "1->0")},
     ("top.v", "toggle", 20, "ena:1->0"): _ENA,
 }
 

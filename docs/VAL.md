@@ -106,7 +106,7 @@ the stimulus-gen agent (section 8) and gated in the parent session:
 |---|---|---|
 | `protocol_pins` | pin timeline: UART / SPI / I2C-shaped waveforms, clock-stretch, stuck lines | WAIT timeout 3 -> 143 per 100 seeds; blocking of 32+ cycles |
 | `wide_timing` | program: DELAY/WAIT exponents 2/3, cycle-budgeted | exponent 2/3 bins (delay exp 3 needs `MAX_CYCLES=50000`) |
-| `illegal_mix` | program: reserved opcodes 19-31 with random operands | ILLEGAL opcode and `illegal_op` flag bins; all 13 reserved opcodes executed |
+| `illegal_mix` | program: reserved opcodes 21-31 with random operands | ILLEGAL opcode and `illegal_op` flag bins; all 11 reserved opcodes executed |
 | `nested_flow` | program: nested LOOPs, branches and CALLs inside loop bodies | all loop-nesting bins, per 100 seeds: depth2 9712, depth3+ 6781, branch-in-loop 7128, CALL-in-loop 910 (default: 0 each) |
 
 Not covered by any random stimulus (directed tests only): the per-byte
@@ -244,7 +244,7 @@ ever true?", which simulation shows. A fake test name fails the gate.
 
 `test/golden_model.py`: from-scratch Python ISA model, one `step()` per
 instruction, returning the new state and the exact cycle count. Covers
-all 19 opcodes and reserved 19-31. WAIT/IN/INB take an `io_read(t)`
+all 21 opcodes and reserved 21-31. WAIT/IN/INB take an `io_read(t)`
 callback so the model consumes the same stimulus timeline as the RTL.
 Trusted only after `test_golden_model_selfcheck.py` cross-checks it
 against RTL-proven directed tests.
@@ -1375,3 +1375,47 @@ data makes the gate fail with 22 unwaived holes (pc[8], DELAY's top
 counter bits, and others): the random and spec suites alone do not
 reach them.
 
+
+## 23. ISA extension: XOR and ADD (2026-10-23)
+
+The one RTL change after the CMOS5L port, approved by the author: `XOR
+Rd,Rs` (opcode 19, flag untouched) and `ADD Rd,Rs` (opcode 20, flag =
+carry out), in the reg-reg format; reserved opcodes are now 21-31.
+Reason: flexibility, the first judging criterion. Most protocols carry a
+checksum or CRC, and without XOR or ADD every one was a workaround
+(parity counted with `LOOP`, complements via duplicated code). isa.md
+had deferred exactly this choice ("add a one-instruction `XOR Rd,Rs` ...
+when CAN/Ethernet get tackled").
+
+The change was built and verified in a scratch copy of the repo before
+`src/` was touched, layer by layer:
+
+| Layer | Change | Result |
+|---|---|---|
+| RTL | `isa_defs.v` defines; `core.v`: recognized up to 20, two regfile-write cases, ADD's carry into the flag | 2 files |
+| Toolchain, model | `isa_asm.py` encoders, `asm.py` mnemonics, golden model | pytest 68/68 |
+| Directed | `test_xor` (result, flag preserved, XOR-self), `test_add_carry` (carry 1 and 0, branch on it); the illegal-opcode tests moved from 19 to 21 | 62/62 |
+| Random | both ops in the default leaf pool; coverage: opcode bins, `ADD.carry`/`ADD.nocarry` flag-writer bins | default 111/111 real bins; 4 profiles pass |
+| Formal | datapath props: XOR/ADD write values, 5 new covers; illegal-opcode props: boundary 21; loop/flag props: ADD is a flag writer (flag = carry), XOR holds it | 11/11 proven, 282/282 covers + 4 deep |
+| Formal check of the checks | carry inverted, XOR writing the flag, XOR as OR, ADD +1: each fails a proof | 4/4 |
+| Mutation gate | #8 boundary moved to 21; new #27 XOR as OR, #28 ADD without carry, #29 XOR clears the flag | 4/4 killed |
+| Spec suite | reserved list follows the doc (21-31), marked as a parent edit; spec tests for XOR/ADD left to an independent pass | 62/62 |
+| RTL coverage | waivers remapped to the shifted line numbers | line 135/137, toggle 1403/1424, 0 unwaived, 0 stale |
+
+Two harness issues the change exposed, both fixed:
+- `nested_flow` keeps its own list of register-writing opcodes, to keep
+  loop bodies off their counters. XOR/ADD weren't in it, so a program
+  overwrote a live counter and never halted (caught by the random run:
+  no mismatch, 6665 instructions, then MAX_CYCLES).
+- `protocol_pins` was gated on `wait_k_bins.480+`, which the default
+  generator could reach only with its single longest WAIT timeout: 1 hit
+  in 50 seeds before, 0 after the opcode pool shifted the random stream.
+  The profile now allows exponent-1 WAIT timeouts up to 992 cycles: 7
+  hits.
+
+Line-keyed tables (RTL-coverage waivers, prove_equiv's allowed-difference
+and formal-only entries, blind_mutate's equivalence list, and the
+control mutant IDs, which embed line and byte offset) were remapped by
+aligning old and new core.v, not by hand. Still to re-run on the new
+RTL: the full mutation gate (29 entries), the blind census and the
+equivalence proofs (section 20), and CMOS5L hardening.

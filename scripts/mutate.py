@@ -103,11 +103,11 @@ MUTANTS = [
     ),
     dict(
         id=8, file="cpu/core.v",
-        desc="opcode 19 treated as recognized (no illegal flag)",
+        desc="opcode 21 treated as recognized (no illegal flag)",
         hazard="illegal-opcode detection boundary (isa.md Undefined opcode)",
         bug_ref="test_illegal_opcode_sets_flag",
-        edits=[("wire opcode_recognized = (opcode <= 5'd18);",
-                "wire opcode_recognized = (opcode <= 5'd19);")],
+        edits=[("wire opcode_recognized = (opcode <= 5'd20);",
+                "wire opcode_recognized = (opcode <= 5'd21);")],
     ),
     dict(
         id=9, file="io/pin_ctrl.v",
@@ -254,6 +254,29 @@ MUTANTS = [
         bug_ref="RTL-coverage hole: pc[8] never toggled; passed directed, spec and random; test_pc_upper_half",
         edits=[("                                      pc + 9'd1;",
                 "                                      {1'b0, pc[7:0] + 8'd1};")],
+    ),
+    dict(
+        id=27, file="cpu/core.v",
+        desc="XOR computes Rd | Rs",
+        hazard="XOR result (docs/isa.md XOR row): every CRC/checksum built on it",
+        bug_ref="ISA extension 2026-10-23; test_xor, random differential",
+        edits=[("        reg_w_data = ra_data ^ rb_data;",
+                "        reg_w_data = ra_data | rb_data;")],
+    ),
+    dict(
+        id=28, file="cpu/core.v",
+        desc="ADD leaves the flag untouched (no carry out)",
+        hazard="ADD's carry (docs/isa.md ADD row): multi-byte sums, BEQ/BNE on carry",
+        bug_ref="ISA extension 2026-10-23; test_add_carry, random differential",
+        edits=[("                `OP_ADD:     flag <= add_sum[8];\n", "")],
+    ),
+    dict(
+        id=29, file="cpu/core.v",
+        desc="XOR clears the flag",
+        hazard="XOR must not touch the flag: a flag set before an XOR (CRC loops) survives it",
+        bug_ref="ISA extension 2026-10-23; test_xor, random differential",
+        edits=[("                `OP_ADD:     flag <= add_sum[8];",
+                "                `OP_ADD:     flag <= add_sum[8];\n                `OP_XOR:     flag <= 1'b0;")],
     ),
 ]
 

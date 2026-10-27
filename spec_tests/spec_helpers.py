@@ -26,7 +26,10 @@ except ImportError:  # pragma: no cover
 OP = dict(NOP=0, HALT=1, RET=2, BRANCH=3, LDI=4, SET=5, OUT=6, IN=7,
           SHIFT=8, DELAY=9, WAIT=10, TEST=11, OUTB=12, INB=13, LOAD=14,
           STORE=15, LOOP=16, CMP=17, LOADX=18)
-RESERVED_OPS = list(range(19, 32))  # isa.md: `19-31` reserved
+RESERVED_OPS = list(range(21, 32))  # isa.md: `21-31` reserved
+# (parent edit 2026-10-23: was 19-31 until XOR/ADD took 19 and 20; this list
+# follows the doc mechanically. Spec tests FOR XOR/ADD are left to an
+# independent spec-conformance pass, not written here.)
 
 # isa.md Branch format cond table.
 COND_ALWAYS, COND_FLAG_SET, COND_FLAG_CLEAR, COND_CALL = 0, 1, 2, 3

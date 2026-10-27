@@ -13,7 +13,7 @@ A programmable protocol emulator: a small, cycle-exact sequencer CPU
 that bit-bangs serial protocols from firmware, rather than fixed UART,
 SPI or I2C blocks. A new protocol is a new program, not new silicon.
 
-- **Core.** 16-bit instructions, four 8-bit registers, 19 opcodes, one
+- **Core.** 16-bit instructions, four 8-bit registers, 21 opcodes, one
   flag. Every instruction takes 3 cycles plus its own wait time, so
   pin timing is exactly predictable from the program. Full ISA:
   [isa.md](isa.md); microarchitecture: [architecture.md](architecture.md).
@@ -22,6 +22,9 @@ SPI or I2C blocks. A new protocol is a new program, not new silicon.
   move one register bit to or from a pin. `WAIT` blocks until a pin
   reaches a level, with an optional timeout. `DELAY` waits an exact
   number of cycles, up to about 16.7 M (`mantissa << 5*exponent`).
+- **Arithmetic for checksums.** `XOR` and `ADD` (carry out to the flag)
+  make CRCs and additive checksums ordinary firmware, alongside `CMP`,
+  `TEST-bit`, `SHIFT` and `LOOP`.
 - **Memory.** One IHP 1 KB SRAM macro: bytes 0-511 hold the program (256
   instructions), bytes 512-1023 are data (`LOAD`, `STORE`, `LOADX`).
 - **Loading.** The SRAM is empty at power-up. After reset the chip is in

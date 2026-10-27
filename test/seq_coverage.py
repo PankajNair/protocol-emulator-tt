@@ -33,6 +33,7 @@ OPCODE_NAMES = {
     asm.OP_SHIFT: "SHIFT", asm.OP_DELAY: "DELAY", asm.OP_WAIT: "WAIT", asm.OP_TESTBIT: "TESTBIT",
     asm.OP_OUTB: "OUTB", asm.OP_INB: "INB", asm.OP_LOAD: "LOAD", asm.OP_STORE: "STORE",
     asm.OP_LOOP: "LOOP", asm.OP_CMP: "CMP", asm.OP_LOADX: "LOADX",
+    asm.OP_XOR: "XOR", asm.OP_ADD: "ADD",
 }
 PROTOCOL_PINS = (0, 1, 2, 3, 7)
 SET_MODE_NAMES = {asm.SET_MODE_LEAVE: "leave", asm.SET_MODE_PUSH_PULL: "pp",
@@ -59,7 +60,7 @@ class SeqCoverage:
     def __init__(self, seed: int):
         self.seed = seed
         self.commit_count = 0
-        # 19 real opcodes + reserved 19-31 (isa.md Undefined opcode behavior).
+        # 21 real opcodes + reserved 21-31 (isa.md Undefined opcode behavior).
         self.opcode_bins = {n: 0 for n in OPCODE_NAMES.values()} | {"ILLEGAL": 0}
         # BRANCH cond x outcome -- BEQ/BNE each need both directions.
         self.branch_bins = {k: 0 for k in ("JMP", "BEQ_taken", "BEQ_not", "BNE_taken", "BNE_not", "CALL")}
@@ -87,7 +88,8 @@ class SeqCoverage:
         # Data region halves: 0-255 is LOADX-reachable, 256-511 fixed-address-only.
         self.data_region_bins = {k: 0 for k in ("LOAD.low", "LOAD.high", "STORE.low", "STORE.high", "LOADX")}
         # Every flag writer, both polarities.
-        self.flag_writer_bins = {k: 0 for k in ("CMP.eq", "CMP.ne", "TESTBIT.0", "TESTBIT.1", "WAIT.0", "WAIT.1")}
+        self.flag_writer_bins = {k: 0 for k in ("CMP.eq", "CMP.ne", "TESTBIT.0", "TESTBIT.1", "WAIT.0", "WAIT.1",
+                                                "ADD.carry", "ADD.nocarry")}
         # LOOP: branch-back vs fall-through, and counter wrap (Rd=0 on
         # entry decrements to 255 and loops -- LOOP's only non-obvious case).
         self.loop_bins = {k: 0 for k in ("taken", "exit", "wrap_from_0")}
@@ -109,7 +111,7 @@ class SeqCoverage:
         self.commit_count += 1
         self.opcode_bins[OPCODE_NAMES.get(op, "ILLEGAL")] += 1
 
-        if op >= 19:
+        if op >= 21:
             self.debug_flag_bins["illegal_op"] += 1
         elif op == asm.OP_BRANCH:
             cond = d["cond"]
@@ -163,6 +165,8 @@ class SeqCoverage:
             self.flag_writer_bins["CMP.eq" if post.flag else "CMP.ne"] += 1
         elif op == asm.OP_TESTBIT:
             self.flag_writer_bins[f"TESTBIT.{int(post.flag)}"] += 1
+        elif op == asm.OP_ADD:
+            self.flag_writer_bins["ADD.carry" if post.flag else "ADD.nocarry"] += 1
         elif op == asm.OP_LOOP:
             if pre.regs[d["loop_rd"]] == 0:
                 self.loop_bins["wrap_from_0"] += 1

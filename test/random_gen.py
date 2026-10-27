@@ -97,7 +97,7 @@ PROTOCOL_PIN_INDICES = (0, 1, 2, 3, 7)
 _LEAF_OP_POOL = (
     ["LDI"] * 3 + ["OUT"] * 2
     + ["SET", "OUTB", "SHIFT", "DELAY", "TESTBIT", "CMP", "LOAD", "STORE", "LOADX", "NOP",
-       "WAIT", "IN", "INB"]
+       "WAIT", "IN", "INB", "XOR", "ADD"]
 )
 
 _BLOCK_LEAF = "leaf"
@@ -124,7 +124,7 @@ def _gen_leaf_word(
     forbid_write_reg: int | None = None,
 ) -> int:
     """`forbid_write_reg`, when given, excludes that register from every
-    register-WRITING opcode's destination (LDI/SHIFT/LOAD/LOADX/IN/INB)
+    register-WRITING opcode's destination (LDI/SHIFT/LOAD/LOADX/IN/INB/XOR/ADD)
     -- used only when generating a LOOP body, to protect the loop's own
     counter register from being clobbered mid-loop. Found the hard way:
     an earlier version had no such protection, and SHIFT (or LDI/LOAD/
@@ -167,6 +167,10 @@ def _gen_leaf_word(
         return asm.store(rng.randint(0, 3), rng.randint(0, 511))
     if op == "LOADX":
         return asm.loadx(_reg(rng, forbid_write_reg), rng.randint(0, 3))
+    if op == "XOR":
+        return asm.xor_(_reg(rng, forbid_write_reg), rng.randint(0, 3))
+    if op == "ADD":
+        return asm.add(_reg(rng, forbid_write_reg), rng.randint(0, 3))
     if op == "NOP":
         return asm.nop()
     if op == "WAIT":
@@ -296,6 +300,7 @@ _OPCODE_NAMES = {
     asm.OP_SHIFT: "SHIFT", asm.OP_DELAY: "DELAY", asm.OP_WAIT: "WAIT", asm.OP_TESTBIT: "TESTBIT",
     asm.OP_OUTB: "OUTB", asm.OP_INB: "INB", asm.OP_LOAD: "LOAD", asm.OP_STORE: "STORE",
     asm.OP_LOOP: "LOOP", asm.OP_CMP: "CMP", asm.OP_LOADX: "LOADX",
+    asm.OP_XOR: "XOR", asm.OP_ADD: "ADD",
 }
 
 
@@ -341,7 +346,7 @@ def disassemble(word: int) -> str:
         return f"{name} R{rd}, [{rest & 0x1FF}]"
     if opcode == asm.OP_LOOP:
         return f"LOOP {(rest >> 2) & 0x1FF}, R{rest & 0x3}"
-    if opcode in (asm.OP_CMP, asm.OP_LOADX):
+    if opcode in (asm.OP_CMP, asm.OP_LOADX, asm.OP_XOR, asm.OP_ADD):
         return f"{name} R{rd}, R{(rest >> 7) & 0x3}"
     return f"{name} operand={rest:#05x}"
 

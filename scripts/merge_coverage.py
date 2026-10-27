@@ -27,7 +27,7 @@ import os
 import sys
 
 EXPECTED_OPEN = {
-    # Default generator never emits reserved opcodes 19-31; test.py's
+    # Default generator never emits reserved opcodes 21-31; test.py's
     # test_illegal_opcode* cover NOP-fallthrough + sticky flag, and
     # STIM_PROFILE=illegal_mix reaches this bin and debug_flag_bins.illegal_op.
     "opcode_bins": {"ILLEGAL"},

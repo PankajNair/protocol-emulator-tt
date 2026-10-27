@@ -436,6 +436,55 @@ async def test_loadx(dut):
 
 
 @cocotb.test()
+async def test_xor(dut):
+    """XOR Rd, Rs writes Rd ^ Rs and leaves the flag alone (docs/isa.md
+    XOR row): a set flag survives an XOR, so BEQ after it still branches.
+    XOR with itself clears a register."""
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(0, 0xA5)),
+        (None, lambda L: asm.ldi(1, 0x3C)),
+        (None, lambda L: asm.cmp_(0, 0)),           # flag = 1
+        (None, lambda L: asm.xor_(0, 1)),           # R0 = 0x99, flag stays 1
+        (None, lambda L: asm.beq(L["ok"])),
+        (None, lambda L: asm.halt()),
+        ("ok", lambda L: asm.out(0)),               # 0x99
+        (None, lambda L: asm.xor_(1, 1)),           # R1 = 0
+        (None, lambda L: asm.ldi(2, 0x42)),
+        (None, lambda L: asm.add(2, 1)),            # 0x42 + 0 = 0x42: R1 really is 0
+        (None, lambda L: asm.out(2)),
+        (None, lambda L: asm.halt()),
+    ])
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x99)
+    await run_to_value(dut, 0x42)
+    dut._log.info("XOR result and flag preservation correct")
+
+
+@cocotb.test()
+async def test_add_carry(dut):
+    """ADD Rd, Rs writes (Rd + Rs) mod 256 and sets the flag to the carry
+    out: 0xF0 + 0x20 = 0x10 carry 1 (BEQ taken), then 0x10 + 0x20 = 0x30
+    carry 0 (BNE taken)."""
+    prog = asm.assemble([
+        (None, lambda L: asm.ldi(0, 0xF0)),
+        (None, lambda L: asm.ldi(1, 0x20)),
+        (None, lambda L: asm.add(0, 1)),            # 0x10, carry
+        (None, lambda L: asm.beq(L["c1"])),
+        (None, lambda L: asm.halt()),
+        ("c1", lambda L: asm.out(0)),               # 0x10
+        (None, lambda L: asm.add(0, 1)),            # 0x30, no carry
+        (None, lambda L: asm.bne(L["c0"])),
+        (None, lambda L: asm.halt()),
+        ("c0", lambda L: asm.out(0)),               # 0x30
+        (None, lambda L: asm.halt()),
+    ])
+    await reset_and_boot(dut, prog)
+    await run_to_value(dut, 0x10)
+    await run_to_value(dut, 0x30)
+    dut._log.info("ADD result and carry flag correct")
+
+
+@cocotb.test()
 async def test_shift(dut):
     """SHIFT left and right both work, in that order (both directions
     verified via the sequence they appear on uo_out, not just the
@@ -631,12 +680,12 @@ async def test_testbit(dut):
 
 @cocotb.test()
 async def test_illegal_opcode(dut):
-    """An unassigned opcode value (19) decodes as NOP -- execution
+    """An unassigned opcode value (21) decodes as NOP -- execution
     continues normally past it, not stuck or crashed."""
     prog = [
         asm.ldi(0, 0x11),
         asm.out(0),
-        asm.raw(19),
+        asm.raw(21),
         asm.ldi(0, 0x22),
         asm.out(0),
         asm.halt(),
@@ -711,7 +760,7 @@ async def test_ret_without_call_misuse_flag(dut):
 
 @cocotb.test(skip=GL)  # observes only an internal flag; behavior covered by test_illegal_opcode
 async def test_illegal_opcode_sets_flag(dut):
-    """An unassigned opcode (19) decodes as NOP for execution purposes
+    """An unassigned opcode (21) decodes as NOP for execution purposes
     (already covered by test_illegal_opcode) but ALSO sets the sticky
     illegal_op_flag (docs/isa.md Undefined opcode behavior) -- confirmed
     via direct hierarchical probe, since firmware cannot observe this
@@ -719,15 +768,15 @@ async def test_illegal_opcode_sets_flag(dut):
     prog = [
         asm.ldi(0, 0x11),
         asm.out(0),
-        asm.raw(19),
+        asm.raw(21),
         asm.halt(),
     ]
     await reset_and_boot(dut, prog)
     core = dut.user_project.u_core
     await run_to_value(dut, 0x11)
     assert int(core.illegal_op_flag.value) == 0, "flag should still be clear before the illegal opcode executes"
-    await ClockCycles(dut.clk, 10)  # let the raw(19) instruction finish its EXECUTE cycle
-    assert int(core.illegal_op_flag.value) == 1, "unassigned opcode 19 should have set the sticky illegal_op_flag"
+    await ClockCycles(dut.clk, 10)  # let the raw(21) instruction finish its EXECUTE cycle
+    assert int(core.illegal_op_flag.value) == 1, "unassigned opcode 21 should have set the sticky illegal_op_flag"
     dut._log.info("illegal opcode correctly set illegal_op_flag while still executing as NOP")
 
 

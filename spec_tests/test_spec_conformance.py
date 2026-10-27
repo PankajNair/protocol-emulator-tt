@@ -1137,7 +1137,7 @@ async def test_halt_freezes_everything(dut):
 @cocotb.test()
 async def test_reserved_opcodes_execute_as_nop(dut):
     """isa.md: 'Reserved/unused opcode encodings execute as NOP'; opcode
-    table '19-31 reserved ... Executes as NOP'. Each reserved opcode (with
+    table '21-31 reserved ... Executes as NOP'. Each reserved opcode (with
     all-ones and all-zeros operand bits) leaves R0-R3, the flag and the pins
     untouched, falls through to the next word and takes 3 cycles
     (architecture.md: NOP is 3 cycles). The sticky illegal-opcode flag is

@@ -7,8 +7,10 @@
 // nonzero. Does not touch the shared flag"; SHIFT (8) "does not touch the
 // shared flag"; CMP (17) flag = (Rd==Rs); TEST-bit (11) flag = Rd[bit];
 // WAIT (10) writes flag on exit, 0 if the pin condition was met, 1 on
-// timeout (condition-met wins on the expiry cycle). Branch format section:
-// the flag-writers are CMP, TEST-bit and WAIT and nothing else.
+// timeout (condition-met wins on the expiry cycle); ADD (20) flag = carry
+// out of Rd + Rs; XOR (19) "flag untouched". Branch format section: the
+// flag-writers are CMP, TEST-bit, WAIT and ADD and nothing else. (ADD and
+// XOR added 2026-10-23 with the ISA change.)
 // Formats (word = {high byte, low byte}, opcode = word[15:11]):
 //   LOOP     opcode | addr(9)=word[10:2] | Rd(2)=word[1:0]
 //   CMP      opcode | Rd=word[10:9] | Rs=word[8:7] | reserved
@@ -81,6 +83,8 @@ module core_loop_flag_props (
   localparam OP_TESTBIT = 5'd11;
   localparam OP_LOOP    = 5'd16;
   localparam OP_CMP     = 5'd17;
+  localparam OP_XOR     = 5'd19;
+  localparam OP_ADD     = 5'd20;
 
   // ======================================================================
   // Environment: genuine reset at step 0 (async reset). Free after.
@@ -109,7 +113,8 @@ module core_loop_flag_props (
   wire [4:0]  cur_op   = entering ? g_op : cur_op_r;
   wire        cur_lvl  = entering ? g_lo[5] : cur_lvl_r;
   wire        in_exec  = rst_n && (state == S_EXECUTE);
-  wire        is_writer = (cur_op == OP_CMP) || (cur_op == OP_TESTBIT) || (cur_op == OP_WAIT);
+  wire        is_writer = (cur_op == OP_CMP) || (cur_op == OP_TESTBIT) || (cur_op == OP_WAIT) ||
+                          (cur_op == OP_ADD);
 
   // ----------------------------------------------------------------------
   // Ghost regfile, built from the regfile's write port (reset 0).
@@ -122,6 +127,9 @@ module core_loop_flag_props (
   wire       c_cmp    = entering && (g_op == OP_CMP);
   wire       c_test   = entering && (g_op == OP_TESTBIT);
   wire       c_shift  = entering && (g_op == OP_SHIFT);
+  wire       c_add    = entering && (g_op == OP_ADD);
+  wire       c_xor    = entering && (g_op == OP_XOR);
+  wire [8:0] add_full = {1'b0, g_rf[g_rd]} + {1'b0, g_rf[g_rs]};
 
   // Previous-cycle snapshots.
   reg       p_flag, p_exec, p_writer, p_loop, p_cmp, p_test, p_shift, p_wait, p_lvl, p_pin;
@@ -129,6 +137,8 @@ module core_loop_flag_props (
   reg [7:0] p_old;
   reg [8:0] p_target, p_fpc;
   reg       p_exp_flag;   // expected flag after a CMP / TEST-bit commit
+  reg       p_add, p_xor;
+  reg       p_carry;      // expected flag after an ADD commit (carry out)
   reg       p_cmp_same;   // CMP had Rd == Rs (field-wise)
 
   integer i;
@@ -156,6 +166,9 @@ module core_loop_flag_props (
       p_target   <= 9'd0;
       p_fpc      <= 9'd0;
       p_exp_flag <= 1'b0;
+      p_add      <= 1'b0;
+      p_xor      <= 1'b0;
+      p_carry    <= 1'b0;
       p_cmp_same <= 1'b0;
     end else begin
       p_valid <= 1'b1;
@@ -183,6 +196,9 @@ module core_loop_flag_props (
       p_fpc      <= g_fpc;
       p_exp_flag <= c_cmp ? (g_rf[g_rd] == g_rf[g_rs]) : g_rf[g_rd][g_bit];
       p_cmp_same <= (g_rd == g_rs);
+      p_add      <= c_add;
+      p_xor      <= c_xor;
+      p_carry    <= add_full[8];
     end
   end
 
@@ -211,7 +227,9 @@ module core_loop_flag_props (
       cover (p_shift && !p_flag);
       cover (p_shift &&  p_flag);
       cover (p_exec && p_op == OP_BRANCH &&  p_flag);
-      cover (p_exec && p_op >= 5'd19     &&  p_flag);
+      cover (p_exec && p_op >= 5'd21     &&  p_flag);
+      cover (p_xor  &&  p_flag);
+      cover (p_xor  && !p_flag);
       assert (flag == p_flag);
     end
   end
@@ -268,6 +286,12 @@ module core_loop_flag_props (
       cover ( p_exp_flag && !p_flag);
       cover (!p_exp_flag &&  p_flag);
       assert (flag == p_exp_flag);
+    end
+    // ADD: flag = carry out of Rd + Rs, both directions of change
+    if (chk && p_add) begin
+      cover ( p_carry && !p_flag);
+      cover (!p_carry &&  p_flag);
+      assert (flag == p_carry);
     end
     if (chk && p_wait && state == S_FETCH_LO) begin
       cover (p_pin == p_lvl &&  p_flag);

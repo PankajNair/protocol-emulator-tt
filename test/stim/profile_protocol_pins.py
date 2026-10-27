@@ -209,3 +209,24 @@ class ProtocolPinsStimulus(IoStimulus):
 
 def make_stimulus(seed: int, boot_exit_cycle: int, max_cycle: int) -> ProtocolPinsStimulus:
     return ProtocolPinsStimulus(seed, boot_exit_cycle, max_cycle)
+
+
+# Program side. The default generator's longest WAIT timeout is exactly
+# 480 cycles (mantissa 15 at exponent 1), so the wait_k_bins.480+ bin
+# this profile is gated on needed that single maximal encoding AND a line
+# held long enough: 1 hit in 50 seeds, and 0 once the opcode pool grew
+# (XOR/ADD) and shifted the random stream. Real clock-stretch and slow-
+# host waits are longer than that, so this profile allows exponent-1
+# timeouts up to the full 5-bit mantissa (31 x 32 = 992 cycles) against
+# the long holds generated above. Only the WAIT bound changes; every
+# other generator setting is the default's.
+WAIT_EXP1_MAX = 31
+
+
+def generate_program(seed: int, max_delay_mantissa: dict | None = None,
+                     max_wait_mantissa: dict | None = None):
+    import random_gen
+    mw = dict(max_wait_mantissa or {0: 31, 1: 15})
+    mw[1] = max(mw.get(1, 15), WAIT_EXP1_MAX)
+    return random_gen.generate_program(seed, max_delay_mantissa=max_delay_mantissa, max_wait_mantissa=mw)
+

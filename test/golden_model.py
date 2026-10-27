@@ -15,7 +15,7 @@ never silently drift apart.
 
 Scope: every opcode random_gen.py emits, which is now all 19 --
 NOP, HALT, RET, BRANCH (JMP/BEQ/BNE/CALL), LDI, SET, OUT, IN, SHIFT,
-DELAY, WAIT, TESTBIT, OUTB, INB, LOAD, STORE, LOOP, CMP, LOADX.
+DELAY, WAIT, TESTBIT, OUTB, INB, LOAD, STORE, LOOP, CMP, LOADX, XOR, ADD.
 WAIT/IN/INB depend on live external pin/bus state, not just internal
 architectural state -- io_stimulus.py is the scripted-external-
 stimulus-timeline this file's header used to call future work; see its
@@ -266,7 +266,15 @@ def step(state: SequencerState, word: int, io_read=None, abs_cycle: int | None =
     elif op == asm.OP_LOADX:
         s.regs[f["rd"]] = s.data_mem[s.regs[f["rs"]]]
 
-    elif 19 <= op <= 31:
+    elif op == asm.OP_XOR:
+        s.regs[f["rd"]] = s.regs[f["rd"]] ^ s.regs[f["rs"]]
+
+    elif op == asm.OP_ADD:
+        total = s.regs[f["rd"]] + s.regs[f["rs"]]
+        s.regs[f["rd"]] = total & 0xFF
+        s.flag = total > 0xFF
+
+    elif 21 <= op <= 31:
         s.illegal_op_flag = True
 
     else:

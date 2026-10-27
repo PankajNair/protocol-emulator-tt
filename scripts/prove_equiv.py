@@ -88,14 +88,14 @@ S_LOAD, S_FETCH_LO, S_EXECUTE = "2'd0", "2'd1", "2'd3"
 # register pair, asserted equal unless listed.
 CONTROLS = [
     # (mutant id, what it exercises)
-    ("cpu/core.v:349:13658:CONST:\"8'd1\"", "uo_out compare at reset (killed by formal only)"),
+    ("cpu/core.v:360:13977:CONST:\"8'd1\"", "uo_out compare at reset (killed by formal only)"),
     ("io/pin_ctrl.v:204:8903:CONST:\"1'd0\"", "uio_oe compare (HOST_STATUS enable)"),
-    ("cpu/core.v:420:16180:REL:'!='", "a program executing from the shared SRAM (OUT taken for every other opcode)"),
-    ("cpu/core.v:299:11656:DEL:';'", "write compare (STORE data; killed by simulation only)"),
+    ("cpu/core.v:432:16548:REL:'!='", "a program executing from the shared SRAM (OUT taken for every other opcode)"),
+    ("cpu/core.v:310:11975:DEL:';'", "write compare (STORE data; killed by simulation only)"),
 ]
 
 ALLOWED_DIFF = {
-    ("cpu/core.v", 281): (["dr"],
+    ("cpu/core.v", 292): (["dr"],
         # the default address is issued only in EXECUTE for non-memory
         # opcodes; that byte is in dr on EXECUTE's later cycles (decode
         # uses ir then) and in FETCH_LO (used only by a pending LOAD/LOADX
@@ -113,10 +113,10 @@ ALLOWED_DIFF = {
         # clears entering_execute, so a halted core decodes ir (the HALT
         # word), never the live SRAM byte
         "(!g_u_core_halted || !g_u_core_entering_execute)"),
-    ("cpu/core.v", 339): (["u_core.ir"],
+    ("cpu/core.v", 350): (["u_core.ir"],
         # ir is latched on EXECUTE's first cycle; until then nothing reads it
         f"(g_u_core_ir == m_u_core_ir) || (g_u_core_state != {S_EXECUTE}) || g_u_core_entering_execute"),
-    ("cpu/core.v", 351): (["u_core.pending_lx_rd"],
+    ("cpu/core.v", 362): (["u_core.pending_lx_rd"],
         "(g_u_core_pending_lx_rd == m_u_core_pending_lx_rd) || !g_u_core_pending_lx_writeback"),
 }
 
@@ -182,15 +182,15 @@ def _setoutb_idempotent() -> str:
 
 FORMAL_ONLY = {
     # reset value of pc: LOAD never reads pc, and START's rise sets it to 0
-    ("cpu/core.v", 337): (["u_core.pc"], f"{_eq('u_core.pc')} || {_ST} == {S_LOAD}"),
+    ("cpu/core.v", 348): (["u_core.pc"], f"{_eq('u_core.pc')} || {_ST} == {S_LOAD}"),
     # START's rise no longer re-zeroes pc: it is still 0 from reset
-    ("cpu/core.v", 359): ([], f"{_ST} != {S_LOAD} || {_G('u_core.pc')} == 9'd0"),
+    ("cpu/core.v", 370): ([], f"{_ST} != {S_LOAD} || {_G('u_core.pc')} == 9'd0"),
     # reset value of ir_lo: overwritten by the first FETCH_HI before EXECUTE reads it
-    ("cpu/core.v", 338): (["u_core.ir_lo"], f"{_eq('u_core.ir_lo')} || {_ST} != {S_EXECUTE}"),
+    ("cpu/core.v", 349): (["u_core.ir_lo"], f"{_eq('u_core.ir_lo')} || {_ST} != {S_EXECUTE}"),
     # entering_execute not reset: a stale 1 before the first EXECUTE makes
     # decode see {mem_rdata, ir_lo}, which nothing outside EXECUTE commits;
     # its only side effect is a counter load, overwritten before it is read
-    ("cpu/core.v", 340): (["u_core.entering_execute", "u_core.u_cycle_counter.count"],
+    ("cpu/core.v", 351): (["u_core.entering_execute", "u_core.u_cycle_counter.count"],
         f"({_eq('u_core.entering_execute')} || {_ST} != {S_EXECUTE}) && "
         f"({_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ})"),
     # exec_commit outside EXECUTE: the SET/OUTB in ir is re-applied, a no-op
@@ -234,9 +234,9 @@ FORMAL_ONLY_CONTROLS = [
     ("io/pin_ctrl.v:102:4500:CONST:\"8'd255\"", ("io/pin_ctrl.v", 102)),
     ("io/cycle_counter.v:90:4344:ARITH:'+'", ("io/cycle_counter.v", 90)),  # count loaded wrong, then read
     ("io/cycle_counter.v:90:4346:CONST:\"24'd2\"", ("io/cycle_counter.v", 90)),
-    ("cpu/core.v:349:13658:CONST:\"8'd1\"",
+    ("cpu/core.v:360:13977:CONST:\"8'd1\"",
      (["u_core.uo_out_reg"], f"{_eq('u_core.uo_out_reg')} || rcnt == 2'd0")),  # reset value on the pins
-    ("cpu/core.v:350:13670:DEL:';'",
+    ("cpu/core.v:361:13989:DEL:';'",
      (["u_core.pending_lx_writeback"], f"{_eq('u_core.pending_lx_writeback')} || rcnt == 2'd0")),
     ("io/pin_ctrl.v:138:5887:BIT:''", ([], "1'b1")),  # HOST_GO rise a cycle late
 ]

@@ -23,12 +23,13 @@ Termination BY CONSTRUCTION (same guarantee as random_gen.py):
     with C in 1..8 immediately before its body. Every word inside a
     depth-d body is generated with forbid-set {perm[0..d-1]} (all
     counters live there), enforced on every GPR-writing opcode
-    (LDI/SHIFT/LOAD/LOADX/IN/INB) by `_leaf_word`, which draws from
+    (LDI/SHIFT/LOAD/LOADX/IN/INB/XOR/ADD) by `_leaf_word`, which draws from
     random_gen._gen_leaf_word and rejects words whose destination is in
     the forbid set (deterministic, bounded retries, NOP fallback). At
     depth 3 only perm[3] is writable -- body writes all funnel into
     that one scratch register (read-only ops still use all four).
-    Flag-setters in branch idioms (TESTBIT/CMP/WAIT) write no GPR.
+    Flag-setters in branch idioms (TESTBIT/CMP/WAIT) write no GPR
+    (ADD writes the flag too, but is a GPR writer, so it is in the set).
   - The subroutine forbids writes to perm[0..2] (every possible
     counter), so a CALL from any depth is counter-safe. It contains no
     CALL/LOOP (only one pending return), only leaves + at most one
@@ -61,7 +62,8 @@ import random_gen
 CYCLE_BUDGET = 15000
 SUB_BUDGET = 90           # worst-case cycles of one subroutine call incl. CALL/RET
 MAX_DEPTH = 3
-_WRITERS = (asm.OP_LDI, asm.OP_SHIFT, asm.OP_LOAD, asm.OP_LOADX, asm.OP_IN, asm.OP_INB)
+_WRITERS = (asm.OP_LDI, asm.OP_SHIFT, asm.OP_LOAD, asm.OP_LOADX, asm.OP_IN, asm.OP_INB,
+            asm.OP_XOR, asm.OP_ADD)
 _TIMEOUT_SHIFT = 5
 
 

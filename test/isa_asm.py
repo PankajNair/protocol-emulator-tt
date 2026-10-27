@@ -30,6 +30,8 @@ OP_STORE = 15
 OP_LOOP = 16
 OP_CMP = 17
 OP_LOADX = 18
+OP_XOR = 19
+OP_ADD = 20
 
 COND_JMP = 0b00
 COND_BEQ = 0b01
@@ -68,7 +70,7 @@ def ret() -> int:
 
 def raw(opcode: int) -> int:
     """Any opcode value with an all-zero operand field -- used to test
-    unassigned opcodes (19-31) decode as NOP."""
+    unassigned opcodes (21-31) decode as NOP."""
     return _word(opcode, 0)
 
 
@@ -168,6 +170,16 @@ def cmp_(rd: int, rs: int) -> int:
 def loadx(rd: int, rs: int) -> int:
     rest = ((rd & 0x3) << 9) | ((rs & 0x3) << 7)
     return _word(OP_LOADX, rest)
+
+
+def xor_(rd: int, rs: int) -> int:
+    rest = ((rd & 0x3) << 9) | ((rs & 0x3) << 7)
+    return _word(OP_XOR, rest)
+
+
+def add(rd: int, rs: int) -> int:
+    rest = ((rd & 0x3) << 9) | ((rs & 0x3) << 7)
+    return _word(OP_ADD, rest)
 
 
 def assemble(entries: list) -> list[int]:
