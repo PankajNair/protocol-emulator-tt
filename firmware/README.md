@@ -119,6 +119,21 @@ the brief.
   real firmware bug: after releasing CLK the firmware must wait to see it
   high, or its own low (still in the input synchronizer) reads as the
   next start bit.
+- `protocols/can_tx.asm` -- CAN 2.0A transmitter, 50 kbit/s: standard
+  data frame (11-bit ID, 0-8 data bytes) with bit stuffing, CRC-15, ACK
+  check, arbitration and bit-error detection; status back to the host (0
+  sent, 1 no ACK, 2 lost arbitration, 3 bit error). TX = pin 0 to a CAN
+  transceiver's TXD, RX = pin 1 from its RXD. Needs XOR/ADD (CRC-15 across
+  two bytes, counters). Every per-bit branch is padded so each bit is
+  exactly 1000 cycles; the work per bit (381 cycles) is why it runs at 50
+  rather than 125 kbit/s with a 75% sample point. 252 of the 256 program
+  words. Verified by `test/test_can.py` on a wired-AND bus with an
+  independent receiver node (destuffing, its own CRC-15, ACK only for a
+  good frame), a competing transmitter and an error injector: frames of
+  0-8 bytes incl. stuffing-heavy ones, no ACK, lost arbitration, bit
+  error, and every chip edge exactly on the bit grid. An unbalanced pad
+  (3 cycles), a wrong polynomial, stuffing after 6, and RTL mutants #27/#28
+  each fail it.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

@@ -92,8 +92,9 @@ board:
 	$(MAKE) BOARD=yes COCOTB_TEST_MODULES=test_board,test_uart_selftest,test_uart_link,test_i2c,test_spi
 
 # Protocol tests too slow for the default suite (which the mutation gate
-# reruns once per mutant): NEC IR simulates a 68 ms frame, ~1 minute.
-# Run once per sign-off as its own gate.
+# reruns once per mutant): NEC IR simulates a 68 ms frame, CAN five
+# 50 kbit/s frame scenarios, ~1 minute each. Run once per sign-off as its
+# own gate.
 .PHONY: slow
 slow:
-	$(MAKE) COCOTB_TEST_MODULES=test_nec_ir
+	$(MAKE) COCOTB_TEST_MODULES=test_nec_ir,test_can

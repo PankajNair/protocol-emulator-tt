@@ -52,6 +52,7 @@ against an independent model of the other end:
 | `onewire.asm` | 1-Wire controller (e.g. DS18B20): reset/presence, write and read bytes; a protocol the chip wasn't designed for |
 | `nec_ir.asm` | NEC IR remote transmitter, 38 kHz carrier generated in firmware |
 | `ps2_host.asm` | PS/2 keyboard/mouse receiver: follows the device's clock, inhibits it while busy |
+| `can_tx.asm` | CAN 2.0A transmitter, 50 kbit/s: stuffing, CRC-15, ACK, arbitration, bit-error detection |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
@@ -100,12 +101,15 @@ the firmware:
 | 1-Wire | DQ | | | |
 | NEC IR | IR LED (via transistor) | | | |
 | PS/2 host | DATA | CLK | | |
+| CAN | TXD (to transceiver) | RXD (from transceiver) | | |
 
 - **I2C needs pull-up resistors** on SDA and SCL (for example 4.7 kΩ to
   3.3 V at 100 kHz, 2.2 kΩ at 400 kHz): the chip drives them open-drain.
 - **1-Wire needs a pull-up** on DQ (4.7 kΩ to 3.3 V), for the same reason.
 - **IR LED** on `uio[0]` through an NPN transistor or MOSFET and a current
   resistor: a GPIO pin cannot supply LED current.
+- **CAN needs a 3.3 V CAN transceiver** (for example SN65HVD230) between
+  the chip and the bus, with the bus's 120 Ω terminations.
 - **PS/2 devices are 5 V open-collector:** use a bidirectional
   open-drain level shifter (the kind used for I2C) on DATA and CLK, with
   the 5 V pull-ups on the device side.

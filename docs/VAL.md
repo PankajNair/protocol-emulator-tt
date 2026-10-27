@@ -421,6 +421,7 @@ shown to fail on injected bugs:
 | `spi_target.asm` (SPI peripheral, mode 0) | mode-0 controller model | exact up to a 28-cycle SCLK period (1.79 MHz, phase-locked); rated 1.5 MHz for an asynchronous controller | inverted WAIT timeout flag. Dropping a synchronizer flop does not move the limit (instruction count bounds it) and is caught elsewhere |
 | `onewire.asm` (1-Wire controller) | device model at the spec's worst case | presence, READ ROM with a valid CRC8, writes; every pulse and slot in spec | sampling 4 us late, a long write-1 pulse, a 450 us reset, an early presence sample; mutations #3, #9 |
 | `nec_ir.asm` (NEC IR transmitter) | IR receiver + NEC decoder model | frame decodes; carrier 38.11 kHz, 33% duty, every period in band; leader 8983/4503 us | complement bytes sent uninverted; a carrier 3% fast in one burst (caught only once every period is checked, not the average) |
+| `can_tx.asm` (CAN 2.0A transmitter, 50 kbit/s) | wired-AND bus: receiver node (destuffing, own CRC-15, ACKs only good frames), competing transmitter, error injector | frames 0-8 bytes incl. stuffing-heavy, no ACK, lost arbitration, bit error; every chip edge exactly on the 1000-cycle grid | an unbalanced 3-cycle pad, a wrong CRC polynomial, stuffing after 6; RTL #27/#28 (XOR/ADD) |
 | `ps2_host.asm` (PS/2 keyboard receiver) | keyboard model that owns the clock and honours the inhibit | scan codes in order, keyboard held off while the host is busy; bad frames dropped | no inhibit (bytes lost); parity check inverted. Found a real firmware race: re-arming before its own CLK release had passed the input synchronizer |
 
 The SPI target supersedes the architecture's "target roles deferred"
@@ -536,7 +537,7 @@ shadow of the driver state.
 | Gate | Pass criterion |
 |---|---|
 | `directed` | `make -C test -B`: all directed tests, the protocol firmware end to end (UART, WS2812, SPI target, 1-Wire, PS/2) and the host library pass (60) |
-| `slow_protocols` | `make -C test slow`: protocol tests too slow to rerun per mutant (NEC IR, one 68 ms frame) |
+| `slow_protocols` | `make -C test slow`: protocol tests too slow to rerun per mutant (NEC IR, one 68 ms frame; CAN, five 50 kbit/s scenarios) |
 | `pytest` | golden-model self-check + assembler unit tests pass |
 | `board` | `make -C test board`: loopback, two-chip link, I2C, SPI pass |
 | `cov_default` | `make coverage-gate`, 100 seeds |
