@@ -28,7 +28,8 @@ protocol is a new program, loaded by the host after fabrication.
   (100/400 kHz), SPI target (the chip as the peripheral, following an
   external clock), and five protocols the chip wasn't designed for: a
   CAN 2.0A transmitter and receiver (stuffing, CRC-15, arbitration,
-  clock resync), a WS2812 LED
+  clock resync), an SWD host (ARM debug port: reads a Cortex-M's
+  IDCODE), a WS2812 LED
   driver, a 1-Wire controller, an NEC IR remote transmitter and a PS/2
   keyboard receiver. Each is verified in simulation against an independent
   model of the other end.

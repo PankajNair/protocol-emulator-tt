@@ -148,6 +148,18 @@ the brief.
   errors each reported and not ACKed. With resync disabled the nominal
   frames still pass but the +-1% ones fail; a wrong polynomial or a
   missing ACK fail everywhere.
+- `protocols/swd.asm` -- SWD (ARM Serial Wire Debug) host: JTAG-to-SWD
+  line reset and DP/AP register reads and writes -- enough to read a
+  Cortex-M's IDCODE and drive its debug port. SWDIO = pin 0 (turns around
+  mid-transfer: push-pull for the request and write data, input for ACK
+  and read data), SWCLK = pin 2, ~1.2 MHz. Request and data parity come
+  from XOR folds. Verified by `test/test_swd.py` against an independent
+  ADIv5 debug-port model (needs the exact switch sequence; checks request
+  start/parity/stop/park and write parity; flags contention when the chip
+  drives SWDIO during the target's turn): IDCODE 0x2BA01477, CTRL/STAT
+  write and read-back, WAIT ack, corrupted read parity flagged, no answer
+  without the switch. Request parity left out, write parity inverted, or
+  the turnaround before ACK dropped each fail it.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

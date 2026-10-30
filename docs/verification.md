@@ -17,7 +17,7 @@ the RTL on purpose, and every one has to be caught.
 
 | Layer | What it does | Size |
 |---|---|---|
-| Directed tests | cocotb tests of each instruction, the boot loader, the host handshake, reset and HALT, with cycle-exact timing checks; plus UART, WS2812, SPI-target, 1-Wire, PS/2, NEC IR and CAN (transmit and receive) firmware end to end against independent models, and the demo-board host library (§1) | 71 tests |
+| Directed tests | cocotb tests of each instruction, the boot loader, the host handshake, reset and HALT, with cycle-exact timing checks; plus UART, WS2812, SPI-target, 1-Wire, PS/2, SWD, NEC IR and CAN (transmit and receive) firmware end to end against independent models, and the demo-board host library (§1) | 75 tests |
 | Random differential | random programs and live pin stimulus run on the RTL and on an independent Python golden model; the full machine state is compared after every instruction (§2, §4) | 100 seeds, plus 4 stimulus profiles of 50 |
 | Functional coverage | bins for every opcode, operand class, pin mode, timing range and control-flow shape; the gate fails if any reachable bin is missed (§3) | 107/107 for the default generator |
 | Spec-only suite | 62 tests written only from the documentation, by an agent that could not read the RTL (an audit of its file accesses proves it) (§21) | 62 tests |
