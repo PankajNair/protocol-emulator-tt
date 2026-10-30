@@ -39,16 +39,16 @@ that doesn't depend on the AI's own judgement.
   main session, never inside a subagent.
 - **Checks of the checks.** A test suite that passes everything proves
   nothing, so the environment is itself tested:
-  - a mutation gate of 26 bugs injected into the RTL, all of which
+  - a mutation gate of 29 bugs injected into the RTL, all of which
     must be caught;
   - every formal assertion paired with a cover that must be reachable,
     so no property holds vacuously;
   - each new formal property file shown to fail on a deliberately
     broken copy of the design before it is trusted;
-  - a blind census of 455 machine-generated mutants: all 427 that
-    change behaviour are caught, and the 25 survivors are formally
+  - a blind census of 469 machine-generated mutants: all 442 that
+    change behaviour are caught, and the 24 survivors are formally
     proven equivalent to the original.
-- **Independence.** The 62-test spec-conformance suite was written by an
+- **Independence.** The 75-test spec-conformance suite was written by an
   agent that could read only the documentation and the testbench, never
   the RTL; a script audits its transcript for any file access outside
   that tree. It found five places where the docs were ambiguous or

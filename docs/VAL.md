@@ -1442,6 +1442,12 @@ Two harness issues the change exposed, both fixed:
 Line-keyed tables (RTL-coverage waivers, prove_equiv's allowed-difference
 and formal-only entries, blind_mutate's equivalence list, and the
 control mutant IDs, which embed line and byte offset) were remapped by
-aligning old and new core.v, not by hand. Still to re-run on the new
-RTL: the full mutation gate (29 entries), the blind census and the
-equivalence proofs (section 20), and CMOS5L hardening.
+aligning old and new core.v, not by hand. Re-run on the new RTL:
+
+| Check | Result |
+|---|---|
+| Blind census (section 20) | 469 mutants, 466 compile; 442/442 behaviour-changing caught; 24 survivors, 24/24 proven equivalent; controls 4/4 refuted |
+| Formal-only kills | 31: 30/30 proven never to reach the pins; `pin_ctrl.v:138` pin-visible and spec-legal as before; controls 8/8 rejected |
+| Spec suite pass 3 (section 21) | 75/75; on its own it kills mutation-gate entries #27-29 |
+| CMOS5L hardening | precheck, gate-level sim, LVS clean; 0 slew/cap violations |
+| Full mutation gate (29 entries) | runs in the nightly sign-off |

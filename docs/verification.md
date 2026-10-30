@@ -19,30 +19,30 @@ the RTL on purpose, and every one has to be caught.
 |---|---|---|
 | Directed tests | cocotb tests of each instruction, the boot loader, the host handshake, reset and HALT, with cycle-exact timing checks; plus UART, WS2812, SPI-target, 1-Wire, PS/2, SWD, NEC IR and CAN (transmit and receive) firmware end to end against independent models, and the demo-board host library (§1) | 75 tests |
 | Random differential | random programs and live pin stimulus run on the RTL and on an independent Python golden model; the full machine state is compared after every instruction (§2, §4) | 100 seeds, plus 4 stimulus profiles of 50 |
-| Functional coverage | bins for every opcode, operand class, pin mode, timing range and control-flow shape; the gate fails if any reachable bin is missed (§3) | 107/107 for the default generator |
-| Spec-only suite | 62 tests written only from the documentation, by an agent that could not read the RTL (an audit of its file accesses proves it) (§21) | 62 tests |
+| Functional coverage | bins for every opcode, operand class, pin mode, timing range and control-flow shape; the gate fails if any reachable bin is missed (§3) | 111/111 for the default generator |
+| Spec-only suite | 75 tests written only from the documentation, by an agent that could not read the RTL (an audit of its file accesses proves it) (§21) | 75 tests |
 | Board tests | two chips on shared nets: loopback, chip-to-chip UART, I2C and SPI against independent peripheral models (§13) | 23 tests |
 | Formal | properties proven for all time (k-induction) with yosys + z3: datapath results, boot loader, reset, pin direction, synchronizer depth, timing, illegal opcodes, and a chip-level pin contract (§6) | 11 property files |
-| RTL coverage | Verilator line and toggle coverage of `src/`; every line executed and every bit moved both ways, or a written reason why it can't (§22) | 132/134 lines, 1385/1406 toggles, rest proven unreachable or constant |
+| RTL coverage | Verilator line and toggle coverage of `src/`; every line executed and every bit moved both ways, or a written reason why it can't (§22) | 135/137 lines, 1403/1424 toggles, rest proven unreachable or constant |
 | Structural | the SRAM macro's static pins (BIST off, delay setting) tied as the datasheet requires, which no simulation can observe (§20) | 17/17 ports |
 
 ## What checks the checks
 
-- **Mutation gate (§5).** 26 deliberate RTL bugs, each from a past real
+- **Mutation gate (§5).** 29 deliberate RTL bugs, each from a past real
   bug, a hazard review, or a gap one of the methods below found. Every
-  one must be caught by simulation; formal alone also catches all 26.
+  one must be caught by simulation; formal alone also catches all 29.
 - **Vacuity (§6).** Every formal assertion has a cover on its
   precondition that must be reachable, so no property passes by never
-  applying. 273/273 reached.
+  applying. 282/282 reached.
 - **Blind mutation census (§20).** Every mutable operator in the RTL is
-  mutated by machine, with no sampling: 455 mutants, 452 that compile.
-  All 427 that change behaviour are caught. The other 25 are formally
+  mutated by machine, with no sampling: 469 mutants, 466 that compile.
+  All 442 that change behaviour are caught. The other 24 are formally
   proven equivalent to the original at the pins, with a negative
   control showing the prover does reject real differences.
-- **Formal-only kills (§20-21).** The 35 mutants that only formal caught
-  are each explained: 30 are proven never to reach the pins, 4 led to
-  new directed tests, and 1 is a deliberately stricter-than-spec formal
-  property.
+- **Formal-only kills (§20-21).** The 31 mutants that only formal caught
+  are each explained: 30 are proven never to reach the pins, and 1 is a
+  deliberately stricter-than-spec formal property. (Earlier formal-only
+  kills led to 4 new directed tests.)
 - **Red team (§17).** An agent tries to write bugs every gate misses. It
   found 5; each became a new test and a mutation-gate entry.
 
