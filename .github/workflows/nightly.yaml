@@ -11,7 +11,7 @@ on:
 jobs:
   signoff:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 330   # mutation gate alone can take ~2 h on a slow runner
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6

@@ -170,7 +170,9 @@ def main() -> int:
         ("vacuity", lambda: gate_vacuity(1800)),
         ("tieoffs", lambda: gate_tieoffs(60)),
         ("rtl_coverage", lambda: gate_rtl_coverage(1800)),
-        ("mutation", lambda: gate_mutation(args.mutate_seeds, 5400)),
+        # mutants run one after another; on a slow CI runner 26 took 88 min
+        # (passing) and twice hit the old 90 min limit, so: 3 h
+        ("mutation", lambda: gate_mutation(args.mutate_seeds, 10800)),
     ]
 
     rc, gitout = sh("git rev-parse --short HEAD && git status --porcelain -- src test scripts formal firmware", 30)
