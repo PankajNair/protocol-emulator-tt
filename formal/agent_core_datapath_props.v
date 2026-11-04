@@ -20,10 +20,14 @@
 //   XOR   (19) Rd <= Rd ^ Rs
 //   ADD   (20) Rd <= Rd + Rs (mod 256)   (its carry goes to the flag,
 //              checked in agent_core_loop_flag_props.v, not here)
+//   SRD   (24) Rd <= the serial engine's status/CRC byte (ser_rd_data)
+//   SRX   (23) blocks; on the cycle a received byte is waiting
+//              (ser_rx_avail) it completes with Rd <= ser_rx_byte; ending
+//              on an end of packet or a timeout it writes nothing
 //   every other opcode (NOP, HALT, RET, BRANCH, SET, OUT, DELAY, WAIT,
-//   TEST-bit, OUTB, STORE, CMP, reserved 21-31): no register write.
-//   (XOR/ADD added 2026-10-23 with the ISA change; before it this file
-//   held 19-31 to no write.)
+//   TEST-bit, OUTB, STORE, CMP, SCFG, STX, reserved 25-31): no register
+//   write. (XOR/ADD added 2026-10-23, the serial-engine opcodes 21-24
+//   2026-11-04 -- docs/serial_engine.md; parent edits.)
 // Timing (docs/architecture.md Pipeline): single EXECUTE cycle for every
 // writer above; LOAD/LOADX issue the data address during EXECUTE and
 // their writeback "trails by exactly 1 cycle, into the following
@@ -60,6 +64,9 @@ module core_datapath_props (
     input wire [7:0]  ui_in_sync,
     input wire        pin_read,
     input wire [2:0]  pin_index,
+    input wire        ser_rx_avail,
+    input wire [7:0]  ser_rx_byte,
+    input wire [7:0]  ser_rd_data,
     input wire [1:0]  state,       // DEBUG_PORTS
     input wire        rf_we,       // DEBUG_PORTS
     input wire [1:0]  rf_waddr,    // DEBUG_PORTS
@@ -97,6 +104,9 @@ module core_datapath_props (
   localparam OP_LOADX   = 5'd18;
   localparam OP_XOR     = 5'd19;
   localparam OP_ADD     = 5'd20;
+  localparam OP_STX     = 5'd22;
+  localparam OP_SRX     = 5'd23;
+  localparam OP_SRD     = 5'd24;
 
   // ======================================================================
   // Environment: genuine reset at step 0 (async reset). Free after.
@@ -110,6 +120,7 @@ module core_datapath_props (
   reg [1:0] p_state;
   reg [7:0] g_lo;        // low byte, mem_rdata during FETCH_HI
   reg [4:0] cur_op_r;    // opcode of the EXECUTE in progress (after 1st cycle)
+  reg [1:0] cur_rd_r;    // its Rd field
 
   wire        entering = rst_n && p_valid && (p_state == S_FETCH_HI) && (state == S_EXECUTE);
   wire [15:0] g_word   = {mem_rdata, g_lo};
@@ -124,6 +135,7 @@ module core_datapath_props (
   wire [1:0]  g_lrd    = g_word[1:0];     // LOOP counter register
 
   wire [4:0]  cur_op   = entering ? g_op : cur_op_r;
+  wire [1:0]  cur_rd   = entering ? g_rd : cur_rd_r;
   wire        in_exec  = rst_n && (state == S_EXECUTE);
 
   // ----------------------------------------------------------------------
@@ -144,6 +156,9 @@ module core_datapath_props (
   wire c_loadx = entering && (g_op == OP_LOADX);
   wire c_xor   = entering && (g_op == OP_XOR);
   wire c_add   = entering && (g_op == OP_ADD);
+  wire c_srd   = entering && (g_op == OP_SRD);
+  // SRX completing with a byte: any cycle of its EXECUTE with one waiting
+  wire c_srx   = in_exec && (cur_op == OP_SRX) && ser_rx_avail;
 
   // Trailing-writeback bookkeeping: previous cycle was a LOAD / LOADX
   // EXECUTE (single cycle, commits on entry).
@@ -178,6 +193,10 @@ module core_datapath_props (
       exp_we = 1'b1; exp_data = old_rd ^ val_rs;
     end else if (c_add) begin
       exp_we = 1'b1; exp_data = old_rd + val_rs;
+    end else if (c_srd) begin
+      exp_we = 1'b1; exp_data = ser_rd_data;
+    end else if (c_srx) begin
+      exp_we = 1'b1; exp_addr = cur_rd; exp_data = ser_rx_byte;
     end else if (rst_n && p_lx && state == S_FETCH_LO) begin
       exp_we = 1'b1; exp_addr = p_lx_rd; exp_data = mem_rdata;
     end
@@ -190,6 +209,7 @@ module core_datapath_props (
       p_state  <= 2'd0;
       g_lo     <= 8'd0;
       cur_op_r <= 5'd0;
+      cur_rd_r <= 2'd0;
       for (i = 0; i < 4; i = i + 1) g_rf[i] <= 8'd0;
       p_lx     <= 1'b0;
       p_load   <= 1'b0;
@@ -201,6 +221,7 @@ module core_datapath_props (
       p_state  <= state;
       if (state == S_FETCH_HI) g_lo <= mem_rdata;
       cur_op_r <= cur_op;
+      cur_rd_r <= cur_rd;
       if (rf_we) g_rf[rf_waddr] <= rf_wdata;
       p_lx     <= c_load || c_loadx;
       p_load   <= c_load;
@@ -223,7 +244,9 @@ module core_datapath_props (
       cover (entering && g_op == OP_CMP);
       cover (entering && g_op == OP_BRANCH);
       cover (entering && g_op == OP_NOP);
-      cover (entering && g_op >= 5'd21);
+      cover (entering && g_op >= 5'd25);
+      cover (entering && g_op == OP_STX);
+      cover (in_exec && !entering && cur_op_r == OP_SRX && !ser_rx_avail);
       cover (in_exec && !entering && cur_op_r == OP_DELAY);
       cover (state == S_FETCH_LO && !p_lx);
       cover (state == S_LOAD && p_valid);
@@ -264,6 +287,9 @@ module core_datapath_props (
       cover (c_add && g_rd != g_rs && ({1'b0, old_rd} + {1'b0, val_rs}) > 9'd255);
       cover (c_add && g_rd != g_rs && ({1'b0, old_rd} + {1'b0, val_rs}) <= 9'd255 && val_rs != 8'd0);
       cover (c_add && g_rd == g_rs && old_rd != 8'd0);
+      cover (c_srd && ser_rd_data != old_rd);
+      cover (c_srx && !entering && ser_rx_byte != g_rf[cur_rd]);
+      cover (c_srx && entering && ser_rx_byte != old_rd);
       cover (c_loop && old_lp == 8'd0);
       cover (c_loop && old_lp >  8'd1);
       // Trailing writebacks.
@@ -317,7 +343,9 @@ module core_datapath_props (
       cover (cur_op_r == OP_WAIT);
       cover (cur_op_r == OP_HALT);
       assert (ir[15:11] == cur_op_r);
-      assert (cur_op_r == OP_DELAY || cur_op_r == OP_WAIT || cur_op_r == OP_HALT);
+      assert (cur_op_r == OP_DELAY || cur_op_r == OP_WAIT || cur_op_r == OP_HALT ||
+              cur_op_r == OP_STX || cur_op_r == OP_SRX);
+      assert (ir[10:9] == cur_rd_r);
     end
   end
 
@@ -331,6 +359,9 @@ bind protocol_cpu_core core_datapath_props u_core_datapath_props (
     .ui_in_sync(ui_in_sync),
     .pin_read  (pin_read),
     .pin_index (pin_index),
+    .ser_rx_avail(ser_rx_avail),
+    .ser_rx_byte (ser_rx_byte),
+    .ser_rd_data (ser_rd_data),
     .state     (state),
     .rf_we     (rf_we),
     .rf_waddr  (rf_waddr),

@@ -3,7 +3,7 @@
 // -- the "illegal-opcode detection" candidate in formal/README.md.
 //
 // Spec: docs/isa.md "Undefined opcode behavior" + opcode table row
-// `21-31` (reserved encodings execute as NOP and set a sticky flag,
+// `25-31` (reserved encodings execute as NOP and set a sticky flag,
 // cleared only by reset; "Reset value: all registers 0"), and
 // docs/architecture.md "FETCH_LO / FETCH_HI / EXECUTE" (FETCH_HI issues
 // the high-byte read at PC*2+1, the SRAM has 1-cycle read latency, so
@@ -89,8 +89,9 @@ module core_illegal_opcode_props (
   // First EXECUTE cycle of an instruction: high byte is on mem_rdata.
   wire       entering = p_valid && (p_state == S_FETCH_HI) && (state == S_EXECUTE);
   wire [4:0] g_op     = mem_rdata[7:3];
-  // 21-31 since XOR (19) and ADD (20) were assigned, 2026-10-23
-  wire       r_exec   = rst_n && entering && (g_op >= 5'd21);
+  // 25-31: XOR (19) and ADD (20) assigned 2026-10-23, the serial
+  // engine's SCFG/STX/SRX/SRD (21-24) 2026-11-04 (parent edits)
+  wire       r_exec   = rst_n && entering && (g_op >= 5'd25);
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -138,12 +139,12 @@ module core_illegal_opcode_props (
 
   // ======================================================================
   // Property 2 -- completeness: a reserved-opcode commit sets the flag,
-  // visible the next cycle. Boundary covers: 21 (lowest reserved,
+  // visible the next cycle. Boundary covers: 25 (lowest reserved,
   // mutate.py #8's edge) and 31 (highest).
   // ======================================================================
   always @(posedge clk) begin
     if (r_exec) begin
-      cover (g_op == 5'd21);
+      cover (g_op == 5'd25);
       cover (g_op == 5'd31);
     end
     if (chk && p_rexec) begin

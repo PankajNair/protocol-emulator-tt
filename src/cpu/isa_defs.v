@@ -74,7 +74,15 @@
 `define OP_XOR    5'd19   // Rd <= Rd ^ Rs; flag untouched
 `define OP_ADD    5'd20   // Rd <= Rd + Rs (mod 256); flag <= carry out
 
-// 5'd21-5'd31: reserved/unimplemented. Decode as OP_NOP (see
+// Serial engine (docs/serial_engine.md), reg+imm format. Rd is the
+// source for SCFG/STX, the destination for SRX/SRD; imm[3:0] = k for
+// SCFG/SRD, imm = timeout for SRX.
+`define OP_SCFG   5'd21   // engine config register / command k <= Rd
+`define OP_STX    5'd22   // queue Rd for transmission; blocks while full
+`define OP_SRX    5'd23   // Rd <= received byte, flag 0; end/timeout: flag 1
+`define OP_SRD    5'd24   // Rd <= engine status / CRC byte k
+
+// 5'd25-5'd31: reserved/unimplemented. Decode as OP_NOP (see
 // "Undefined opcode behavior" below) -- never add a case for these,
 // let them fall through to the illegal-opcode default.
 
@@ -179,6 +187,14 @@
 `define WAIT_MANTISSA_LO 0
 `define WAIT_MANTISSA_W  word[`WAIT_MANTISSA_HI:`WAIT_MANTISSA_LO]
 `define TIMEOUT_SHIFT     5   // cycles = mantissa << (exponent * TIMEOUT_SHIFT)
+// SRX: Rd is the destination, so its timeout packs both fields into
+// imm: exponent imm[8:7], mantissa imm[6:0].
+`define SRX_EXP_HI   8
+`define SRX_EXP_LO   7
+`define SRX_MANT_HI  6
+`define SRX_MANT_LO  0
+`define SER_K_HI     3
+`define SER_K_LO     0
 
 // ---------------------------------------------------------------------
 // addr+Rd format (LOOP): word[10:2] = addr(9) (shares ADDR_* above),
@@ -240,10 +256,10 @@
 `define BITSEL_BIT7  1'b1
 
 // ---------------------------------------------------------------------
-// Undefined opcode behavior (docs/isa.md): any of the 11 unassigned
-// 5-bit values (21-31) decodes as OP_NOP and sets the sticky
+// Undefined opcode behavior (docs/isa.md): any of the 7 unassigned
+// 5-bit values (25-31) decodes as OP_NOP and sets the sticky
 // illegal-opcode flag (formal/debug-visibility only, not
 // firmware-readable). core.v's opcode case statement should have an
 // explicit `default` arm that does exactly this -- not rely on
-// synthesis inferring it, and not add cases for 21-31.
+// synthesis inferring it, and not add cases for 25-31.
 // ---------------------------------------------------------------------

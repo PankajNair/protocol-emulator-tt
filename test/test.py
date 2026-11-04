@@ -680,12 +680,12 @@ async def test_testbit(dut):
 
 @cocotb.test()
 async def test_illegal_opcode(dut):
-    """An unassigned opcode value (21) decodes as NOP -- execution
+    """An unassigned opcode value (25) decodes as NOP -- execution
     continues normally past it, not stuck or crashed."""
     prog = [
         asm.ldi(0, 0x11),
         asm.out(0),
-        asm.raw(21),
+        asm.raw(25),
         asm.ldi(0, 0x22),
         asm.out(0),
         asm.halt(),
@@ -760,7 +760,7 @@ async def test_ret_without_call_misuse_flag(dut):
 
 @cocotb.test(skip=GL)  # observes only an internal flag; behavior covered by test_illegal_opcode
 async def test_illegal_opcode_sets_flag(dut):
-    """An unassigned opcode (21) decodes as NOP for execution purposes
+    """An unassigned opcode (25) decodes as NOP for execution purposes
     (already covered by test_illegal_opcode) but ALSO sets the sticky
     illegal_op_flag (docs/isa.md Undefined opcode behavior) -- confirmed
     via direct hierarchical probe, since firmware cannot observe this
@@ -768,15 +768,15 @@ async def test_illegal_opcode_sets_flag(dut):
     prog = [
         asm.ldi(0, 0x11),
         asm.out(0),
-        asm.raw(21),
+        asm.raw(25),
         asm.halt(),
     ]
     await reset_and_boot(dut, prog)
     core = dut.user_project.u_core
     await run_to_value(dut, 0x11)
     assert int(core.illegal_op_flag.value) == 0, "flag should still be clear before the illegal opcode executes"
-    await ClockCycles(dut.clk, 10)  # let the raw(21) instruction finish its EXECUTE cycle
-    assert int(core.illegal_op_flag.value) == 1, "unassigned opcode 21 should have set the sticky illegal_op_flag"
+    await ClockCycles(dut.clk, 10)  # let the raw(25) instruction finish its EXECUTE cycle
+    assert int(core.illegal_op_flag.value) == 1, "unassigned opcode 25 should have set the sticky illegal_op_flag"
     dut._log.info("illegal opcode correctly set illegal_op_flag while still executing as NOP")
 
 

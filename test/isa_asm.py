@@ -32,6 +32,10 @@ OP_CMP = 17
 OP_LOADX = 18
 OP_XOR = 19
 OP_ADD = 20
+OP_SCFG = 21
+OP_STX = 22
+OP_SRX = 23
+OP_SRD = 24
 
 COND_JMP = 0b00
 COND_BEQ = 0b01
@@ -180,6 +184,26 @@ def xor_(rd: int, rs: int) -> int:
 def add(rd: int, rs: int) -> int:
     rest = ((rd & 0x3) << 9) | ((rs & 0x3) << 7)
     return _word(OP_ADD, rest)
+
+
+# Serial engine (docs/serial_engine.md): reg+imm format, Rd = source
+# (SCFG/STX) or destination (SRX/SRD).
+def scfg(rs: int, k: int) -> int:
+    return _word(OP_SCFG, ((rs & 0x3) << 9) | (k & 0xF))
+
+
+def stx(rs: int) -> int:
+    return _word(OP_STX, (rs & 0x3) << 9)
+
+
+def srx(rd: int, mantissa: int = 0, exponent: int = 0) -> int:
+    """Timeout = mantissa << (exponent*5) cycles; mantissa 0 = unbounded."""
+    imm = ((exponent & 0x3) << 7) | (mantissa & 0x7F)
+    return _word(OP_SRX, ((rd & 0x3) << 9) | imm)
+
+
+def srd(rd: int, k: int) -> int:
+    return _word(OP_SRD, ((rd & 0x3) << 9) | (k & 0xF))
 
 
 def assemble(entries: list) -> list[int]:

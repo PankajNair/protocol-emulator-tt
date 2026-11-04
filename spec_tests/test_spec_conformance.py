@@ -1138,7 +1138,7 @@ async def test_halt_freezes_everything(dut):
 @cocotb.test()
 async def test_reserved_opcodes_execute_as_nop(dut):
     """isa.md: 'Reserved/unused opcode encodings execute as NOP'; opcode
-    table '21-31 reserved ... Executes as NOP'. Each reserved opcode (with
+    table '25-31 reserved ... Executes as NOP'. Each reserved opcode (with
     all-ones and all-zeros operand bits) leaves R0-R3, the flag and the pins
     untouched, falls through to the next word and takes 3 cycles
     (architecture.md: NOP is 3 cycles). The sticky illegal-opcode flag is
@@ -1201,8 +1201,9 @@ def _uniform_cases():
         ("LOOP falls through", lambda a: a.ldi(1, 1), lambda a: a.loop(1, "far"), None),
         ("LOOP taken", lambda a: a.ldi(1, 2), lambda a: nopskip(a, lambda x: x.loop(1, "tgt")), None),
         ("DELAY 0", None, lambda a: a.delay(0, 0), None),
-        # isa.md: reserved range is now `21-31` (19 and 20 became XOR/ADD).
-        ("reserved 21", None, lambda a: a.raw(enc_0op(21, 0x7FF)), None),
+        # isa.md: reserved range is now `25-31` (parent edit 2026-11-04:
+        # 21-24 became the serial engine's opcodes).
+        ("reserved 25", None, lambda a: a.raw(enc_0op(25, 0x7FF)), None),
         # isa.md rows 19/20 are reg-reg ops; architecture.md: 'Uniform 3
         # cycles/instruction for everything -- ... register ops, all of it'.
         ("XOR", None, lambda a: a.xor(1, 2), None),

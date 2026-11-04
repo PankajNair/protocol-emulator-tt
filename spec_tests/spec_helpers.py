@@ -30,7 +30,11 @@ OP = dict(NOP=0, HALT=1, RET=2, BRANCH=3, LDI=4, SET=5, OUT=6, IN=7,
           # ("Resolved (2026-10-23): XOR and ADD added (opcodes 19 and 20,
           # reg-reg format)").
           XOR=19, ADD=20)
-RESERVED_OPS = list(range(21, 32))  # isa.md: `21-31` reserved
+RESERVED_OPS = list(range(25, 32))  # isa.md: `25-31` reserved
+# (parent edit 2026-11-04: 21-24 became the serial engine's SCFG/STX/SRX/SRD,
+# docs/serial_engine.md; listed here only so the opcode space adds up. Spec
+# tests FOR them are left to an independent spec-conformance pass.)
+ENGINE_OPS = list(range(21, 25))
 # (parent edit 2026-10-23: was 19-31 until XOR/ADD took 19 and 20; this list
 # follows the doc mechanically. Spec tests FOR XOR/ADD are left to an
 # independent spec-conformance pass, not written here.)
@@ -664,8 +668,9 @@ def _selftest():
         d = _decode(w)
         assert (d["op"], d["rd"], d["rs"], d["res"]) == (op, rd, rs, res)
     assert OP["XOR"] == 19 and OP["ADD"] == 20
-    assert RESERVED_OPS == list(range(21, 32))
-    assert not set(OP.values()) & set(RESERVED_OPS) and len(OP) + len(RESERVED_OPS) == 32
+    assert RESERVED_OPS == list(range(25, 32))
+    assert not set(OP.values()) & set(RESERVED_OPS + ENGINE_OPS)
+    assert len(OP) + len(ENGINE_OPS) + len(RESERVED_OPS) == 32
     # reference models (isa.md rows: wrap mod 256; carry iff sum > 255)
     assert ref_add(0xFF, 0x01) == (0x00, 1) and ref_add(0x7F, 0x80) == (0xFF, 0)
     assert ref_add(0x80, 0x80) == (0x00, 1) and ref_add(0xFF, 0xFF) == (0xFE, 1)

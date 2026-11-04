@@ -274,7 +274,13 @@ def step(state: SequencerState, word: int, io_read=None, abs_cycle: int | None =
         s.regs[f["rd"]] = total & 0xFF
         s.flag = total > 0xFF
 
-    elif 21 <= op <= 31:
+    elif asm.OP_SCFG <= op <= asm.OP_SRD:
+        # the serial engine's opcodes (docs/serial_engine.md) are outside
+        # the model's scope: the random generators never emit them, so
+        # seeing one is a harness bug, not something to guess at
+        raise IllegalOpcode(f"serial-engine opcode {op} is not modelled (word {word:#06x})")
+
+    elif 25 <= op <= 31:
         s.illegal_op_flag = True
 
     else:

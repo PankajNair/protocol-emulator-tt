@@ -85,7 +85,13 @@ module pin_ctrl (
     output wire         host_go_rise, // uio[4], LOAD mode only
     output wire         host_go_fall,
 
-    input  wire         mode_load     // LOAD vs running -- selects uio[6]'s START/HOST_ERROR role
+    input  wire         mode_load,    // LOAD vs running -- selects uio[6]'s START/HOST_ERROR role
+
+    // ser_engine.v: synchronized pins 1:0 out, a drive override back in
+    // (oe=1: the engine owns the pin, push-pull, its value)
+    output wire [1:0]   ser_pin_sync,
+    input  wire [1:0]   ser_drv_oe,
+    input  wire [1:0]   ser_drv_out
 );
 
   // -----------------------------------------------------------------
@@ -110,6 +116,7 @@ module pin_ctrl (
 
   assign ui_in_sync = ui_in_ff2;
   assign pin_read   = uio_in_ff2[pin_index];
+  assign ser_pin_sync = uio_in_ff2[1:0];
 
   // -----------------------------------------------------------------
   // Edge detection on the already-synchronized START (uio[6]) and
@@ -206,6 +213,14 @@ module pin_ctrl (
       end else if (gi == 6) begin : G_START_ERROR
         assign uio_oe[gi]  = mode_load ? 1'b0 : seen_start_fall;
         assign uio_out[gi] = drv[gi];
+      end else if (gi < 2) begin : G_PROTOCOL_SER
+        // pins 0/1 also carry the serial engine: while it transmits it
+        // overrides the sticky mode and value
+        wire is_pp = (mode[gi] == `SET_MODE_PUSH_PULL);
+        wire is_od = (mode[gi] == `SET_MODE_OPEN_DRAIN);
+        assign uio_oe[gi]  = mode_load ? 1'b0 :
+                             (ser_drv_oe[gi] || is_pp || (is_od && !drv[gi]));
+        assign uio_out[gi] = ser_drv_oe[gi] ? ser_drv_out[gi] : drv[gi];
       end else begin : G_PROTOCOL
         wire is_pp = (mode[gi] == `SET_MODE_PUSH_PULL);
         wire is_od = (mode[gi] == `SET_MODE_OPEN_DRAIN);

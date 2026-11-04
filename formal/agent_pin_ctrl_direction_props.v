@@ -61,6 +61,8 @@ module pin_ctrl_direction_props (
     input wire             outb_en,
     input wire             outb_bit,
     input wire [7:0]       uio_out,
+    input wire [1:0]       ser_drv_oe,   // serial engine drive request, pins 1:0
+    input wire [1:0]       ser_drv_out,
     input wire [7:0][1:0]  mode,   // DEBUG_PORTS: pin_ctrl.mode[0:7]
     input wire [7:0]       drv,    // DEBUG_PORTS: pin_ctrl.drv[0:7]
     // DEBUG_PORTS, used ONLY in Property 8's induction-strengthening
@@ -159,8 +161,10 @@ module pin_ctrl_direction_props (
 
   // ======================================================================
   // Property 4 -- protocol pins (0-3, 7): uio_oe[n] is 1 only if not in
-  // LOAD and (push-pull, or open-drain driving 0). Plus the converse
-  // (catches a stuck-Hi-Z pin) and the sticky-mode ghost cross-check.
+  // LOAD and (push-pull, or open-drain driving 0, or -- pins 0/1 only --
+  // the serial engine driving it, docs/serial_engine.md "Pins"). Plus the
+  // converse (catches a stuck-Hi-Z pin) and the sticky-mode ghost
+  // cross-check. (Engine terms: parent edit 2026-11-04.)
   // ======================================================================
   genvar n;
   generate
@@ -168,7 +172,8 @@ module pin_ctrl_direction_props (
       if (n <= 3 || n == 7) begin : G_PROTO
         wire is_pp   = (mode[n] == `SET_MODE_PUSH_PULL);
         wire is_od   = (mode[n] == `SET_MODE_OPEN_DRAIN);
-        wire allowed = !mode_load && (is_pp || (is_od && !drv[n]));
+        wire ser     = (n <= 1) ? ser_drv_oe[n % 2] : 1'b0;
+        wire allowed = !mode_load && (ser || is_pp || (is_od && !drv[n]));
 
         always @(posedge clk) begin
           if (rst_n) begin
@@ -176,7 +181,7 @@ module pin_ctrl_direction_props (
             cover (uio_oe[n]);
             assert (!uio_oe[n] || allowed);
             // 4a': LOAD with a driving mode configured is still Hi-Z.
-            if (mode_load && (is_pp || is_od)) begin
+            if (mode_load && (is_pp || is_od || ser)) begin
               cover (1'b1);
               assert (!uio_oe[n]);
             end
@@ -267,11 +272,27 @@ module pin_ctrl_direction_props (
   // ======================================================================
   // Property 7 -- protocol pins (0-3, 7): whenever driven, the pin shows
   // the last value written; in open-drain mode (ghost sticky mode) a driven
-  // pin is always driving 0.
+  // pin is always driving 0. Pins 0/1 while the serial engine drives them:
+  // the engine's value, whatever the sticky mode and value.
   // ======================================================================
   generate
     for (n = 0; n < 8; n = n + 1) begin : V
-      if (n <= 3 || n == 7) begin : G_PROTO_VAL
+      if (n <= 1) begin : G_SER_VAL
+        wire ser_here = ser_drv_oe[n % 2];
+        always @(posedge clk) begin
+          if (rst_n && uio_oe[n] && ser_here) begin
+            cover (uio_out[n] != g_val[n]);
+            assert (uio_out[n] == ser_drv_out[n % 2]);
+          end else if (rst_n && uio_oe[n]) begin
+            cover (uio_out[n]);
+            assert (uio_out[n] == g_val[n]);
+            if (g_mode[n] == `SET_MODE_OPEN_DRAIN) begin
+              cover (1'b1);
+              assert (!uio_out[n]);
+            end
+          end
+        end
+      end else if (n <= 3 || n == 7) begin : G_PROTO_VAL
         always @(posedge clk) begin
           if (rst_n && uio_oe[n]) begin
             cover (uio_out[n]);
@@ -340,6 +361,8 @@ bind pin_ctrl pin_ctrl_direction_props u_pin_ctrl_direction_props (
     .outb_en  (outb_en),
     .outb_bit (outb_bit),
     .uio_out  (uio_out),
+    .ser_drv_oe (ser_drv_oe),
+    .ser_drv_out(ser_drv_out),
     .mode     (mode),
     .drv      (drv),
     .uio_in_ff1     (uio_in_ff1),

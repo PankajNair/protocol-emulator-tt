@@ -60,7 +60,8 @@ class SeqCoverage:
     def __init__(self, seed: int):
         self.seed = seed
         self.commit_count = 0
-        # 21 real opcodes + reserved 21-31 (isa.md Undefined opcode behavior).
+        # 21 real opcodes + reserved 25-31 (isa.md Undefined opcode behavior);
+        # the serial-engine opcodes 21-24 are not in the random scope.
         self.opcode_bins = {n: 0 for n in OPCODE_NAMES.values()} | {"ILLEGAL": 0}
         # BRANCH cond x outcome -- BEQ/BNE each need both directions.
         self.branch_bins = {k: 0 for k in ("JMP", "BEQ_taken", "BEQ_not", "BNE_taken", "BNE_not", "CALL")}
@@ -111,7 +112,7 @@ class SeqCoverage:
         self.commit_count += 1
         self.opcode_bins[OPCODE_NAMES.get(op, "ILLEGAL")] += 1
 
-        if op >= 21:
+        if op >= 25:
             self.debug_flag_bins["illegal_op"] += 1
         elif op == asm.OP_BRANCH:
             cond = d["cond"]

@@ -17,6 +17,11 @@ Syntax (follows docs/isa.md's own examples):
                                   != 0 (constants and -D defines only --
                                   labels aren't known yet); nestable
     label:                        word address of the next instruction
+    .org word                     continue the code at word address `word`
+                                  (forward only). Words 256-511 are the data
+                                  region's bytes (docs/isa.md: the CPU runs
+                                  them like any code); code there must not
+                                  overlap .data, which is checked
     .data                         following .byte/.ascii go to the data region
     .byte 1, 0x2A, NAME           .ascii "text"
 
@@ -40,6 +45,12 @@ Syntax (follows docs/isa.md's own examples):
     CMP Rd, Rs | LOADX Rd, Rs
     XOR Rd, Rs                    Rd = Rd ^ Rs (flag untouched)
     ADD Rd, Rs                    Rd = Rd + Rs mod 256, flag = carry out
+    SCFG Rs, k | SRD Rd, k        serial engine config/command k <- Rs;
+                                  Rd <- status/CRC byte k (docs/serial_engine.md)
+    STX Rs                        queue Rs for transmission (blocks while full)
+    SRX Rd[, timeout]             Rd <- received byte (flag 0), or end of
+                                  packet / timeout (flag 1); timeout in
+                                  cycles as for WAIT, omitted = unbounded
 
 Pins are numbers 0-7 or names; HOST_GO=4, HOST_STATUS=5, HOST_ERROR=6
 are predefined. Mnemonics and register/mode names are case-insensitive.
@@ -63,7 +74,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "test"))
 import isa_asm as asm  # noqa: E402
 
 TIMEOUT_SHIFT = 5
-PROGRAM_WORDS = 256
+PROGRAM_WORDS = 256          # the program region; .org can place code above it
+MAX_WORDS = 512
 DATA_BYTES = 512
 PREDEFINED = {"HOST_GO": 4, "HOST_STATUS": 5, "HOST_ERROR": 6}
 MODES = {"leave": asm.SET_MODE_LEAVE, "pp": asm.SET_MODE_PUSH_PULL,
@@ -77,18 +89,26 @@ class AsmError(Exception):
 
 @dataclass
 class Program:
-    words: list[int]
+    words: list[int]                 # words 0.. in the program region (gaps from .org = NOP)
     data: list[int]
     labels: dict[str, int]
     warnings: list[str] = field(default_factory=list)
     listing: list[str] = field(default_factory=list)
+    high: dict[int, int] = field(default_factory=dict)   # .org code at words 256-511
 
     def image(self) -> list[int]:
-        """Boot-stream bytes: program, then the data region if used."""
+        """Boot-stream bytes: program, then the data region if used (with
+        any code placed in it by .org)."""
         img = asm.to_bytes(self.words)
-        if self.data:
+        if self.data or self.high:
             img += [0] * (2 * PROGRAM_WORDS - len(img))
-            img += self.data
+            region = list(self.data)
+            top = max([2 * (w - PROGRAM_WORDS) + 2 for w in self.high] + [len(region)])
+            region += [0] * (top - len(region))
+            for w, v in self.high.items():
+                o = 2 * (w - PROGRAM_WORDS)
+                region[o], region[o + 1] = v & 0xFF, v >> 8
+            img += region
         return img
 
 
@@ -159,6 +179,7 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
     pc = 0
     labels: dict[str, int] = {}
     cond: list[list] = []  # .if stack: [active_here, branch_taken, where]
+    org_high = False       # an .org has moved the code into the data region
     for lineno, raw in enumerate(text.splitlines(), 1):
         where = f"{name}:{lineno}"
         s = re.split(r"[;#]", raw, maxsplit=1)[0].strip()
@@ -220,12 +241,22 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
             continue
         if in_data:
             raise AsmError(f"{where}: instructions not allowed after .data")
+        if mn == ".ORG":
+            to = _eval(ops, consts, where)
+            if not pc <= to <= MAX_WORDS:
+                raise AsmError(f"{where}: .org {to}: must be >= the current word {pc} and <= {MAX_WORDS}")
+            pc = to
+            org_high = org_high or to >= PROGRAM_WORDS
+            continue
+        if pc >= PROGRAM_WORDS and not org_high:
+            raise AsmError(f"{where}: past word {PROGRAM_WORDS - 1}, the end of the program "
+                           f"region (use .org to continue in the data region)")
         lines.append((where, mn, ops, pc))
         pc += 1
     if cond:
         raise AsmError(f"{cond[-1][2]}: .if without .endif")
-    if pc > PROGRAM_WORDS:
-        raise AsmError(f"{name}: {pc} words, program region holds {PROGRAM_WORDS}")
+    if pc > MAX_WORDS:
+        raise AsmError(f"{name}: code runs past word {MAX_WORDS - 1}")
 
     names = dict(consts)
     for k, v in labels.items():
@@ -345,9 +376,36 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
             need(o, 2, where, f"{mn} Rd, Rs")
             enc = {"CMP": asm.cmp_, "LOADX": asm.loadx, "XOR": asm.xor_, "ADD": asm.add}[mn]
             w = enc(_reg(o[0], where), _reg(o[1], where))
+        elif mn in ("SCFG", "SRD"):
+            need(o, 2, where, f"{mn} R, k")
+            k = val(o[1], where)
+            if not 0 <= k <= 15:
+                raise AsmError(f"{where}: {mn} k must be 0-15")
+            w = (asm.scfg if mn == "SCFG" else asm.srd)(_reg(o[0], where), k)
+        elif mn == "STX":
+            need(o, 1, where, "STX Rs")
+            w = asm.stx(_reg(o[0], where))
+        elif mn == "SRX":
+            need(o, (1, 2), where, "SRX Rd[, timeout_cycles]")
+            m = e = 0
+            if len(o) == 2:
+                want = val(o[1], where)
+                if want <= 0:
+                    raise AsmError(f"{where}: SRX timeout must be > 0 (omit it for an unbounded wait)")
+                m, e, actual = encode_cycles(want, 7)
+                if m == 0:
+                    raise AsmError(f"{where}: SRX timeout {want} rounds to 0 (would mean unbounded)")
+                if actual != want:
+                    prog.warnings.append(f"{where}: SRX timeout {want} not encodable, using {actual} "
+                                         f"(mantissa {m}, exponent {e})")
+            w = asm.srx(_reg(o[0], where), mantissa=m, exponent=e)
         else:
             raise AsmError(f"{where}: unknown mnemonic {mn!r}")
-        prog.words.append(w)
+        if wpc >= PROGRAM_WORDS:
+            prog.high[wpc] = w
+        else:
+            prog.words += [asm.nop()] * (wpc - len(prog.words))
+            prog.words.append(w)
         prog.listing.append(f"{wpc:3d}: {w:04x}  {mn} {ops}".rstrip())
 
     for where, mn, ops in data_lines:
@@ -364,6 +422,11 @@ def assemble(text: str, defines: dict[str, int] | None = None, name: str = "<asm
                 prog.data.append(b)
     if len(prog.data) > DATA_BYTES:
         raise AsmError(f"{name}: {len(prog.data)} data bytes, region holds {DATA_BYTES}")
+    if prog.high:
+        lo = 2 * (min(prog.high) - PROGRAM_WORDS)
+        if lo < len(prog.data):
+            raise AsmError(f"{name}: code at word {min(prog.high)} overlaps .data "
+                           f"(data offsets 0-{len(prog.data) - 1})")
     return prog
 
 

@@ -76,6 +76,18 @@ module protocol_cpu_core (
     input  wire        host_go_fall,
     output wire        mode_load,
 
+    // ser_engine.v (docs/serial_engine.md)
+    output wire        ser_cfg_we,
+    output wire [3:0]  ser_k,
+    output wire [7:0]  ser_wdata,
+    output wire        ser_tx_we,
+    output wire        ser_rx_take,
+    input  wire        ser_tx_full,
+    input  wire        ser_rx_avail,
+    input  wire        ser_rx_end,
+    input  wire [7:0]  ser_rx_byte,
+    input  wire [7:0]  ser_rd_data,
+
     // TT output-only pin, driven directly (docs/architecture.md).
     output wire [7:0]  uo_out
 );
@@ -141,8 +153,10 @@ module protocol_cpu_core (
   wire [1:0] w_loop_rd    = word[`LOOP_RD_HI:`LOOP_RD_LO];
   wire [1:0] w_rs         = word[`RS_HI:`RS_LO];
   wire       w_shift_dir  = word[`SHIFT_DIR_BIT];
+  wire [1:0] w_srx_exp    = word[`SRX_EXP_HI:`SRX_EXP_LO];
+  wire [6:0] w_srx_mant   = word[`SRX_MANT_HI:`SRX_MANT_LO];
 
-  wire opcode_recognized = (opcode <= 5'd20);
+  wire opcode_recognized = (opcode <= 5'd24);
 
   // -----------------------------------------------------------------
   // Shared DELAY/WAIT countdown counter. Declared before the regfile
@@ -154,12 +168,18 @@ module protocol_cpu_core (
   // -----------------------------------------------------------------
   wire        wait_has_timeout   = (w_wait_mant != 5'd0);
   wire        wait_condition_met = (pin_read == w_aux_bit);
+  // SRX shares the counter for its timeout, with WAIT's
+  // "zero mantissa = unbounded" rule.
+  wire        srx_has_timeout    = (w_srx_mant != 7'd0);
+  wire        srx_ready          = ser_rx_avail || ser_rx_end;
 
   wire        cnt_load     = entering_execute &&
                               ((opcode == `OP_DELAY) ||
-                               (opcode == `OP_WAIT && wait_has_timeout));
-  wire [8:0]  cnt_mantissa = (opcode == `OP_DELAY) ? w_delay_mant : {4'd0, w_wait_mant};
-  wire [1:0]  cnt_exponent = w_exponent;
+                               (opcode == `OP_WAIT && wait_has_timeout) ||
+                               (opcode == `OP_SRX && srx_has_timeout));
+  wire [8:0]  cnt_mantissa = (opcode == `OP_DELAY) ? w_delay_mant :
+                             (opcode == `OP_SRX)   ? {2'd0, w_srx_mant} : {4'd0, w_wait_mant};
+  wire [1:0]  cnt_exponent = (opcode == `OP_SRX) ? w_srx_exp : w_exponent;
   wire        cnt_expired;
 
   cycle_counter u_cycle_counter (
@@ -174,7 +194,10 @@ module protocol_cpu_core (
   wire delay_pending = (opcode == `OP_DELAY) && !cnt_expired;
   wire wait_pending   = (opcode == `OP_WAIT) && !wait_condition_met &&
                           !(wait_has_timeout && cnt_expired);
-  wire exec_done = !delay_pending && !wait_pending;
+  wire stx_pending    = (opcode == `OP_STX) && ser_tx_full;
+  wire srx_pending    = (opcode == `OP_SRX) && !srx_ready &&
+                          !(srx_has_timeout && cnt_expired);
+  wire exec_done = !delay_pending && !wait_pending && !stx_pending && !srx_pending;
   wire exec_commit = (state == S_EXECUTE) && exec_done;
 
   // -----------------------------------------------------------------
@@ -240,6 +263,14 @@ module protocol_cpu_core (
       `OP_ADD: begin
         reg_w_en   = 1'b1;
         reg_w_data = add_sum[7:0];
+      end
+      `OP_SRX: begin
+        reg_w_en   = ser_rx_avail;   // end/timeout: Rd unchanged
+        reg_w_data = ser_rx_byte;
+      end
+      `OP_SRD: begin
+        reg_w_en   = 1'b1;
+        reg_w_data = ser_rd_data;
       end
       default: ;
     endcase
@@ -333,6 +364,16 @@ module protocol_cpu_core (
   assign mode_load = (state == S_LOAD);
 
   // -----------------------------------------------------------------
+  // ser_engine.v strobes, pulsed on exec_commit like SET/OUTB. ser_k
+  // is live decode (SRD reads it combinationally in EXECUTE).
+  // -----------------------------------------------------------------
+  assign ser_cfg_we  = exec_commit && (opcode == `OP_SCFG);
+  assign ser_k       = word[`SER_K_HI:`SER_K_LO];
+  assign ser_wdata   = ra_data;
+  assign ser_tx_we   = exec_commit && (opcode == `OP_STX);
+  assign ser_rx_take = exec_commit && (opcode == `OP_SRX);
+
+  // -----------------------------------------------------------------
   // uo_out: boot-mode address echo, or runtime OUT.
   // -----------------------------------------------------------------
   wire [9:0] boot_addr_next = (boot_addr == 10'd1023) ? boot_addr : boot_addr + 10'd1;
@@ -412,6 +453,7 @@ module protocol_cpu_core (
                 `OP_TESTBIT: flag <= ra_data[w_bitidx];
                 `OP_WAIT:    flag <= wait_condition_met ? 1'b0 : 1'b1;
                 `OP_ADD:     flag <= add_sum[8];
+                `OP_SRX:     flag <= !ser_rx_avail;
                 default: ;
               endcase
 

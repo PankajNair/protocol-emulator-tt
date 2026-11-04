@@ -76,7 +76,7 @@ EXTRA_SRCS = {
     # chip-level props: the whole design, with the SRAM macro replaced by
     # formal/models/sram_anyseq.v (read data unconstrained every cycle)
     "tt_um_pankajnair_protocol_emulator": ["cpu/regfile.v", "io/cycle_counter.v", "cpu/core.v",
-                                           "io/pin_ctrl.v", "mem/mem.v",
+                                           "io/pin_ctrl.v", "io/ser_engine.v", "mem/mem.v",
                                            "../formal/models/sram_anyseq.v"],
 }
 

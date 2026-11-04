@@ -5,8 +5,8 @@
 
 `default_nettype none
 
-// Instantiates cpu/core.v + io/pin_ctrl.v + mem/mem.v as three
-// top-level siblings (docs/architecture.md hierarchy) -- top.v itself
+// Instantiates cpu/core.v + io/pin_ctrl.v + mem/mem.v + io/ser_engine.v
+// as four top-level siblings (docs/architecture.md hierarchy) -- top.v itself
 // does no logic, just the wiring core.v<->pin_ctrl.v/mem.v shown in
 // each module's own header comment. Port connections here match the
 // throwaway wiring-check harness those three modules were already
@@ -39,6 +39,12 @@ module tt_um_pankajnair_protocol_emulator (
   wire       host_go_rise, host_go_fall;
   wire       mode_load;
 
+  wire       ser_cfg_we, ser_tx_we, ser_rx_take;
+  wire [3:0] ser_k;
+  wire [7:0] ser_wdata, ser_rx_byte, ser_rd_data;
+  wire       ser_tx_full, ser_rx_avail, ser_rx_end;
+  wire [1:0] ser_pin_sync, ser_drv_oe, ser_drv_out;
+
   protocol_cpu_core u_core (
       .clk         (clk),
       .rst_n       (rst_n),
@@ -59,6 +65,16 @@ module tt_um_pankajnair_protocol_emulator (
       .host_go_rise(host_go_rise),
       .host_go_fall(host_go_fall),
       .mode_load   (mode_load),
+      .ser_cfg_we  (ser_cfg_we),
+      .ser_k       (ser_k),
+      .ser_wdata   (ser_wdata),
+      .ser_tx_we   (ser_tx_we),
+      .ser_rx_take (ser_rx_take),
+      .ser_tx_full (ser_tx_full),
+      .ser_rx_avail(ser_rx_avail),
+      .ser_rx_end  (ser_rx_end),
+      .ser_rx_byte (ser_rx_byte),
+      .ser_rd_data (ser_rd_data),
       .uo_out      (uo_out)
   );
 
@@ -90,7 +106,29 @@ module tt_um_pankajnair_protocol_emulator (
       .start_fall  (start_fall),
       .host_go_rise(host_go_rise),
       .host_go_fall(host_go_fall),
-      .mode_load   (mode_load)
+      .mode_load   (mode_load),
+      .ser_pin_sync(ser_pin_sync),
+      .ser_drv_oe  (ser_drv_oe),
+      .ser_drv_out (ser_drv_out)
+  );
+
+  ser_engine u_ser (
+      .clk      (clk),
+      .rst_n    (rst_n),
+      .pin_sync (ser_pin_sync),
+      .drv_oe   (ser_drv_oe),
+      .drv_out  (ser_drv_out),
+      .cfg_we   (ser_cfg_we),
+      .cfg_addr (ser_k),
+      .cfg_wdata(ser_wdata),
+      .tx_we    (ser_tx_we),
+      .tx_data  (ser_wdata),
+      .rx_take  (ser_rx_take),
+      .tx_full  (ser_tx_full),
+      .rx_avail (ser_rx_avail),
+      .rx_end   (ser_rx_end),
+      .rx_byte  (ser_rx_byte),
+      .rd_data  (ser_rd_data)
   );
 
   // ena: TT convention, always 1 when powered -- no power-sequencing

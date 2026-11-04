@@ -9,7 +9,7 @@
 // WAIT (10) writes flag on exit, 0 if the pin condition was met, 1 on
 // timeout (condition-met wins on the expiry cycle); ADD (20) flag = carry
 // out of Rd + Rs; XOR (19) "flag untouched". Branch format section: the
-// flag-writers are CMP, TEST-bit, WAIT and ADD and nothing else. (ADD and
+// flag-writers are CMP, TEST-bit, WAIT, ADD and SRX and nothing else. (ADD and
 // XOR added 2026-10-23 with the ISA change.)
 // Formats (word = {high byte, low byte}, opcode = word[15:11]):
 //   LOOP     opcode | addr(9)=word[10:2] | Rd(2)=word[1:0]
@@ -52,6 +52,7 @@ module core_loop_flag_props (
     input wire [9:0]  mem_addr,
     input wire [7:0]  mem_rdata,
     input wire        pin_read,
+    input wire        ser_rx_avail,
     input wire [1:0]  state,       // DEBUG_PORTS
     input wire [8:0]  pc,          // DEBUG_PORTS
     input wire        flag,        // DEBUG_PORTS
@@ -85,6 +86,7 @@ module core_loop_flag_props (
   localparam OP_CMP     = 5'd17;
   localparam OP_XOR     = 5'd19;
   localparam OP_ADD     = 5'd20;
+  localparam OP_SRX     = 5'd23;
 
   // ======================================================================
   // Environment: genuine reset at step 0 (async reset). Free after.
@@ -114,7 +116,7 @@ module core_loop_flag_props (
   wire        cur_lvl  = entering ? g_lo[5] : cur_lvl_r;
   wire        in_exec  = rst_n && (state == S_EXECUTE);
   wire        is_writer = (cur_op == OP_CMP) || (cur_op == OP_TESTBIT) || (cur_op == OP_WAIT) ||
-                          (cur_op == OP_ADD);
+                          (cur_op == OP_ADD) || (cur_op == OP_SRX);
 
   // ----------------------------------------------------------------------
   // Ghost regfile, built from the regfile's write port (reset 0).
@@ -133,6 +135,7 @@ module core_loop_flag_props (
 
   // Previous-cycle snapshots.
   reg       p_flag, p_exec, p_writer, p_loop, p_cmp, p_test, p_shift, p_wait, p_lvl, p_pin;
+  reg       p_srx, p_avail;
   reg [4:0] p_op;
   reg [7:0] p_old;
   reg [8:0] p_target, p_fpc;
@@ -159,6 +162,8 @@ module core_loop_flag_props (
       p_test     <= 1'b0;
       p_shift    <= 1'b0;
       p_wait     <= 1'b0;
+      p_srx      <= 1'b0;
+      p_avail    <= 1'b0;
       p_lvl      <= 1'b0;
       p_pin      <= 1'b0;
       p_op       <= 5'd0;
@@ -189,6 +194,8 @@ module core_loop_flag_props (
       p_test     <= c_test;
       p_shift    <= c_shift;
       p_wait     <= in_exec && (cur_op == OP_WAIT);
+      p_srx      <= in_exec && (cur_op == OP_SRX);
+      p_avail    <= ser_rx_avail;
       p_lvl      <= cur_lvl;
       p_pin      <= pin_read;
       p_old      <= old_lp;
@@ -227,7 +234,8 @@ module core_loop_flag_props (
       cover (p_shift && !p_flag);
       cover (p_shift &&  p_flag);
       cover (p_exec && p_op == OP_BRANCH &&  p_flag);
-      cover (p_exec && p_op >= 5'd21     &&  p_flag);
+      cover (p_exec && p_op >= 5'd25     &&  p_flag);
+      cover (p_exec && p_op == 5'd22     &&  p_flag);   // STX
       cover (p_xor  &&  p_flag);
       cover (p_xor  && !p_flag);
       assert (flag == p_flag);
@@ -293,6 +301,13 @@ module core_loop_flag_props (
       cover (!p_carry &&  p_flag);
       assert (flag == p_carry);
     end
+    // SRX (on its exit cycle): flag = 0 with a byte, 1 on an end of
+    // packet or a timeout (docs/serial_engine.md; parent edit 2026-11-04)
+    if (chk && p_srx && state == S_FETCH_LO) begin
+      cover ( p_avail &&  p_flag);
+      cover (!p_avail && !p_flag);
+      assert (flag == !p_avail);
+    end
     if (chk && p_wait && state == S_FETCH_LO) begin
       cover (p_pin == p_lvl &&  p_flag);
       cover (p_pin != p_lvl && !p_flag);
@@ -345,6 +360,7 @@ bind protocol_cpu_core core_loop_flag_props u_core_loop_flag_props (
     .mem_addr (mem_addr),
     .mem_rdata(mem_rdata),
     .pin_read (pin_read),
+    .ser_rx_avail(ser_rx_avail),
     .state    (state),
     .pc       (pc),
     .flag     (flag),

@@ -31,6 +31,7 @@ project:
     - "cpu/regfile.v"
     - "io/cycle_counter.v"
     - "io/pin_ctrl.v"
+    - "io/ser_engine.v"
     - "mem/mem.v"
     - "RM_IHPSG13_1P_1024x8_c2_bm_bist.v"  # port-only stub; real macro via src/config.json MACROS
     - "top.v"
