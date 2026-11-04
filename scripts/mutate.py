@@ -18,11 +18,15 @@ Per mutant: save original text, apply edits (all-or-nothing; a missing
 old_string = "error", never silently skipped), rebuild, run directed
 suite + <seeds> random differential seeds + the board testbench
 (protocol firmware against slave models), classify killed/survived,
-then UNCONDITIONALLY restore in try/finally -- a crash mid-mutant must
-never leave src/ mutated. One final rebuild on the restored tree.
+then UNCONDITIONALLY restore in try/finally. The first suite that fails
+kills the mutant; the rest are skipped (they can't un-kill it).
+
+Mutants run in parallel, --jobs at a time. Each job has its own copy of
+the tree (src, test, firmware, ...) in a temporary directory, so the
+repository's own src/ is never edited and jobs never share a build dir.
 
 Usage:
-    mutate.py [--seeds N] [--only ID[,ID...]]
+    mutate.py [--seeds N] [--only ID[,ID...]] [--jobs N]
 
 Exit 0 iff score >= SCORE_THRESHOLD and nothing errored.
 """
@@ -30,20 +34,27 @@ Exit 0 iff score >= SCORE_THRESHOLD and nothing errored.
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_DIR   = REPO_ROOT / "src"
-TEST_DIR  = REPO_ROOT / "test"
 VENV_BIN  = REPO_ROOT / ".venv" / "bin"
 
 DEFAULT_SEEDS   = 50
 SCORE_THRESHOLD = 0.80
 REPORT_OUT      = REPO_ROOT / "mutation_results.json"
 SUITE_TIMEOUT_S = 300  # a mutant that hangs the suite counts as killed, not a stalled gate
+# what each job copies of the repository (paths the suites read)
+TREE_DIRS = ("src", "test", "firmware", "spec_tests", "scripts", "docs", "formal")
+TREE_IGNORE = shutil.ignore_patterns("sim_build", "results*.xml", "regression_artifacts",
+                                     "gate_level_netlist.v", "__pycache__", "*.vcd", "*.fst",
+                                     "coverage.dat", ".triage.lock")
 
 MUTANTS = [
     dict(
@@ -281,12 +292,12 @@ MUTANTS = [
 ]
 
 
-def _bash(cmd: str, timeout: int = SUITE_TIMEOUT_S) -> subprocess.CompletedProcess:
+def _bash(cmd: str, test_dir: Path, timeout: int = SUITE_TIMEOUT_S) -> subprocess.CompletedProcess:
     # Own process group so a timeout kills make, vvp and all, not just bash.
     # Use the local .venv when there is one (cocotb needs Python <= 3.13);
     # in CI the tools are installed in the job's own Python instead.
     activate = f"source {VENV_BIN}/activate && " if (VENV_BIN / "activate").exists() else ""
-    pr = subprocess.Popen(["bash", "-c", f"{activate}{cmd}"], cwd=TEST_DIR,
+    pr = subprocess.Popen(["bash", "-c", f"{activate}{cmd}"], cwd=test_dir,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                           start_new_session=True)
     try:
@@ -298,38 +309,51 @@ def _bash(cmd: str, timeout: int = SUITE_TIMEOUT_S) -> subprocess.CompletedProce
         return subprocess.CompletedProcess(pr.args, 124, "", f"TIMEOUT after {timeout}s")
 
 
-def _failed(r: subprocess.CompletedProcess) -> bool:
+def _failed(r: subprocess.CompletedProcess, test_dir: Path) -> bool:
     # Belt and braces: nonzero exit OR a <failure> in results.xml.
-    xml = TEST_DIR / "results.xml"
+    xml = test_dir / "results.xml"
     return r.returncode != 0 or (xml.exists() and "<failure" in xml.read_text())
 
 
-def rebuild() -> bool:
+def make_tree(root: Path) -> Path:
+    """A private copy of the tree for one job; returns its test dir."""
+    for d in TREE_DIRS:
+        if (REPO_ROOT / d).exists():
+            shutil.copytree(REPO_ROOT / d, root / d, ignore=TREE_IGNORE, symlinks=True)
+    return root / "test"
+
+
+def rebuild(test_dir: Path) -> bool:
     # Build-only target, so a mutant that makes a test fail (a real kill)
     # is never misreported as a build error.
-    r = _bash("rm -rf sim_build results.xml && make sim_build/rtl/sim.vvp")
+    r = _bash("rm -rf sim_build results.xml && make sim_build/rtl/sim.vvp", test_dir)
     if r.returncode != 0:
         print(f"ERROR: rebuild failed\n{r.stdout}\n{r.stderr}", file=sys.stderr)
         return False
     return True
 
 
-def run_fast_sample(seeds: int, board: bool = True) -> tuple[bool, str]:
+def run_fast_sample(seeds: int, test_dir: Path, board: bool = True,
+                    stop_on_fail: bool = True) -> tuple[bool, str]:
     """Directed (incl. UART end-to-end), random differential, and -- unless
     board=False -- the board testbench (loopback self-test, two-chip UART
-    link, I2C, SPI against slave models). Each suite's verdict is
-    reported; a mutant survives only if all of them pass."""
-    results = {}
-    d = _bash("rm -f results.xml && make")
-    results["directed"] = not _failed(d)
-    r = _bash(f"rm -f results.xml && SEEDS={seeds} make random")
-    results["seeds"] = not _failed(r)
+    link, I2C, SPI against slave models). A mutant survives only if all
+    of them pass; with stop_on_fail the suites after the first failure
+    are skipped (reported as SKIP)."""
+    suites = [("directed", "rm -f results.xml && make"),
+              ("seeds", f"rm -f results.xml && SEEDS={seeds} make random")]
     if board:
         # Separate toplevel and build dir: rebuild it from the (mutated) src.
-        b = _bash("rm -rf sim_build/board results.xml && make board")
-        results["board"] = not _failed(b)
-    detail = " ".join(f"{k}={'PASS' if v else 'FAIL'}" for k, v in results.items())
-    return all(results.values()), detail
+        suites.append(("board", "rm -rf sim_build/board results.xml && make board"))
+    results = {}
+    for name, cmd in suites:
+        if stop_on_fail and not all(results.values()):
+            results[name] = None
+            continue
+        results[name] = not _failed(_bash(cmd, test_dir), test_dir)
+    detail = " ".join(f"{k}={'SKIP' if v is None else 'PASS' if v else 'FAIL'}"
+                      for k, v in results.items())
+    return all(v is not False for v in results.values()), detail
 
 
 def apply_edits(path: Path, edits: list[tuple[str, str]]) -> tuple[bool, str]:
@@ -351,6 +375,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, default=DEFAULT_SEEDS)
     ap.add_argument("--only", type=str, default=None, help="comma-separated mutant ids")
+    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
+                    help="mutants run at once, each in its own tree copy (default: CPU count)")
     ap.add_argument("--no-board", action="store_true",
                     help="skip the board testbench suite (faster, weaker)")
     args = ap.parse_args()
@@ -364,39 +390,52 @@ def main() -> int:
               "Commit or stash first.", file=sys.stderr)
         return 1
 
+    jobs = max(1, min(args.jobs, len(mutants)))
     suites = f"directed + SEEDS={args.seeds}" + ("" if args.no_board else " + board")
-    print(f"[mutate] baseline check ({suites}) ...", flush=True)
-    if not rebuild():
-        return 1
-    ok, detail = run_fast_sample(args.seeds, board=not args.no_board)
-    if not ok:
-        print(f"ERROR: baseline fails ({detail}) -- aborting; every verdict would be "
-              "meaningless against a failing baseline.", file=sys.stderr)
-        return 1
-    print(f"[mutate] baseline clean ({detail})\n", flush=True)
+    with tempfile.TemporaryDirectory(prefix="mutate_") as tmp:
+        trees = [make_tree(Path(tmp) / f"job{i}") for i in range(jobs)]
 
-    results = []
-    for m in mutants:
-        path = SRC_DIR / m["file"]
-        original = path.read_text()
-        print(f"[mutate] #{m['id']:2d} {m['file']:20s} {m['desc']}", flush=True)
-        try:
-            ok, err = apply_edits(path, m["edits"])
-            if not ok:
-                print(f"           -> ERROR: {err}", flush=True)
-                results.append(_row(m, "error", err))
-                continue
-            if not rebuild():
-                results.append(_row(m, "error", "rebuild failed with mutant applied"))
-                continue
-            passed, detail = run_fast_sample(args.seeds, board=not args.no_board)
-            status = "survived" if passed else "killed"
-            print(f"           -> {status.upper()} ({detail})", flush=True)
-            results.append(_row(m, status, detail))
-        finally:
-            path.write_text(original)
+        # the baseline runs every suite, not stopping at a failure
+        print(f"[mutate] baseline check ({suites}) ...", flush=True)
+        if not rebuild(trees[0]):
+            return 1
+        ok, detail = run_fast_sample(args.seeds, trees[0], board=not args.no_board,
+                                     stop_on_fail=False)
+        if not ok:
+            print(f"ERROR: baseline fails ({detail}) -- aborting; every verdict would be "
+                  "meaningless against a failing baseline.", file=sys.stderr)
+            return 1
+        print(f"[mutate] baseline clean ({detail}); {len(mutants)} mutants, "
+              f"{jobs} jobs\n", flush=True)
 
-    rebuild()
+        free = list(trees)
+        lock = threading.Lock()
+
+        def run_one(m: dict) -> dict:
+            with lock:
+                test_dir = free.pop()
+            path = test_dir.parent / "src" / m["file"]
+            original = path.read_text()
+            try:
+                ok, err = apply_edits(path, m["edits"])
+                if not ok:
+                    row = _row(m, "error", err)
+                elif not rebuild(test_dir):
+                    row = _row(m, "error", "rebuild failed with mutant applied")
+                else:
+                    passed, detail = run_fast_sample(args.seeds, test_dir,
+                                                     board=not args.no_board)
+                    row = _row(m, "survived" if passed else "killed", detail)
+            finally:
+                path.write_text(original)
+                with lock:
+                    free.append(test_dir)
+            print(f"[mutate] #{m['id']:2d} {m['file']:20s} {m['desc']}\n"
+                  f"           -> {row['status'].upper()} ({row['detail']})", flush=True)
+            return row
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            results = list(pool.map(run_one, mutants))
 
     killed   = sum(r["status"] == "killed" for r in results)
     survived = sum(r["status"] == "survived" for r in results)

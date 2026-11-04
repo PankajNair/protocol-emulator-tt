@@ -117,8 +117,15 @@ HOST_GO/STATUS/ERROR pin stimulus, unbounded WAIT, nested CALL.
 
 `scripts/mutate.py`, `make mutate [MUTATE_SEEDS=n]`. Threshold 80%.
 Baseline must pass first. Each mutant is applied to `src/`, the directed
-suite plus n random seeds run, and the file is restored in `try/finally`.
-Runs in the parent session only, never delegated.
+suite plus n random seeds plus the board testbench run, and the file is
+restored in `try/finally`. Runs in the parent session only, never
+delegated.
+
+Mutants run in parallel (`--jobs`, default the CPU count). Each job
+mutates its own temporary copy of the tree, so the repository's `src/` is
+never edited and jobs never share a build directory. A mutant is killed
+by the first suite that fails; the suites after it are skipped, since
+they can't change the verdict. The baseline still runs every suite.
 
 | # | File | Mutation | Why it's in the list |
 |---|---|---|---|
