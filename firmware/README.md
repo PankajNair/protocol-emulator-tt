@@ -160,6 +160,18 @@ the brief.
   write and read-back, WAIT ack, corrupted read parity flagged, no answer
   without the switch. Request parity left out, write parity inverted, or
   the turnaround before ACK dropped each fail it.
+- `protocols/jtag.asm` -- JTAG (IEEE 1149.1) host: TAP reset and IR/DR
+  scans of 1-255 bits, each starting and ending in Run-Test/Idle, with
+  the last bit shifted on TMS = 1. TDI = pin 0, TMS = pin 1, TCK = pin 2,
+  TDO = pin 3, ~1.1 MHz. The bit count is split into bytes with ADD's
+  carry (n - 8 >= 0); a short last byte comes back right-aligned. Verified
+  by `test/test_jtag.py` against an independent two-device scan chain
+  (4-bit and 6-bit IRs, full 16-state TAP controllers, TDO moving only on
+  falling edges; checks TMS/TDI never move while TCK is high): both
+  IDCODEs in a 64-bit scan, IR capture values, BYPASS giving a chain
+  length of 2, a 32-bit USER register written and read back, 1/7/9-bit
+  scans. The last bit shifted with TMS = 0, the IR path entered as DR, no
+  right-alignment, or TDO sampled after the falling edge each fail it.
 - `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →

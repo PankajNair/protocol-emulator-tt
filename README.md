@@ -26,10 +26,11 @@ protocol is a new program, loaded by the host after fabrication.
   IHP 1 KB SRAM macro.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
   (100/400 kHz), SPI target (the chip as the peripheral, following an
-  external clock), and five protocols the chip wasn't designed for: a
+  external clock), and six protocols the chip wasn't designed for: a
   CAN 2.0A transmitter and receiver (stuffing, CRC-15, arbitration,
   clock resync), an SWD host (ARM debug port: reads a Cortex-M's
-  IDCODE), a WS2812 LED
+  IDCODE), a JTAG host (IEEE 1149.1: scan-chain IDCODEs, BYPASS, data
+  registers), a WS2812 LED
   driver, a 1-Wire controller, an NEC IR remote transmitter and a PS/2
   keyboard receiver. Each is verified in simulation against an independent
   model of the other end.

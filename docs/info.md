@@ -55,6 +55,7 @@ against an independent model of the other end:
 | `can_tx.asm` | CAN 2.0A transmitter, 50 kbit/s: stuffing, CRC-15, ACK, arbitration, bit-error detection |
 | `can_rx.asm` | CAN 2.0A receiver, 50 kbit/s: resyncs to the transmitter's clock, destuffing, CRC and form checks, ACKs good frames |
 | `swd.asm` | SWD host (ARM debug): line reset, DP/AP reads and writes, e.g. a Cortex-M's IDCODE |
+| `jtag.asm` | JTAG host (IEEE 1149.1): TAP reset, IR/DR scans of 1-255 bits, e.g. a scan chain's IDCODEs |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
@@ -105,6 +106,7 @@ the firmware:
 | PS/2 host | DATA | CLK | | |
 | CAN | TXD (to transceiver) | RXD (from transceiver) | | |
 | SWD | SWDIO | | SWCLK | |
+| JTAG | TDI | TMS | TCK | TDO |
 
 - **I2C needs pull-up resistors** on SDA and SCL (for example 4.7 kΩ to
   3.3 V at 100 kHz, 2.2 kΩ at 400 kHz): the chip drives them open-drain.
