@@ -63,10 +63,16 @@ _CONST0 = "constant 0 by construction: uio[4] is HOST_GO, a fixed input (pin_ctr
 _OE5 = ("constant 1 by construction: uio[5] is HOST_STATUS, a fixed output (pin_ctrl.v "
         "G_HOST_STATUS); the 0->1 is only Verilator's 2-state power-up")
 _UNUSED = "lint sink (`_unused` reduction of deliberately unconnected inputs), drives nothing"
+_UNREACH_SER = ("unreachable: st is 3 bits and only E_IDLE..E_WAIT (0-4) are ever assigned; the default arm "
+                "is for 5-7 (formal/agent_ser_engine_props.v asserts st stays in 0-4)")
+_MASK0 = ("constant 1 by construction: crc_mask = 0xFFFF >> (15 - width-1) keeps bit 0 for every "
+          "width 1-16; the 1->0 is only Verilator's 2-state power-up")
 _ENA = "the TinyTapeout harness holds ena high whenever the design is powered; unused by the design"
 WAIVED: dict[tuple[str, str, int, str], str] = {
-    ("cpu/core.v", "line", 315, "case"): _UNREACH_CASE,
-    ("cpu/core.v", "line", 439, "case"): _UNREACH_CASE,
+    ("cpu/core.v", "line", 346, "case"): _UNREACH_CASE,
+    ("cpu/core.v", "line", 481, "case"): _UNREACH_CASE,
+    ("io/ser_engine.v", "line", 378, "case"): _UNREACH_SER,
+    ("io/ser_engine.v", "toggle", 110, "crc_mask[0]:1->0"): _MASK0,
     **{(f, "toggle", n, f"start_fall:{e}"): _START_FALL
        for f, n in (("cpu/core.v", 74), ("io/pin_ctrl.v", 84), ("top.v", 38)) for e in ("0->1", "1->0")},
     **{(f, "toggle", n, f"{s}[4]:{e}"): _CONST0
@@ -75,7 +81,7 @@ WAIVED: dict[tuple[str, str, int, str], str] = {
     ("io/pin_ctrl.v", "toggle", 64, "uio_oe[5]:1->0"): _OE5,
     ("top.v", "toggle", 19, "uio_oe[5]:1->0"): _OE5,
     **{(f, "toggle", n, f"_unused:{e}"): _UNUSED
-       for f, n in (("cpu/core.v", 449), ("top.v", 98)) for e in ("0->1", "1->0")},
+       for f, n in (("cpu/core.v", 491), ("top.v", 136)) for e in ("0->1", "1->0")},
     ("top.v", "toggle", 20, "ena:1->0"): _ENA,
 }
 

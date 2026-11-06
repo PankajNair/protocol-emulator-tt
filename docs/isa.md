@@ -1,8 +1,8 @@
 # Instruction Set Architecture
 
 Status: word width, register file, instruction formats, and the full
-21-opcode table are **locked** (19 until `XOR`/`ADD` were added,
-2026-10-23). The first 16 were validated by a
+25-opcode table are **locked** (19 until `XOR`/`ADD` were added,
+2026-10-23; 21 until the serial engine's four, 2026-11-04). The first 16 were validated by a
 100-scenario adversarial generate/implement/verify audit (two-role
 agent workflow) across UART/SPI/I2C master-mode operation -- 85/100
 clean, 15 flagged issues, all traced to firmware-authoring bugs or
@@ -108,7 +108,7 @@ protocol-bit-banging primitives the audit's scenario generator targets.
 ## Instruction formats
 
 Three formats share the 16-bit word; opcode field is always 5 bits (32
-encodings, well over the 21 currently in use -- see the Opcode table's
+encodings, 25 currently in use -- see the Opcode table's
 `value` column for the numeric assignment).
 
 **Field order is MSB-first**, matching every format header below
@@ -309,12 +309,13 @@ movable-address indexed write ever turns out to be needed.
 | `24` | SRD | reg+imm | locked | Rd <= serial engine status (k = `imm[3:0]` = 0) or CRC bits 7:0 / 15:8 (k = 1 / 2); other k read 0. Flag untouched. Added 2026-11-04. |
 | `25-31` | *reserved* | -- | -- | Unassigned. Executes as `NOP` + sets the illegal-opcode flag if ever fetched (Undefined opcode behavior, above) -- same "safe by construction" treatment as every other unimplemented encoding in this design. (21-24 were reserved too until the serial engine took them, 2026-11-04.) |
 
-**21 opcodes total** (16 validated by the 100-scenario audit, above,
+**25 opcodes total** (16 validated by the 100-scenario audit, above,
 plus `LOAD`/`STORE`/`LOADX` added by a later adversarial design review,
-plus `XOR`/`ADD` added 2026-10-23) -- inside the 32-slot 5-bit opcode
-space, 11 slots spare. Numeric values assigned by format grouping for
+plus `XOR`/`ADD` added 2026-10-23, plus the serial engine's
+`SCFG`/`STX`/`SRX`/`SRD` added 2026-11-04) -- inside the 32-slot 5-bit
+opcode space, 7 slots spare. Numeric values assigned by format grouping for
 readability (`0-2` 0-operand, `3` branch, `4-15` reg+imm, `16` addr+Rd,
-`17-20` reg-reg) --
+`17-20` reg-reg, `21-24` the serial engine's reg+imm) --
 hardware cost is identical for any assignment, a 5-bit decoder doesn't
 care about grouping, this is purely for a human reading the table.
 

@@ -334,8 +334,8 @@ MUTANTS = [
         desc="end of packet signalled before the line is idle again",
         hazard="firmware would answer during the host's EOP (turnaround < 2 bit times)",
         bug_ref="serial engine 2026-11-04; test_usb_kbd turnaround check",
-        edits=[("          if (!at_se0 && rx_lvl == idle_lvl) begin",
-                "          if (1'b1) begin")],
+        edits=[("          end else if (at_se0 || rx_lvl != idle_lvl) begin",
+                "          end else if (1'b0) begin")],
     ),
     dict(
         id=36, file="cpu/core.v",
@@ -367,6 +367,15 @@ MUTANTS = [
         hazard="a byte lost because firmware read late must be visible",
         bug_ref="serial engine 2026-11-04; test_ser_rx_can_style_and_overrun",
         edits=[("if (rx_avail_r && !rx_take) overrun <= 1'b1;", "")],
+    ),
+    dict(
+        id=40, file="io/ser_engine.v",
+        desc="a cut-short packet (stuff error) counts as over at the first idle level",
+        hazard="inside a USB packet J comes and goes: restarting there receives the rest as garbage",
+        bug_ref="real bug, found by the parent and the spec-conformance agent 2026-11-06; "
+                "test_ser_abandon_and_cut_packet",
+        edits=[("                wait_kind   <= se0_mode ? W_SE0 : W_BITS;\n                crc_left    <= 5'd0;",
+                "                wait_kind   <= W_NOW;\n                crc_left    <= 5'd0;")],
     ),
 ]
 

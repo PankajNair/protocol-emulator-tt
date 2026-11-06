@@ -159,6 +159,8 @@ DEBUG_PORTS = {
         "crc":         ("logic [15:0]", None),
         "eop_cnt":     ("logic [1:0]", None),
         "wait_signal": ("logic", None),
+        "wait_kind":   ("logic [1:0]", None),
+        "crc_left":    ("logic [4:0]", None),
         "own":         ("logic", None),
         "sh":          ("logic [7:0]", None),
         "rx_last":     ("logic", None),

@@ -138,6 +138,16 @@ module ser_engine (
   reg [4:0]  crc_left;      // transmit: CRC bits still to append
   reg [1:0]  eop_cnt;
   reg        wait_signal;   // E_WAIT ends in a signalled end of packet
+  // E_WAIT's idle rule. After an SE0 end or a transmit the line is idle
+  // as soon as it is at the idle level (W_NOW). A packet cut short (stuff
+  // error, abandon) is still on the line, and inside it the idle level
+  // comes and goes: wait for its EOP in se0 mode (W_SE0, then W_NOW),
+  // else for K+1 bit times at the idle level (W_BITS), longer than any
+  // level inside a stuffed packet.
+  localparam W_NOW  = 2'd0;
+  localparam W_SE0  = 2'd1;
+  localparam W_BITS = 2'd2;
+  reg [1:0]  wait_kind;
 
   reg [7:0]  tx_hold;
   reg        tx_full_r;
@@ -173,6 +183,7 @@ module ser_engine (
       crc_left    <= 5'd0;
       eop_cnt     <= 2'd0;
       wait_signal <= 1'b0;
+      wait_kind   <= W_NOW;
       crc         <= 16'd0;
       tx_hold     <= 8'd0;
       tx_full_r   <= 1'b0;
@@ -239,6 +250,9 @@ module ser_engine (
           if (cmd_abandon) begin
             st          <= E_WAIT;
             wait_signal <= 1'b0;
+            wait_kind   <= se0_mode ? W_SE0 : W_BITS;
+            tmr         <= period - 12'd1;
+            crc_left    <= 5'd0;
             rx_avail_r  <= 1'b0;
           end else if (rx_edge) begin
             tmr <= sample - 12'd1;                   // resync
@@ -250,11 +264,14 @@ module ser_engine (
               eop_seen    <= 1'b1;
               st          <= E_WAIT;
               wait_signal <= 1'b1;
+              wait_kind   <= W_NOW;
             end else if (stuff_due) begin
               if (rx_lvl == cur) begin
                 stuff_err   <= 1'b1;
                 st          <= E_WAIT;
                 wait_signal <= 1'b1;
+                wait_kind   <= se0_mode ? W_SE0 : W_BITS;
+                crc_left    <= 5'd0;
               end else begin
                 cur <= rx_lvl;
                 run <= 4'd1;
@@ -317,6 +334,7 @@ module ser_engine (
               own         <= 1'b0;
               st          <= E_WAIT;
               wait_signal <= 1'b0;
+              wait_kind   <= W_NOW;
             end
           end
         end
@@ -335,14 +353,25 @@ module ser_engine (
               own         <= 1'b0;
               st          <= E_WAIT;
               wait_signal <= 1'b0;
+              wait_kind   <= W_NOW;
             end
           end
         end
 
         E_WAIT: begin
-          if (!at_se0 && rx_lvl == idle_lvl) begin
+          if (wait_kind == W_SE0) begin
+            if (at_se0) wait_kind <= W_NOW;
+          end else if (at_se0 || rx_lvl != idle_lvl) begin
+            tmr      <= period - 12'd1;              // W_BITS: start over
+            crc_left <= 5'd0;
+          end else if (wait_kind == W_NOW || (tmr == 12'd0 && crc_left == {1'b0, stuff_k})) begin
             st <= E_IDLE;
             if (wait_signal) rx_end_r <= 1'b1;
+          end else if (tmr != 12'd0) begin
+            tmr <= tmr - 12'd1;
+          end else begin
+            tmr      <= period - 12'd1;              // one more idle bit time
+            crc_left <= crc_left + 5'd1;
           end
         end
 

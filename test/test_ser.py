@@ -321,3 +321,142 @@ done:   JMP done
     # error): five of them are in the CRC
     want = crc15(dbits + [1] * 5)
     assert hi << 8 | lo == want, f"CRC {hi << 8 | lo:#06x} != {want:#06x}"
+
+
+def line_stuff(bits, k, idle):
+    """docs/serial_engine.md "Bit stuffing, in line levels" for NRZ data:
+    after k bit times at one level the next bit time is the other level.
+    Returns the line levels, including a stuff bit due after the last."""
+    out, cur, run = [], idle, 0
+    for b in bits:
+        if k and run == k:
+            cur = 1 - cur
+            out.append(cur)
+            run = 1
+        run = min(15, run + 1) if b == cur else 1
+        cur = b
+        out.append(b)
+    if k and run == k:
+        out.append(1 - cur)
+    return out
+
+
+def lfsr(bits, width, poly, init):
+    """docs/serial_engine.md CRC: bit-serial, transmission order."""
+    mask = (1 << width) - 1
+    c = init
+    for b in bits:
+        fb = b ^ ((c >> (width - 1)) & 1)
+        c = ((c << 1) ^ (poly if fb else 0)) & mask
+    return c
+
+
+@cocotb.test()
+async def test_ser_tx_generic_crc_long_packet(dut):
+    """Settings far from USB's: NRZ, idle 0, stuff after 9, CRC width 16
+    with polynomial 0x3A62 from byte 13 starting at 0, not inverted. A
+    17-byte packet (past the byte index's saturation at 15) matches the
+    doc's stuffing and CRC computed here."""
+    cfg = {0: 8, 1: 0, 2: 4, 3: 0, 5: (15 << 4) | 9, 6: 0x62, 7: 0x3A, 8: 13,
+           4: 0b0010_0000}           # crc_tx; idle 0; no nrzi/diff/se0/rx
+    data = [0x00, 0xFF, 0x80, 0x7F, 0x01, 0xFE, 0x00, 0x00, 0x55, 0xAA,
+            0xFF, 0xFF, 0x0F, 0xF0, 0x3C, 0x00, 0xC3]
+    body = "\n".join(f"LDI R1, {b}\nSTX R1" for b in data)
+    bus = await boot(dut, TX_CAN.format(cfg=cfg_asm(cfg), body=body), idle=(0, 1))
+    await ClockCycles(dut.clk, 200 * 8)
+    bits = [b[0] for b in tx_bits(bus.trace, 8, pins=(0,))]
+    dbits = [(b >> i) & 1 for b in data for i in range(8)]
+    c = lfsr(dbits[13 * 8:], 16, 0x3A62, 0)
+    want = line_stuff(dbits + [(c >> (15 - i)) & 1 for i in range(16)], 9, 0)
+    assert bits == want, f"\n got {bits}\nwant {want}"
+
+
+@cocotb.test()
+async def test_ser_slow_bits_no_stuffing(dut):
+    """The longest bit time, 4095 clocks: two 0x00 bytes go out as 16
+    bit times of the same level with no stuffing (K = 0), each exactly
+    4095 clocks; then two bytes received at 4095 clocks a bit sampled late
+    (S = 4069) on pin 1."""
+    cfg = {0: 0xFF, 1: 0x0F, 2: 0xE5, 3: 0x0F, 5: 0, 8: 0, 4: 0b0000_1000}  # idle 1
+    src = cfg_asm(cfg) + """
+        LDI  R1, 0
+        STX  R1
+        STX  R1
+wt:     SRD  R0, 0
+        TEST R0, 5
+        BEQ  wt
+        LDI  R0, 0b10011000     ; receive on pin 1
+        SCFG R0, 4
+        SRX  R0
+        CALL putb
+        SRX  R0
+        CALL putb
+done:   JMP  done
+""" + HANDSHAKE
+    bus = await boot(dut, src, idle=(1, 1))
+    await ClockCycles(dut.clk, 17 * 4095)
+    bits = [b[0] for b in tx_bits(bus.trace, 4095, pins=(0,))]
+    assert bits == [0] * 16, bits
+    await ClockCycles(dut.clk, 200)
+    data = [0x5A, 0x3C]
+    cocotb.start_soon(bus.drive_levels([(b >> i) & 1 for b in data for i in range(8)] + [1], 4095, pin=1))
+    got = [await bus.recv(max_cycles=300000) for _ in range(2)]
+    assert got == data, [hex(x) for x in got]
+
+
+@cocotb.test()
+async def test_ser_abandon_and_cut_packet(dut):
+    """Command 15 bit 1 abandons a packet mid-way: its other bytes never
+    arrive and no end is signalled; a stuff error does the same but
+    signals the end. Either way, in se0 mode the engine waits for the
+    packet's own EOP, through the J levels inside it, and then receives
+    the next packet from its SYNC."""
+    src = cfg_asm(USB_CFG) + """
+        SRX  R0                 ; SYNC
+        CALL putb
+        SRX  R0                 ; PID
+        CALL putb
+        LDI  R0, 2
+        SCFG R0, 15             ; abandon
+        LDI  R0, 0x77
+        SRX  R0, 6144           ; nothing more of it, no end
+        CALL putb
+nxt:    SRX  R0
+        BEQ  endp
+        CALL putb
+        JMP  nxt
+endp:   LDI  R0, 0xEE
+        CALL putb
+        JMP  nxt
+""" + HANDSHAKE
+    bus = await boot(dut, src)
+    await ClockCycles(dut.clk, 200)
+    # payload with long J runs inside (many 1s in a row = no level change)
+    pkt = U.data_packet("DATA0", bytes([0xFF, 0x7F, 0xFE, 0x00, 0xFF, 0x3F, 0xFF, 0xFF]))
+    drv = cocotb.start_soon(bus.drive(U.encode(pkt)))
+    assert [await bus.recv() for _ in range(2)] == [U.SYNC, pkt[0]]
+    assert await bus.recv() == 0x77, "abandoned packet delivered more bytes"
+    await drv
+    await ClockCycles(dut.clk, 100)
+    ack = U.handshake("ACK")
+    cocotb.start_soon(bus.drive(U.encode(ack)))
+    got = [await bus.recv() for _ in range(3)]
+    assert got == [U.SYNC, ack[0], 0xEE], [hex(x) for x in got]
+    # a stuff error mid-packet: the end comes only after the packet's EOP
+    await ClockCycles(dut.clk, 100)
+    bad = U.encode(pkt)
+    k = bad.index("SE0")
+    bad = bad[:12] + [bad[11]] * 8 + bad[12:]   # 8 bit times without a change
+    t0 = bus.t
+    cocotb.start_soon(bus.drive(bad))
+    got = []
+    while True:
+        v = await bus.recv()
+        if v == 0xEE:
+            break
+        got.append(v)
+    assert bus.t - t0 >= (len(bad) - 3) * 33, "end signalled before the packet's EOP"
+    await ClockCycles(dut.clk, 200)
+    cocotb.start_soon(bus.drive(U.encode(ack)))
+    got = [await bus.recv() for _ in range(3)]
+    assert got == [U.SYNC, ack[0], 0xEE], [hex(x) for x in got]

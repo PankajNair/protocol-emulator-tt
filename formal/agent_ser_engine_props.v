@@ -93,6 +93,8 @@ module ser_engine_props (
     input wire [15:0] crc,
     input wire [1:0]  eop_cnt,
     input wire        wait_signal,
+    input wire [1:0]  wait_kind,     // (parent edit 2026-11-06: idle rule after a cut packet)
+    input wire [4:0]  crc_left,
     input wire        own,
     input wire [7:0]  sh,
     input wire        rx_last,
@@ -229,6 +231,12 @@ module ser_engine_props (
   reg [7:0]  g_sh;
   reg [15:0] g_crc;
   reg        g_crcv;                 // g_crc is the CRC register's expected value
+  // Waiting for idle (doc "Receive", parent edit 2026-11-06): after an SE0
+  // end the line is idle at once; after a stuff error or an abandon the
+  // cut packet is still on the line: in se0 mode wait for its SE0 first
+  // (g_wk 1), else for K+1 bit times at the idle level (g_wk 2).
+  reg [1:0]  g_wk;
+  reg [16:0] g_icnt;                 // g_wk 2: idle clocks so far
 
   wire [4:0]  g_w     = {1'b0, g_w1} + 5'd1;
   wire [15:0] g_mask  = ~(16'hFFFF << g_w);
@@ -246,7 +254,9 @@ module ser_engine_props (
   wire dbit     = g_nrzi ? (rx_lvl == g_cur) : rx_lvl;   // NRZI: 0 = level change
   wire done     = s_data && g_cnt == 4'd7;                // a byte completes
   wire [7:0] newbyte = {dbit, g_sh[7:1]};
-  wire wait_exit = g_wait && line_idle;
+  wire [16:0] g_need = ({13'd0, g_K} + 17'd1) * {5'd0, g_P};   // (K+1) bit times
+  wire wait_exit = g_wait && line_idle &&
+                   (g_wk == 2'd0 || (g_wk == 2'd2 && g_icnt == g_need - 17'd1));
   wire sig_end   = wait_exit && g_wsig;                    // the end is signalled now
   wire [15:0] crc_next = (({g_crc[14:0], 1'b0}) ^ ((dbit ^ g_top) ? g_poly : 16'd0)) & g_mask;
 
@@ -254,7 +264,11 @@ module ser_engine_props (
     if (!rst_n) begin
       g_rx <= 0; g_wait <= 0; g_wsig <= 0; g_since <= 0; g_aft <= 0; g_last <= 0;
       g_cur <= 0; g_run <= 0; g_cnt <= 0; g_idx <= 0; g_sh <= 0; g_crc <= 0; g_crcv <= 0;
+      g_wk <= 0; g_icnt <= 0;
     end else begin
+      if (g_wait && g_wk == 2'd1 && at_se0) g_wk <= 2'd0;
+      if (g_wait && !line_idle) g_icnt <= 17'd0;
+      else if (g_wait && line_idle && !wait_exit) g_icnt <= g_icnt + 17'd1;
       g_last <= rx_lvl;
       if (tx_start) g_crcv <= 1'b0;
       if (wait_exit) g_wait <= 1'b0;
@@ -264,6 +278,7 @@ module ser_engine_props (
       end else if (g_rx) begin
         if (cmd_abandon) begin
           g_rx <= 1'b0; g_wait <= 1'b1; g_wsig <= 1'b0;
+          g_wk <= g_se0 ? 2'd1 : 2'd2; g_icnt <= 17'd0;
         end else if (edge_now) begin
           g_since <= 12'd1; g_aft <= 1'b0;
         end else if (g_since != tgt) begin
@@ -272,6 +287,7 @@ module ser_engine_props (
           g_since <= 12'd1; g_aft <= 1'b1;
           if (s_se0 || s_serr) begin
             g_rx <= 1'b0; g_wait <= 1'b1; g_wsig <= 1'b1;
+            g_wk <= s_se0 ? 2'd0 : (g_se0 ? 2'd1 : 2'd2); g_icnt <= 17'd0;
           end else if (s_stuff) begin
             g_cur <= rx_lvl; g_run <= 4'd1;
           end else begin
@@ -474,6 +490,14 @@ module ser_engine_props (
     // I7: waiting for idle
     cover (ok && g_wait && g_wsig);
     if (ok && g_wait) assert (st == S_WAIT && wait_signal == g_wsig);
+    // I7': the idle rule's state
+    cover (ok && g_wait && g_wk == 2'd2 && g_icnt != 17'd0);
+    if (ok && g_wait) assert (wait_kind == g_wk);
+    if (rst_n) assert (wait_kind != 2'd3);
+    if (rst_n) assert (st <= 3'd4);          // the state default arm is unreachable (rtl_coverage waiver)
+    if (ok && g_wait && g_wk == 2'd2)
+      assert ({12'd0, crc_left} <= {13'd0, g_K} && tmr <= g_P - 12'd1 &&
+              g_icnt == {12'd0, crc_left} * {5'd0, g_P} + {5'd0, g_P - 12'd1 - tmr});
     cover (ok && st == S_WAIT && !g_wait); // [deep]
     if (ok && st == S_WAIT && !g_wait) assert (!wait_signal);
   end
@@ -486,7 +510,8 @@ bind ser_engine ser_engine_props u_ser_engine_props (
     .tx_data(tx_data), .rx_take(rx_take), .tx_full(tx_full), .rx_avail(rx_avail),
     .rx_end(rx_end), .rx_byte(rx_byte), .rd_data(rd_data),
     .st(st), .tmr(tmr), .cnt(cnt), .run(run), .cur(cur), .byte_idx(byte_idx), .crc(crc),
-    .eop_cnt(eop_cnt), .wait_signal(wait_signal), .own(own), .sh(sh), .rx_last(rx_last),
+    .eop_cnt(eop_cnt), .wait_signal(wait_signal),
+    .wait_kind(wait_kind), .crc_left(crc_left), .own(own), .sh(sh), .rx_last(rx_last),
     .overrun(overrun), .period(period), .sample(sample), .mode(mode), .stuff_k(stuff_k),
     .crc_w1(crc_w1), .poly(poly), .crc_start(crc_start), .crc_ones(crc_ones)
 );

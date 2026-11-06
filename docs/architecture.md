@@ -296,7 +296,8 @@ occupancy** (how long an instruction holds the fetch/execute loop
 before the next one starts fetching), not "every architectural effect
 of the instruction is 100% complete by the end of its own `EXECUTE`" --
 `LOAD`/`LOADX` are the one case where that distinction matters, see
-below. Two timing exceptions, both by design, and both share the same
+below. Two timing exceptions, both by design (the serial engine's
+`STX`/`SRX` block the same way, see Serial engine), and both share the same
 countdown-counter hardware since they never execute simultaneously on a
 single-issue sequencer: `DELAY` stays in `EXECUTE` decrementing it
 until it hits zero (3+N cycles, N from the immediate), and `WAIT` stays
@@ -339,14 +340,16 @@ loop/call `addr(9)` field is a **word index**, not a byte address --
 the fetch unit does the `x2` translation internally to reach the
 physical SRAM byte address. Every fetch is therefore word-aligned by
 construction; a jump target can never land mid-instruction. (The field
-is 9 bits wide, 0-511, but only 0-255 are legitimate now that the SRAM
-is split 512/512 between program and data -- see the Memory bullet
-above and [isa.md](isa.md)'s "Data memory".)
+is 9 bits wide, 0-511: words 0-255 are the program region and 256-511
+the data region's bytes, which the CPU runs like any code -- see the
+Memory bullet above and [isa.md](isa.md)'s Branch format and "Data
+memory".)
 
 Verification payoff, same pattern as the ISA audit: one clean, uniform
 property -- "the FSM occupies exactly 3 cycles per instruction, except
-`DELAY` (3+N, N known) and `WAIT` (3+N if timed, 3+unbounded if not,
-both by design)" -- instead of a different cycle-count rule per opcode.
+`DELAY` (3+N, N known), `WAIT` (3+N if timed, 3+unbounded if not)
+and the serial engine's `STX`/`SRX` (blocked on the engine, `SRX`
+bounded by its timeout like `WAIT`), all by design" -- instead of a different cycle-count rule per opcode.
 `LOAD`/`LOADX`'s trailing writeback (above) doesn't weaken this: FSM
 occupancy is still exactly 3, the writeback is a stated, hazard-free
 detail of *when within that timing* the register update lands, not an
