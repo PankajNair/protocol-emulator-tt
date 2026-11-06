@@ -145,6 +145,33 @@ DEBUG_PORTS = {
     "tt_um_pankajnair_protocol_emulator": {
         "mode_load": ("logic", None),
     },
+    # Added for agent_ser_engine_props.v: `st` reads "engine idle / in
+    # flight" (the doc has no pin-visible receive-busy signal); the rest
+    # are only ever asserted equal to the checker's spec-derived ghost
+    # models (k-induction strengthening), never used to predict a value.
+    "ser_engine": {
+        "st":          ("logic [2:0]", None),
+        "tmr":         ("logic [11:0]", None),
+        "cnt":         ("logic [3:0]", None),
+        "run":         ("logic [3:0]", None),
+        "cur":         ("logic", None),
+        "byte_idx":    ("logic [3:0]", None),
+        "crc":         ("logic [15:0]", None),
+        "eop_cnt":     ("logic [1:0]", None),
+        "wait_signal": ("logic", None),
+        "own":         ("logic", None),
+        "sh":          ("logic [7:0]", None),
+        "rx_last":     ("logic", None),
+        "overrun":     ("logic", None),
+        "period":      ("logic [11:0]", None),
+        "sample":      ("logic [11:0]", None),
+        "mode":        ("logic [7:0]", None),
+        "stuff_k":     ("logic [3:0]", None),
+        "crc_w1":      ("logic [3:0]", None),
+        "poly":        ("logic [15:0]", None),
+        "crc_start":   ("logic [3:0]", None),
+        "crc_ones":    ("logic", None),
+    },
     "pin_ctrl": {
         "mode": ("logic [7:0][1:0]", 8),
         "drv":  ("logic [7:0]", 8),
