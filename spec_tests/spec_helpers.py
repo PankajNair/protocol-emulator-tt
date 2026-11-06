@@ -1,12 +1,15 @@
 """Spec-derived helpers for the black-box conformance suite.
 
-Everything here is written from docs/isa.md, docs/architecture.md and
-docs/protocol_timing.md alone. Nothing is taken from the RTL, the
+Everything here is written from docs/isa.md, docs/architecture.md,
+docs/protocol_timing.md and docs/serial_engine.md alone. Nothing is taken from the RTL, the
 reference model, the assembler or the existing tests.
 
-Two parts:
+Three parts:
   * a pure-Python encoder/assembler (no cocotb needed; self-test with
     `python3 spec_helpers.py`)
+  * a pure-Python reference model of the serial engine (SerCfg, CRC,
+    ser_tx_bits encoder, ser_rx_decode receiver), self-tested against
+    published CRC check values and hand-derived waveforms
   * `Chip`, a pin-level driver: clock, reset, the LOAD-mode boot
     handshake, the START pulse, the runtime host handshake, a pad model
     for uio, and an event log of every output change.
@@ -32,9 +35,12 @@ OP = dict(NOP=0, HALT=1, RET=2, BRANCH=3, LDI=4, SET=5, OUT=6, IN=7,
           XOR=19, ADD=20)
 RESERVED_OPS = list(range(25, 32))  # isa.md: `25-31` reserved
 # (parent edit 2026-11-04: 21-24 became the serial engine's SCFG/STX/SRX/SRD,
-# docs/serial_engine.md; listed here only so the opcode space adds up. Spec
-# tests FOR them are left to an independent spec-conformance pass.)
+# docs/serial_engine.md. Spec tests for them: test_ser_* in
+# test_spec_conformance.py, spec-conformance pass 4.)
 ENGINE_OPS = list(range(21, 25))
+# isa.md Opcode table rows 21-24 and serial_engine.md: "Four opcodes from the
+# reserved range drive it: SCFG, STX, SRX, SRD (21-24; 25-31 stay reserved)".
+ENG = dict(SCFG=21, STX=22, SRX=23, SRD=24)
 # (parent edit 2026-10-23: was 19-31 until XOR/ADD took 19 and 20; this list
 # follows the doc mechanically. Spec tests FOR XOR/ADD are left to an
 # independent spec-conformance pass, not written here.)
@@ -224,6 +230,35 @@ class Asm:
         # isa.md ADD row: `Rd <= (Rd + Rs) mod 256`, flag = carry out.
         self.raw(enc_rr(OP["ADD"], rd, rs, reserved7))
 
+    # -- serial engine (isa.md rows 21-24, docs/serial_engine.md) -------------
+    def scfg(self, rs, k):
+        # isa.md SCFG row: 'write Rd to engine configuration register k =
+        # imm[3:0] (0-8), or a command (15) ... Rd is the *source*'.
+        self.raw(enc_ri(ENG["SCFG"], rs, _chk(k, 4, "k")))
+
+    def stx(self, rs):
+        # isa.md STX row: 'queue Rd for transmission ... imm unused'.
+        self.raw(enc_ri(ENG["STX"], rs, 0))
+
+    def srx(self, rd, mant=0, exp=0):
+        # isa.md SRX row: 'Timeout = imm[6:0] << (imm[8:7] * 5) cycles'.
+        self.raw(enc_ri(ENG["SRX"], rd, (_chk(exp, 2, "exp") << 7) | _chk(mant, 7, "mant")))
+
+    def srd(self, rd, k):
+        # isa.md SRD row: 'Rd <= serial engine status (k = imm[3:0] = 0) or
+        # CRC bits 7:0 / 15:8 (k = 1 / 2); other k read 0'.
+        self.raw(enc_ri(ENG["SRD"], rd, _chk(k, 4, "k")))
+
+    def org(self, word):
+        """Pad with NOP (all-zero words, isa.md NOP row) up to word index
+        `word`, so code can be placed in the data region (isa.md Branch
+        format: words 256-511 'fetches the data region ... and executes it
+        like any other code')."""
+        if len(self.items) > word:
+            raise ValueError(f"org {word}: already at {len(self.items)}")
+        while len(self.items) < word:
+            self.items.append(0)
+
 
 # ---------------------------------------------------------------------------
 # Pure reference values for XOR/ADD (isa.md rows 19 and 20)
@@ -252,6 +287,259 @@ def crc8(data, poly=0x07, init=0x00):
 
 def crc8_table(poly=0x07):
     return [crc8([i], poly) for i in range(256)]
+
+
+# ---------------------------------------------------------------------------
+# Serial engine reference model (docs/serial_engine.md only)
+# ---------------------------------------------------------------------------
+class SerCfg:
+    """The engine's configuration, field by field as serial_engine.md's
+    'Configuration: SCFG Rs, k' table lists it."""
+    FIELDS = dict(P=33, S=16, nrzi=0, diff=0, se0=0, idle=0, rx_pin=0, crc_tx=0,
+                  crc_inv=0, rx_en=0, K=0, width=1, poly=0, crc_start=0, crc_ones=0)
+
+    def __init__(self, **kw):
+        for k, v in self.FIELDS.items():
+            setattr(self, k, kw.pop(k, v))
+        if kw:
+            raise ValueError(f"unknown fields {sorted(kw)}")
+        # table: 'P = 2-4095', 'S < P', 'width 1-16', K 4 bits, crc_start 0-15
+        assert 2 <= self.P <= 4095 and 0 <= self.S < self.P
+        assert 1 <= self.width <= 16 and 0 <= self.K <= 15 and 0 <= self.crc_start <= 15
+        assert 0 <= self.poly <= 0xFFFF
+
+    def but(self, **kw):
+        d = {k: getattr(self, k) for k in self.FIELDS}
+        d.update(kw)
+        return SerCfg(**d)
+
+    def flags(self):
+        # k = 4: bit 0 nrzi, 1 diff, 2 se0, 3 idle, 4 rx_pin, 5 crc_tx,
+        # 6 crc_inv, 7 rx_en
+        return (self.nrzi | self.diff << 1 | self.se0 << 2 | self.idle << 3
+                | self.rx_pin << 4 | self.crc_tx << 5 | self.crc_inv << 6 | self.rx_en << 7)
+
+    def regs(self):
+        """(k, value) for SCFG, k = 0-8. Written 0-3, 5-8, then 4 last (4
+        holds rx_en; everything else is in place before receive turns on)."""
+        r = {0: self.P & 0xFF, 1: self.P >> 8, 2: self.S & 0xFF, 3: self.S >> 8,
+             5: self.K | (self.width - 1) << 4, 6: self.poly & 0xFF, 7: self.poly >> 8,
+             8: self.crc_start | self.crc_ones << 4, 4: self.flags()}
+        return [(k, r[k]) for k in (0, 1, 2, 3, 5, 6, 7, 8, 4)]
+
+
+# serial_engine.md 'Settings for USB low-speed (50 MHz clock)' table.
+USB_CFG = SerCfg(P=33, S=16, nrzi=1, diff=1, se0=1, rx_en=1, crc_tx=1, crc_inv=1,
+                 idle=0, rx_pin=0, K=7, width=16, poly=0x8005, crc_start=2, crc_ones=1)
+# 'CAN-style stuffing and CRCs': K = 5 ('CAN 5'), CRC-15 (residual 0). The
+# CAN polynomial 0x4599 is the standard CAN 2.0 one (not from the doc).
+CAN_CFG = SerCfg(P=20, S=10, nrzi=0, diff=0, se0=0, idle=1, rx_pin=0, crc_tx=1,
+                 crc_inv=0, K=5, width=15, poly=0x4599, crc_start=0, crc_ones=0)
+
+
+def bits_lsb(data):
+    """STX: 'Queues Rs for transmission, LSB first'; receive: 'shifted in
+    LSB first'."""
+    return [(b >> i) & 1 for b in data for i in range(8)]
+
+
+def bitrev(v, n):
+    return int(format(v, f"0{n}b")[::-1], 2)
+
+
+def crc_feed(crc, bits, width, poly):
+    """MSB-first shift register of `width` bits (the CRC is transmitted
+    'width bits, most significant first'), one input bit at a time in
+    transmission order."""
+    mask = (1 << width) - 1
+    for b in bits:
+        fb = b ^ ((crc >> (width - 1)) & 1)
+        crc = (crc << 1) & mask
+        if fb:
+            crc ^= poly & mask
+    return crc
+
+
+def crc_init(cfg):
+    # k = 8 bit 4: 'crc_ones: CRC starts at all ones (else 0)'
+    return (1 << cfg.width) - 1 if cfg.crc_ones else 0
+
+
+def crc_of_data(cfg, data):
+    """'The CRC covers the data bits of bytes crc_start onward of the
+    packet, in transmission order'."""
+    return crc_feed(crc_init(cfg), bits_lsb(data[cfg.crc_start:]), cfg.width, cfg.poly)
+
+
+def crc_field_bits(cfg, crc):
+    """'the CRC, if crc_tx: width bits, most significant first, each
+    inverted if crc_inv'."""
+    return [((crc >> i) & 1) ^ cfg.crc_inv for i in range(cfg.width - 1, -1, -1)]
+
+
+def ser_tx_bits(cfg, data):
+    """Line-level bit times of one transmitted packet.
+
+    Returns (bits, info). bits: list of (p0, p1) per bit time; p1 is None
+    when the engine does not drive pin 1 ('In diff mode it also drives pin 1
+    with the opposite level'). Rules used:
+      * nrzi: 'data 0 = level change, 1 = no change', starting from the
+        idle level. ASSUMPTION (NRZ, nrzi = 0): line level = data bit.
+      * stuffing: 'after K bits at the same level, the next bit time is a
+        stuff bit at the opposite level'; a stuff bit is a bit at a level,
+        so it starts the next run (CAN rule; also USB's).
+      * end: '1. a stuff bit, if the last bits leave one due; 2. the CRC ...
+        stuffed like data; 3. in se0 mode, 2 bit times of SE0 and 1 of idle'.
+        A stuff due after the last CRC bit is sent too (see info
+        'crc_tail_stuff': AMBIGUOUS, the list puts the stuff bit before the
+        CRC).
+    info: stuff (indices of stuff bits), crc (register value), first_level,
+    data_tail_stuff, crc_tail_stuff."""
+    levels = []
+    stuff = []
+    st = dict(level=cfg.idle, run=0, last=None)
+
+    def put(lv, is_stuff=False):
+        st["run"] = st["run"] + 1 if lv == st["last"] else 1
+        st["last"] = lv
+        st["level"] = lv
+        if is_stuff:
+            stuff.append(len(levels))
+        levels.append(lv)
+
+    def data_bit(b):
+        lv = (st["level"] if b else 1 - st["level"]) if cfg.nrzi else b
+        put(lv)
+        if cfg.K and st["run"] == cfg.K:
+            put(1 - lv, True)
+            return True
+        return False
+
+    tail = False
+    for b in bits_lsb(data):
+        tail = data_bit(b)
+    info = dict(data_tail_stuff=tail, crc_tail_stuff=False)
+    crc = crc_of_data(cfg, data)
+    info["crc"] = crc
+    if cfg.crc_tx:
+        for b in crc_field_bits(cfg, crc):
+            t = data_bit(b)
+        info["crc_tail_stuff"] = t
+    out = [(lv, (1 - lv) if cfg.diff else None) for lv in levels]
+    if cfg.se0:
+        out += [(0, 0), (0, 0), (cfg.idle, (1 - cfg.idle) if cfg.diff else None)]
+    info["stuff"] = stuff
+    info["first_level"] = levels[0] if levels else None
+    return out, info
+
+
+def ser_rx_decode(cfg, wave, d=2, s_adj=0):
+    """Reference receiver over a per-cycle pad waveform `wave` [(p0, p1)].
+
+    d: synchronizer delay in cycles ('synchronized by the same 2-flop path');
+    s_adj perturbs S, to check a test does not depend on exact phases.
+    Rules (serial_engine.md 'Receive'):
+      * start: 'with rx_en and the engine idle, the receive pin leaves the
+        idle level';
+      * 'Every edge restarts the bit timer, and the line is sampled S clocks
+        after the last edge, then every P clocks while no edge comes';
+      * each sample, in order: SE0 (se0 mode: ends the packet), a stuff bit
+        (after K equal levels: dropped if a level change, else a stuff error
+        that ends the packet), else a data bit (NRZI-decoded if nrzi),
+        shifted in LSB first, 8 data bits a byte;
+      * CRC over data bits of bytes crc_start onward (CRC field included);
+      * end signalled once the line is idle: 'not SE0, receive pin at the
+        idle level'. (SE0 is only looked for in se0 mode.)
+    Returns events [('byte', v, cycle) | ('end', reason, cycle)] and the CRC
+    register after each packet (list)."""
+    S = cfg.S + s_adj
+    P = cfg.P
+    ev, crcs = [], []
+    state = "idle"
+    prev_rx = None
+    n = len(wave)
+    s = {}
+    for c in range(n + d):
+        p0, p1 = wave[min(max(c - d, 0), n - 1)]
+        rx = p1 if cfg.rx_pin else p0
+        se0now = cfg.se0 and p0 == 0 and p1 == 0
+        edge = prev_rx is not None and rx != prev_rx
+        prev_rx = rx
+        if state == "idle":
+            if cfg.rx_en and rx != cfg.idle:
+                state = "rx"
+                s = dict(nxt=c + S, last=cfg.idle, run=0, nbits=0, cur=[], crc=crc_init(cfg))
+            continue
+        if state == "rx":
+            if edge:
+                s["nxt"] = c + S
+            if c != s["nxt"]:
+                continue
+            s["nxt"] = c + P
+            if se0now:
+                reason = "se0"
+            elif cfg.K and s["run"] == cfg.K:
+                if rx != s["last"]:
+                    s["last"], s["run"] = rx, 1
+                    continue
+                reason = "stuff"
+            else:
+                b = (1 if rx == s["last"] else 0) if cfg.nrzi else rx
+                s["run"] = s["run"] + 1 if rx == s["last"] else 1
+                s["last"] = rx
+                if s["nbits"] >= 8 * cfg.crc_start:
+                    s["crc"] = crc_feed(s["crc"], [b], cfg.width, cfg.poly)
+                s["nbits"] += 1
+                s["cur"].append(b)
+                if len(s["cur"]) == 8:
+                    ev.append(("byte", sum(x << i for i, x in enumerate(s["cur"])), c))
+                    s["cur"] = []
+                continue
+            state = "wait_idle"
+            s["reason"] = reason
+            crcs.append(s["crc"])
+            continue
+        if state == "wait_idle":
+            if not se0now and rx == cfg.idle:
+                ev.append(("end", s["reason"], c))
+                state = "idle"
+    return ev, crcs
+
+
+def ser_rx_summary(ev):
+    return [(k, v) for (k, v, _c) in ev]
+
+
+def bits_to_wave(bits, period, lead=0, tail=0, idle_pins=(0, 1)):
+    """Per-cycle pad levels for bit times of `period` clocks (float allowed:
+    bit i starts at round(i*period), to model a transmitter at a slightly
+    different bit rate)."""
+    wave = [idle_pins] * lead
+    for i, b in enumerate(bits):
+        wave += [b] * (round((i + 1) * period) - round(i * period))
+    return wave + [idle_pins] * tail
+
+
+def rx_wave_robust(cfg, wave, ds=(1, 2, 3, 4), s_adjs=(-2, -1, 0, 1, 2)):
+    """Self-check that a receive test's expected result does not hinge on an
+    unstated synchronizer depth or a cycle of sample phase. Returns the
+    common (summary, crcs)."""
+    ref = None
+    for d in ds:
+        for sa in s_adjs:
+            ev, crcs = ser_rx_decode(cfg, wave, d, sa)
+            r = (ser_rx_summary(ev), crcs)
+            if ref is None:
+                ref = r
+            assert r == ref, f"receive result depends on d={d}, s_adj={sa}: {r} vs {ref}"
+    return ref
+
+
+def usb_wire_bits(data, cfg=USB_CFG):
+    """Line levels as (D+, D-) for a USB packet sent with the doc's USB
+    settings (the receive tests drive these on the pins)."""
+    bits, info = ser_tx_bits(cfg, data)
+    return [(p0, p1) for (p0, p1) in bits], info
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +990,94 @@ def _selftest():
             pass
         else:
             raise AssertionError("range check missing")
+    _selftest_engine()
     print("spec_helpers self-test: OK")
+
+
+def _selftest_engine():
+    # -- encodings, hand-derived from isa.md rows 21-24 (reg+imm format) --
+    # SCFG R2,5  = 10101 10 000000101 ; STX R3 = 10110 11 000000000
+    # SRX R1, m=0x55, e=2 = 10111 01 1_0101_0101 ; SRD R0,2 = 11000 00 000000010
+    # SRX R0, m=127, e=3 = 10111 00 111111111 ; SRD R3,15 = 11000 11 000001111
+    a = Asm()
+    a.scfg(2, 5); a.stx(3); a.srx(1, 0x55, 2); a.srd(0, 2); a.srx(0, 127, 3); a.srd(3, 15)
+    assert a.words() == [0xAC05, 0xB600, 0xBB55, 0xC002, 0xB9FF, 0xC60F], \
+        [hex(w) for w in a.words()]
+    assert sorted(ENG.values()) == ENGINE_OPS
+    b = Asm(); b.nop(); b.org(256); b.halt()
+    assert len(b.words()) == 257 and b.words()[256] == 0x0800 and len(b.image()) == 514
+    # -- config register packing (serial_engine.md table) --
+    r = dict(USB_CFG.regs())
+    assert r == {0: 33, 1: 0, 2: 16, 3: 0, 4: 0xE7, 5: 0xF7, 6: 0x05, 7: 0x80, 8: 0x12}, r
+    assert dict(SerCfg(P=4095, S=500).regs())[1] == 0x0F and dict(SerCfg(P=4095, S=500).regs())[3] == 1
+    assert [k for k, _ in USB_CFG.regs()][-1] == 4
+    # -- CRC model against published check values over "123456789" --
+    m = b"123456789"
+    # CRC-16/USB (reflected, init FFFF, xorout FFFF) = 0xB4C8: the doc's
+    # MSB-first register, fed LSB-first bytes and sent inverted MSB first,
+    # is the reflected CRC sent LSB first.
+    assert bitrev(crc_feed(0xFFFF, bits_lsb(m), 16, 0x8005) ^ 0xFFFF, 16) == 0xB4C8
+    assert bitrev(crc_feed(0x1F, bits_lsb(m), 5, 0x05) ^ 0x1F, 5) == 0x19     # CRC-5/USB
+    msb = [(x >> i) & 1 for x in m for i in range(7, -1, -1)]
+    assert crc_feed(0, msb, 15, 0x4599) == 0x059E                              # CRC-15/CAN
+    # residuals the doc states: USB CRC16 0x800D, CAN CRC-15 0
+    for d in ([0x80, 0xC3], [0x80, 0xC3, 1, 2, 3], [0x80, 0x4B, 0xFF, 0x00, 0xA5]):
+        c = crc_of_data(USB_CFG, d)
+        assert crc_feed(0xFFFF, bits_lsb(d[2:]) + crc_field_bits(USB_CFG, c), 16, 0x8005) == 0x800D
+        c = crc_of_data(CAN_CFG, d)
+        assert crc_feed(0, bits_lsb(d) + crc_field_bits(CAN_CFG, c), 15, 0x4599) == 0
+    # -- transmit encoder, hand-derived vectors --
+    # USB SYNC 0x80 from idle J (D+ low): K J K J K J K K
+    bits, _ = ser_tx_bits(USB_CFG.but(crc_tx=0, se0=0), [0x80])
+    assert bits == [(1, 0), (0, 1)] * 3 + [(1, 0), (1, 0)]
+    # [0x80, 0xFC]: after SYNC (ends K K), 0,0 -> J K, six 1s keep K: K run
+    # is 7 levels -> stuff J, then SE0 SE0 J (serial_engine.md end list).
+    bits, info = ser_tx_bits(USB_CFG.but(crc_tx=0), [0x80, 0xFC])
+    p0 = "".join(str(x) for x, _ in bits[:-3])
+    assert p0 == "10101011" + "01111111" + "0", p0
+    assert bits[-3:] == [(0, 0), (0, 0), (0, 1)] and info["data_tail_stuff"] and info["stuff"] == [16]
+    # CAN-style NRZ K=5, [0xE0, 0x01]: 00000 s1 111 1 s0 0000 s1 000; the
+    # stuff bit starts the next run (it is a bit at that level).
+    bits, info = ser_tx_bits(SerCfg(P=5, S=2, K=5), [0xE0, 0x01])
+    assert "".join(str(x) for x, _ in bits) == "0000011111000001000" and info["stuff"] == [5, 10, 15]
+    assert all(p1 is None for _, p1 in bits)
+    # CRC field, CRC-tail stuff (AMBIGUOUS case) payload
+    _b, info = ser_tx_bits(USB_CFG, [0x80, 0xC3, 0x00, 0xB9])
+    assert info["crc_tail_stuff"] and not info["data_tail_stuff"]
+    # -- decoder: round trip of the encoder, robust to sync depth / phase --
+    cases = [(USB_CFG, [0x80, 0xC3, 0xFF, 0xFF, 0x00, 0x7F, 0xFE, 0x01]),
+             (USB_CFG, [0x80, 0x4B, 0x3F, 0xFF, 0xA5]),
+             (USB_CFG.but(crc_tx=0), [0x80, 0xFC])]
+    for cfg, d in cases:
+        bits, info = ser_tx_bits(cfg, d)
+        assert not info["crc_tail_stuff"]
+        for per in (32.0, 33.0, 33.333, 34.0):
+            w = bits_to_wave(bits, per, lead=40, tail=200)
+            summ, crcs = rx_wave_robust(cfg, w)
+            exp = list(d)
+            if cfg.crc_tx:
+                f = crc_field_bits(cfg, info["crc"])
+                exp += [sum(f[i] << i for i in range(8)), sum(f[8 + i] << i for i in range(8))]
+            assert summ == [("byte", x) for x in exp] + [("end", "se0")], (per, summ)
+            if cfg.crc_tx:
+                assert crcs == [0x800D]
+    # stuff error: SYNC, PID, then the line stays K (no stuff bit)
+    w = usb_stuff_error_wave()[0]
+    assert rx_wave_robust(USB_CFG, w)[0] == [("byte", 0x80), ("byte", 0xC3), ("end", "stuff")]
+    # bitrev
+    assert bitrev(0x01, 8) == 0x80 and bitrev(0b10110, 5) == 0b01101
+
+
+def usb_stuff_error_wave(hold=1500, lead=40, tail=300):
+    """SYNC + PID 0xC3 (USB settings), then the line held at K (D+ high) for
+    `hold` cycles -- seven equal levels with no stuff bit, a stuff error --
+    then J. Returns (wave, cycle index where J returns)."""
+    bits, _ = ser_tx_bits(USB_CFG.but(crc_tx=0, se0=0), [0x80, 0xC3])
+    assert bits[-1] == (1, 0)
+    w = bits_to_wave(bits, USB_CFG.P, lead=lead)
+    w += [(1, 0)] * hold
+    t_idle = len(w)
+    return w + [(0, 1)] * tail, t_idle
 
 
 if __name__ == "__main__":

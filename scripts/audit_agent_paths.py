@@ -95,7 +95,10 @@ def main() -> int:
             for p in ABS.findall(cmd):
                 if not p.startswith(ROOTS):
                     continue
-                full = str(Path(p).expanduser().resolve())
+                try:
+                    full = str(Path(p).expanduser().resolve())
+                except RuntimeError:            # "~name" with no such user: a token, not a path
+                    full = p
                 if ok(p) or ok(full) or p.startswith(SYSTEM_OK) or full.startswith(SYSTEM_OK):
                     continue
                 bad.append(f"Bash path {p}  in: {cmd[:120]!r}")
