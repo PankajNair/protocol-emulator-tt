@@ -13,7 +13,7 @@ A programmable protocol emulator: a small, cycle-exact sequencer CPU
 that bit-bangs serial protocols from firmware, rather than fixed UART,
 SPI or I2C blocks. A new protocol is a new program, not new silicon.
 
-- **Core.** 16-bit instructions, four 8-bit registers, 21 opcodes, one
+- **Core.** 16-bit instructions, four 8-bit registers, 25 opcodes, one
   flag. Every instruction takes 3 cycles plus its own wait time, so
   pin timing is exactly predictable from the program. Full ISA:
   [isa.md](isa.md); microarchitecture: [architecture.md](architecture.md).
@@ -25,8 +25,16 @@ SPI or I2C blocks. A new protocol is a new program, not new silicon.
 - **Arithmetic for checksums.** `XOR` and `ADD` (carry out to the flag)
   make CRCs and additive checksums ordinary firmware, alongside `CMP`,
   `TEST-bit`, `SHIFT` and `LOOP`.
+- **Serial engine.** For protocols too fast to bit-bang (USB low-speed:
+  33 clocks a bit), a small engine on pins 0/1 does the bit level --
+  bit timing with edge resync, NRZI, bit stuffing, a configurable CRC
+  (width up to 16), USB's SE0 end of packet -- and moves whole bytes
+  (`SCFG`, `STX`, `SRX`, `SRD`). Everything above the bit level stays
+  firmware. Spec: [serial_engine.md](serial_engine.md).
 - **Memory.** One IHP 1 KB SRAM macro: bytes 0-511 hold the program (256
   instructions), bytes 512-1023 are data (`LOAD`, `STORE`, `LOADX`).
+  A program can continue into data bytes it doesn't use: the CPU runs
+  code anywhere in the 1 KB.
 - **Loading.** The SRAM is empty at power-up. After reset the chip is in
   LOAD mode and the host streams the program in a byte at a time over
   `ui_in`, with a two-wire handshake. A pulse on START begins execution
@@ -56,6 +64,7 @@ against an independent model of the other end:
 | `can_rx.asm` | CAN 2.0A receiver, 50 kbit/s: resyncs to the transmitter's clock, destuffing, CRC and form checks, ACKs good frames |
 | `swd.asm` | SWD host (ARM debug): line reset, DP/AP reads and writes, e.g. a Cortex-M's IDCODE |
 | `jtag.asm` | JTAG host (IEEE 1149.1): TAP reset, IR/DR scans of 1-255 bits, e.g. a scan chain's IDCODEs |
+| `usb_kbd.asm` | USB low-speed (1.5 Mbit/s) HID keyboard: plugs into a PC, enumerates and types a line of text; uses the serial engine |
 | `ws2812.asm` | WS2812 LED chain driver (up to 85 LEDs): a protocol the chip wasn't designed for, in 20 instructions |
 
 ## How to test
@@ -107,6 +116,7 @@ the firmware:
 | CAN | TXD (to transceiver) | RXD (from transceiver) | | |
 | SWD | SWDIO | | SWCLK | |
 | JTAG | TDI | TMS | TCK | TDO |
+| USB low-speed device | D+ | D- | | |
 
 - **I2C needs pull-up resistors** on SDA and SCL (for example 4.7 kΩ to
   3.3 V at 100 kHz, 2.2 kΩ at 400 kHz): the chip drives them open-drain.
@@ -120,6 +130,11 @@ the firmware:
   the 5 V pull-ups on the device side.
 - UART, SPI and the host pins need no external parts at 3.3 V. Other
   voltage levels need a level shifter on a Pmod.
+- **USB low-speed device:** D+ to `uio[0]` and D- to `uio[1]`, each
+  through a 27 Ω series resistor, a 1.5 kΩ pull-up from D- to 3.3 V
+  (it tells the PC a low-speed device is attached), and the grounds
+  joined. Do not connect VBUS (5 V) to the chip. The USB signal levels
+  are 3.3 V, which the pins drive directly.
 - **WS2812 LEDs powered from 5 V need a level shifter** on DIN (for
   example a 74AHCT125): their input high threshold is 0.7 x VDD = 3.5 V,
   above the chip's 3.3 V output.

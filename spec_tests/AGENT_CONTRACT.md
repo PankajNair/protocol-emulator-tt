@@ -2,7 +2,7 @@
 role: spec-conformance
 write_scope: spec_tests
 protected_paths: [docs, test]
-spec: [docs/isa.md, docs/architecture.md, docs/protocol_timing.md, docs/info.md]
+spec: [docs/isa.md, docs/architecture.md, docs/protocol_timing.md, docs/info.md, docs/serial_engine.md]
 harness: [test/tb.v]
 interface: "tb's regs/wires only: clk, rst_n, ena, ui_in[7:0], uio_in[7:0] (drive); uo_out[7:0], uio_out[7:0], uio_oe[7:0] (observe). Nothing below user_project."
 output_naming: "spec_tests/test_spec_conformance.py (one cocotb module; helpers may go in spec_tests/spec_helpers.py)"
@@ -14,7 +14,7 @@ gate_command: "parent copies spec_tests/*.py into test/ and runs make -C test CO
 
 The design is a TinyTapeout chip: a small sequencer CPU that runs
 firmware out of an on-chip SRAM to bit-bang protocols on the `uio`
-pins. The four documents under `spec` are everything you get. They
+pins. The documents under `spec` are everything you get. They
 define the instruction set, the encoding (exact bit positions), the
 pin map, the LOAD-mode boot handshake by which a host writes the
 firmware into SRAM, the START handover to execution, and the timing

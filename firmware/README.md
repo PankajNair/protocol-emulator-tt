@@ -172,7 +172,25 @@ the brief.
   length of 2, a 32-bit USER register written and read back, 1/7/9-bit
   scans. The last bit shifted with TMS = 0, the IR path entered as DR, no
   right-alignment, or TDO sampled after the falling edge each fail it.
-- `protocols/stretch/` -- stretch goals: low-speed USB, 10Mbit Ethernet.
+- `protocols/usb_kbd.asm` -- USB low-speed (1.5 Mbit/s) HID boot
+  keyboard: enumerates on a PC and types "Hello, TT!" and Enter. D+ =
+  pin 0, D- = pin 1 (27 Ohm series resistors, 1.5 kOhm pull-up on D-).
+  The serial engine (docs/serial_engine.md) does the bit level: 33-clock
+  bits, NRZI, stuffing, the CRC16 of data packets, the EOP. The firmware
+  does tokens (CRC5 included), control transfers (GET_DESCRIPTOR,
+  SET_ADDRESS, SET_CONFIGURATION, others acknowledged; unknown
+  descriptors STALLed), data toggles, the interrupt endpoint and bus
+  reset, answering within 2.9-3.9 bit times. 314 words: the subroutines
+  sit at words 384-511 via `.org`, above the descriptors. VID:PID
+  1209:0001 (pid.codes' shared test ID). Verified by
+  `test/test_usb_kbd.py` against an independent USB host model
+  (enumeration as an OS does it, every device packet decoded from the
+  line and checked for PID, CRC16, toggle, a bit rate within 1.5% and a
+  2-7.5 bit-time turnaround) and `test/test_ser.py` (the engine against
+  `test/usb_ref.py`, written from the USB spec). No CRC on data packets,
+  a wrong CRC5 polynomial, stuffing after 6, no response delay, or no
+  EP0 toggle each fail them.
+- `protocols/stretch/` -- stretch goals: 10Mbit Ethernet.
 
 Order of work: ISA design → assembler → uart.asm (done: TX) → uart_rx.asm (done) →
 i2c.asm (done) → spi.asm (done) → stretch goals.

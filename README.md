@@ -14,6 +14,7 @@ protocol is a new program, loaded by the host after fabrication.
 |---|---|
 | Datasheet (pins, loading, host protocol, external parts) | [docs/info.md](docs/info.md) |
 | Instruction set | [docs/isa.md](docs/isa.md) |
+| Serial engine (USB low-speed bit level) | [docs/serial_engine.md](docs/serial_engine.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Protocol timing budget | [docs/protocol_timing.md](docs/protocol_timing.md) |
 | Assembler, example firmware, demo-board host library | [firmware/](firmware/README.md) |
@@ -23,7 +24,13 @@ protocol is a new program, loaded by the host after fabrication.
 ## Status
 
 - **RTL:** complete (`src/`): sequencer core, pin control, boot loader,
-  IHP 1 KB SRAM macro.
+  IHP 1 KB SRAM macro, and a serial engine for protocols too fast to
+  bit-bang ([docs/serial_engine.md](docs/serial_engine.md)).
+- **USB:** with the serial engine, the chip enumerates as a USB 1.1
+  low-speed HID keyboard and types a line of text
+  (`firmware/protocols/usb_kbd.asm`), verified against an independent
+  USB host model that checks every packet's CRC, data toggle, bit rate
+  and turnaround.
 - **Firmware:** UART TX and RX, UART self-test, SPI (modes 0-3), I2C
   (100/400 kHz), SPI target (the chip as the peripheral, following an
   external clock), and six protocols the chip wasn't designed for: a

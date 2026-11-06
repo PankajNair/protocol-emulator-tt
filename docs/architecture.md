@@ -80,9 +80,31 @@ file stays focused on memory/area/pipeline/pin-level system integration.
   reconsidered (hardware serializer peripheral) if time permits after
   everything else, including the other stretch protocols, is done.
   Baseline capability does not depend on this.
-- **CRC/LFSR peripheral**: for CAN/Ethernet stretch protocols -- see
-  [isa.md](isa.md) Open questions. Deferred until those protocols are
-  actually tackled.
+- **CRC/LFSR peripheral**: resolved 2026-11-04 by the serial engine
+  (below), whose CRC is configurable (width 1-16, any polynomial).
+
+## Serial engine (2026-11-04)
+
+`src/io/ser_engine.v`, a fourth top-level sibling of `core.v`,
+`pin_ctrl.v` and `mem.v` (spec: [serial_engine.md](serial_engine.md)).
+It does a serial protocol's bit level -- bit timing with edge resync,
+NRZI, bit stuffing on line levels, a CRC, an SE0 end of packet -- and
+moves whole bytes, through four opcodes (`SCFG`/`STX`/`SRX`/`SRD`,
+[isa.md](isa.md) rows 21-24). Added for USB low-speed (1.5 Mbit/s: 33
+clocks a bit, 11 instructions -- too short to bit-bang NRZI, stuffing
+and a CRC); everything above the bit level stays firmware
+(`firmware/protocols/usb_kbd.asm`).
+
+- core.v: `STX` blocks while the engine's waiting slot is full and
+  `SRX` until a byte, an end of packet or its timeout (the shared
+  `DELAY`/`WAIT` counter), both by holding EXECUTE exactly as `WAIT`
+  does. `SRX`/`SRD` write Rd; `SRX` writes the flag.
+- pin_ctrl.v: hands the engine the synchronized levels of pins 0/1
+  (the same 2-flop path as every input) and, while it transmits, lets
+  it drive them push-pull with its own value, overriding their sticky
+  `SET` mode and value. Never during LOAD.
+- The engine never receives and transmits at once, so the bit timer,
+  shift register, run counter, byte index and CRC are shared.
 
 ## Pipeline
 

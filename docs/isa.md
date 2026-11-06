@@ -163,17 +163,18 @@ condition select:
 | `10` | if flag clear (BNE) |
 | `11` | call (push return address to the depth-1 return register, then jump) |
 
-`addr(9)` is 9 bits wide (0-511 encodable), but only word-addresses
-0-255 are legitimate jump targets now that the SRAM is split 512/512
-between program and data ("Data memory" below) -- program is 256
-words, not the full 512 the field could technically reach. There's no
-hardware guard against branching into the data region (256-511); it's
-a firmware-discipline requirement. (This used to be analogized to
-`pin_index` 6-7 being similarly unused/no-op -- that's no longer true,
-both now have real hardware targets, see
-[architecture.md](architecture.md)'s Pin map; `addr(9)`'s spare range
-is the one genuinely unused encoding space left in the design.) The
-spare encoding range is headroom, not currently meaningful.
+`addr(9)` is 9 bits wide (0-511 encodable). The program region is
+words 0-255 ("Data memory" below); words 256-511 are the data
+region's bytes, and the CPU fetches and runs them like any other code
+(next paragraph). A program may therefore continue into the data
+region, in bytes it doesn't use for data: the assembler's `.org`
+places code there and refuses an overlap with `.data`
+(firmware/isa/asm.py). The USB keyboard firmware does this -- its
+subroutines live at words 384-511, above the descriptor tables that
+`LOADX` must reach (data offsets 0-255). Without `.org`, the
+assembler still stops a program at word 255. (Until 2026-11-04 this
+paragraph called anything past word 255 a firmware-discipline
+violation; the hardware behaviour has not changed.)
 
 What the hardware does there: the PC, the CALL return register and
 next-PC are all 9 bits, and word `w` is fetched from bytes `2w`/`2w+1`.
@@ -200,10 +201,10 @@ ones were, so: stated here. Firmware must not nest calls; nothing in
 hardware stops it from trying.
 
 **`CALL` also silently clobbers the shared flag if the subroutine uses
-`CMP`/`TEST-bit`/`WAIT`/`ADD` internally** (every `WAIT` writes the flag, not
+`CMP`/`TEST-bit`/`WAIT`/`ADD`/`SRX` internally** (every `WAIT` writes the flag, not
 just a timed one -- see its row). Concretely: `TEST-bit R0,7` / `CALL
 send_byte` / `BEQ was_one` -- if `send_byte` does its own `TEST-bit`/
-`CMP`/`WAIT`/`ADD` anywhere (likely, since those are the only flag-writers),
+`CMP`/`WAIT`/`ADD`/`SRX` anywhere (likely, since those are the only flag-writers),
 `BEQ` branches on *that* result, not
 the one the caller set up. This is the one real flag-clobber hazard in
 the ISA -- confirmed to be CALL-shaped specifically, not a general "any
@@ -215,7 +216,7 @@ or enable nested calls -- an earlier draft overclaimed both, caught by
 a later audit.** They let firmware save/restore R0-R3 (real GPR values)
 around a `CALL`, which is genuinely useful, but neither the flag nor
 the return-address register is a GPR, and nothing reads either of them
-*out* -- `CMP`/`TEST-bit`/`WAIT`/`ADD` only ever *write* the flag, `BRANCH`
+*out* -- `CMP`/`TEST-bit`/`WAIT`/`ADD`/`SRX` only ever *write* the flag, `BRANCH`
 only *consumes* it, and `RET` is the only thing that ever reads the
 return-address register (by jumping to it, not by exposing its value).
 `STORE` has nothing to `STORE` in either case. Actually fixing this
@@ -302,7 +303,11 @@ movable-address indexed write ever turns out to be needed.
 | `18` | LOADX | reg-reg | locked | read data memory into Rd, address = `512 + Rs` (register-indexed -- Rs's full 8-bit range reaches the first 256 bytes of the data region). What makes lookup by a runtime-computed index possible at all -- `LOAD`/`STORE`'s `imm` is compile-time-only, can't be indexed by a runtime value. Solves table *storage*, not table *computation*: a CRC table still needs an `XOR` to compute the index in the first place, which `XOR` (opcode 19) now provides -- see Register file's CRC note. An earlier draft of this row called CRC tables "actually usable" via `LOADX` alone; corrected. |
 | `19` | XOR | reg-reg | locked | `Rd <= Rd ^ Rs`. **Does not touch the shared flag** (like `LOOP`/`SHIFT`), so a flag tested before an `XOR` survives it -- the shape a bitwise CRC loop needs (`TEST-bit` the bit, `XOR` the polynomial in, branch on the earlier test). `XOR Rd,Rd` clears Rd. Added 2026-10-23 (Register file). |
 | `20` | ADD | reg-reg | locked | `Rd <= (Rd + Rs) mod 256`; **sets the shared flag to the carry out** (1 iff Rd + Rs > 255), so `BEQ`/`BNE` after an `ADD` branch on carry -- multi-byte sums and checksums. A fourth flag-writer alongside `CMP`/`TEST-bit`/`WAIT`. With `LDI Rx,1` it is the increment the ISA lacked (counting up previously meant `LOOP`'s decrement). Added 2026-10-23 (Register file). |
-| `21-31` | *reserved* | -- | -- | Unassigned. Executes as `NOP` + sets the illegal-opcode flag if ever fetched (Undefined opcode behavior, above) -- same "safe by construction" treatment as every other unimplemented encoding in this design. |
+| `21` | SCFG | reg+imm | locked | serial engine (docs/serial_engine.md): write Rd to engine configuration register `k` = `imm[3:0]` (0-8), or a command (15: clear sticky status / abandon a received packet). Rd is the *source*, as for `STORE`. Added 2026-11-04 with the serial engine. |
+| `22` | STX | reg+imm | locked | queue Rd for transmission by the serial engine, LSB first. **Blocks** (like `WAIT`, holding EXECUTE) while the engine's one-byte waiting slot is full; a byte queued with the engine idle starts a packet. `imm` unused. Added 2026-11-04. |
+| `23` | SRX | reg+imm | locked | **block** until the serial engine has a received byte (Rd <= byte, **flag = 0**), signals the end of a packet (Rd unchanged, flag = 1, the end is consumed) or the timeout expires (Rd unchanged, flag = 1). Timeout = `imm[6:0] << (imm[8:7] * 5)` cycles, mantissa 0 = unbounded (`WAIT`'s rule), same countdown counter as `DELAY`/`WAIT`. A fifth flag-writer. Added 2026-11-04. |
+| `24` | SRD | reg+imm | locked | Rd <= serial engine status (k = `imm[3:0]` = 0) or CRC bits 7:0 / 15:8 (k = 1 / 2); other k read 0. Flag untouched. Added 2026-11-04. |
+| `25-31` | *reserved* | -- | -- | Unassigned. Executes as `NOP` + sets the illegal-opcode flag if ever fetched (Undefined opcode behavior, above) -- same "safe by construction" treatment as every other unimplemented encoding in this design. (21-24 were reserved too until the serial engine took them, 2026-11-04.) |
 
 **21 opcodes total** (16 validated by the 100-scenario audit, above,
 plus `LOAD`/`STORE`/`LOADX` added by a later adversarial design review,
