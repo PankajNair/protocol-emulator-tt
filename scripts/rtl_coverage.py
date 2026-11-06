@@ -97,7 +97,7 @@ module mem (input wire clk, input wire rst_n, input wire [9:0] addr, input wire 
             input wire [7:0] wdata, output wire [7:0] rdata);
 endmodule
 """
-RTL = ["cpu/isa_defs.v", "cpu/core.v", "cpu/regfile.v", "io/cycle_counter.v", "io/pin_ctrl.v", "top.v"]
+RTL = ["cpu/isa_defs.v", "cpu/core.v", "cpu/regfile.v", "io/cycle_counter.v", "io/pin_ctrl.v", "io/ser_engine.v", "top.v"]
 
 
 def suite_cmd(name: str, seeds: int) -> tuple[str, dict]:
