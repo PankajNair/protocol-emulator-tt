@@ -460,3 +460,38 @@ endp:   LDI  R0, 0xEE
     cocotb.start_soon(bus.drive(U.encode(ack)))
     got = [await bus.recv() for _ in range(3)]
     assert got == [U.SYNC, ack[0], 0xEE], [hex(x) for x in got]
+
+
+@cocotb.test()
+async def test_ser_abandon_waits_k_plus_1_idle_bits(dut):
+    """Without se0 (CAN-style: idle 1, stuff after 5), an abandoned packet
+    is skipped until K+1 = 6 bit times at the idle level: its own runs of
+    up to 5 recessive bits don't end the wait, so nothing of it is
+    received; the next packet after a real idle gap is."""
+    cfg = {0: 20, 1: 0, 2: 10, 3: 0, 5: (14 << 4) | 5, 6: 0x99, 7: 0x45, 8: 0x00,
+           4: 0b1001_1000}           # rx_en, rx_pin 1, idle 1
+    src = cfg_asm(cfg) + """
+        SRX  R0
+        CALL putb
+        LDI  R0, 2
+        SCFG R0, 15             ; abandon
+        LDI  R0, 0x77
+        SRX  R0, 1984
+        CALL putb               ; 0x77: nothing more arrived
+nxt:    SRX  R0
+        CALL putb
+        JMP  nxt
+""" + HANDSHAKE
+    bus = await boot(dut, src, idle=(1, 1))
+    await ClockCycles(dut.clk, 200)
+    # many runs of exactly 5 recessive bits inside the packet
+    data = [0x00, 0xE0, 0x83, 0x0F, 0x3E, 0xF8, 0xE0, 0x83]
+    line = can_stuff([(b >> i) & 1 for b in data for i in range(8)])
+    drv = cocotb.start_soon(bus.drive_levels(line, 20, pin=1))
+    assert await bus.recv() == 0x00
+    assert await bus.recv() == 0x77, "a byte of the abandoned packet arrived"
+    await drv
+    await ClockCycles(dut.clk, 6 * 20 + 40)
+    data2 = [0x5A, 0x3C]
+    cocotb.start_soon(bus.drive_levels(can_stuff([(b >> i) & 1 for b in data2 for i in range(8)]), 20, pin=1))
+    assert [await bus.recv() for _ in range(2)] == data2
