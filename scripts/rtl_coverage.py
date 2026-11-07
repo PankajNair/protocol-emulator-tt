@@ -71,8 +71,8 @@ _ENA = "the TinyTapeout harness holds ena high whenever the design is powered; u
 WAIVED: dict[tuple[str, str, int, str], str] = {
     ("cpu/core.v", "line", 346, "case"): _UNREACH_CASE,
     ("cpu/core.v", "line", 481, "case"): _UNREACH_CASE,
-    ("io/ser_engine.v", "line", 378, "case"): _UNREACH_SER,
-    ("io/ser_engine.v", "toggle", 110, "crc_mask[0]:1->0"): _MASK0,
+    ("io/ser_engine.v", "line", 398, "case"): _UNREACH_SER,
+    ("io/ser_engine.v", "toggle", 130, "crc_mask[0]:1->0"): _MASK0,
     **{(f, "toggle", n, f"start_fall:{e}"): _START_FALL
        for f, n in (("cpu/core.v", 74), ("io/pin_ctrl.v", 84), ("top.v", 38)) for e in ("0->1", "1->0")},
     **{(f, "toggle", n, f"{s}[4]:{e}"): _CONST0

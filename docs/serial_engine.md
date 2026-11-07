@@ -27,7 +27,9 @@ The engine uses protocol pins 0 and 1 only.
 ## Configuration: `SCFG Rs, k`
 
 Writes Rs to configuration register k (0-8), or a command (15).
-Registers reset to 0 (engine off).
+Registers reset to 0 (engine off). A write or command takes effect one
+clock after `SCFG` commits (the engine registers it), before the next
+instruction can run.
 
 | k | Bits | Meaning |
 |---|---|---|

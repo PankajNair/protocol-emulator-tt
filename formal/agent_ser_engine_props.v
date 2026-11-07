@@ -93,7 +93,10 @@ module ser_engine_props (
     input wire [15:0] crc,
     input wire [1:0]  eop_cnt,
     input wire        wait_signal,
-    input wire [1:0]  wait_kind,     // (parent edit 2026-11-06: idle rule after a cut packet)
+    input wire [1:0]  wait_kind,
+    input wire        wr_q,
+    input wire [3:0]  wr_addr_q,
+    input wire [7:0]  wr_data_q,     // (parent edit 2026-11-06: idle rule after a cut packet)
     input wire [4:0]  crc_left,
     input wire        own,
     input wire [7:0]  sh,
@@ -116,8 +119,21 @@ module ser_engine_props (
   localparam S_IDLE = 3'd0, S_RX = 3'd1, S_TX = 3'd2, S_EOP = 3'd3, S_WAIT = 3'd4;
 
   // =====================================================================
-  // Ghost configuration: the doc's SCFG register map.
+  // Ghost configuration: the doc's SCFG register map. SCFG writes and
+  // commands act one clock after the CPU issues them (the engine
+  // registers them; parent edit 2026-11-07), so the ghost takes them
+  // from w_* -- the ports delayed by a clock.
   // =====================================================================
+  reg       w_we;
+  reg [3:0] w_addr;
+  reg [7:0] w_data;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      w_we <= 1'b0; w_addr <= 4'd0; w_data <= 8'd0;
+    end else begin
+      w_we <= cfg_we; w_addr <= cfg_addr; w_data <= cfg_wdata;
+    end
+  end
   reg [11:0] g_P, g_S;
   reg [7:0]  g_mode;
   reg [3:0]  g_K, g_w1, g_cs;
@@ -128,16 +144,16 @@ module ser_engine_props (
     if (!rst_n) begin
       g_P <= 0; g_S <= 0; g_mode <= 0; g_K <= 0; g_w1 <= 0; g_cs <= 0;
       g_poly <= 0; g_ones <= 0;
-    end else if (cfg_we) begin
-      if (cfg_addr == 4'd0) g_P[7:0]   <= cfg_wdata;
-      if (cfg_addr == 4'd1) g_P[11:8]  <= cfg_wdata[3:0];
-      if (cfg_addr == 4'd2) g_S[7:0]   <= cfg_wdata;
-      if (cfg_addr == 4'd3) g_S[11:8]  <= cfg_wdata[3:0];
-      if (cfg_addr == 4'd4) g_mode     <= cfg_wdata;
-      if (cfg_addr == 4'd5) begin g_K <= cfg_wdata[3:0]; g_w1 <= cfg_wdata[7:4]; end
-      if (cfg_addr == 4'd6) g_poly[7:0]  <= cfg_wdata;
-      if (cfg_addr == 4'd7) g_poly[15:8] <= cfg_wdata;
-      if (cfg_addr == 4'd8) begin g_cs <= cfg_wdata[3:0]; g_ones <= cfg_wdata[4]; end
+    end else if (w_we) begin
+      if (w_addr == 4'd0) g_P[7:0]   <= w_data;
+      if (w_addr == 4'd1) g_P[11:8]  <= w_data[3:0];
+      if (w_addr == 4'd2) g_S[7:0]   <= w_data;
+      if (w_addr == 4'd3) g_S[11:8]  <= w_data[3:0];
+      if (w_addr == 4'd4) g_mode     <= w_data;
+      if (w_addr == 4'd5) begin g_K <= w_data[3:0]; g_w1 <= w_data[7:4]; end
+      if (w_addr == 4'd6) g_poly[7:0]  <= w_data;
+      if (w_addr == 4'd7) g_poly[15:8] <= w_data;
+      if (w_addr == 4'd8) begin g_cs <= w_data[3:0]; g_ones <= w_data[4]; end
     end
   end
 
@@ -148,8 +164,8 @@ module ser_engine_props (
   wire g_rxsel = g_mode[4];
   wire g_rxen  = g_mode[7];
 
-  wire cmd_clear   = cfg_we && cfg_addr == 4'd15 && cfg_wdata[0];
-  wire cmd_abandon = cfg_we && cfg_addr == 4'd15 && cfg_wdata[1];
+  wire cmd_clear   = w_we && w_addr == 4'd15 && w_data[0];
+  wire cmd_abandon = w_we && w_addr == 4'd15 && w_data[1];
 
   // line, as the doc defines it
   wire rx_lvl    = g_rxsel ? pin_sync[1] : pin_sync[0];
@@ -166,7 +182,7 @@ module ser_engine_props (
   wire in_flight = (st != S_IDLE) || tx_full || (drv_oe != 2'b00) || rx_start;
   wire p_ok      = g_P >= 12'd2;
   wire s_ok      = g_S >= 12'd1 && g_S < g_P;
-  wire env_now   = !(in_flight && cfg_we && cfg_addr <= 4'd8)
+  wire env_now   = !(in_flight && w_we && w_addr <= 4'd8)
                 && (!in_flight || p_ok)
                 && (!(g_rxen || st == S_RX) || (p_ok && s_ok));
   reg  env_hist, pv;     // all earlier cycles since reset met E2/E3; a previous cycle exists
@@ -494,6 +510,8 @@ module ser_engine_props (
     cover (ok && g_wait && g_wk == 2'd2 && g_icnt != 17'd0);
     if (ok && g_wait) assert (wait_kind == g_wk);
     if (rst_n) assert (wait_kind != 2'd3);
+    cover (ok && w_we);
+    if (rst_n) assert (wr_q == w_we && wr_addr_q == w_addr && wr_data_q == w_data);
     if (rst_n) assert (st <= 3'd4);          // the state default arm is unreachable (rtl_coverage waiver)
     if (ok && g_wait && g_wk == 2'd2)
       assert ({12'd0, crc_left} <= {13'd0, g_K} && tmr <= g_P - 12'd1 &&
@@ -511,7 +529,7 @@ bind ser_engine ser_engine_props u_ser_engine_props (
     .rx_end(rx_end), .rx_byte(rx_byte), .rd_data(rd_data),
     .st(st), .tmr(tmr), .cnt(cnt), .run(run), .cur(cur), .byte_idx(byte_idx), .crc(crc),
     .eop_cnt(eop_cnt), .wait_signal(wait_signal),
-    .wait_kind(wait_kind), .crc_left(crc_left), .own(own), .sh(sh), .rx_last(rx_last),
+    .wait_kind(wait_kind), .wr_q(wr_q), .wr_addr_q(wr_addr_q), .wr_data_q(wr_data_q), .crc_left(crc_left), .own(own), .sh(sh), .rx_last(rx_last),
     .overrun(overrun), .period(period), .sample(sample), .mode(mode), .stuff_k(stuff_k),
     .crc_w1(crc_w1), .poly(poly), .crc_start(crc_start), .crc_ones(crc_ones)
 );

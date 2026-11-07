@@ -105,6 +105,10 @@ and a CRC); everything above the bit level stays firmware
   `SET` mode and value. Never during LOAD.
 - The engine never receives and transmits at once, so the bit timer,
   shift register, run counter, byte index and CRC are shared.
+- `SCFG` writes are registered in the engine and act a clock later.
+  Unregistered, the path SRAM read -> decode -> commit -> abandon
+  command -> the engine's CRC next-state logic missed 20 ns by 73 ps at
+  the slow corner (the first hardening with the engine).
 
 ## Pipeline
 

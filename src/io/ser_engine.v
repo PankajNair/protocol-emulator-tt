@@ -65,8 +65,28 @@ module ser_engine (
   wire crc_inv  = mode[6];
   wire rx_en    = mode[7];
 
-  wire cmd_clear   = cfg_we && cfg_addr == 4'd15 && cfg_wdata[0];
-  wire cmd_abandon = cfg_we && cfg_addr == 4'd15 && cfg_wdata[1];
+  // SCFG writes and commands are registered and act one clock later:
+  // this keeps the CPU's decode (SRAM read -> opcode -> commit) out of
+  // the engine's next-state logic, which closes timing at the slow
+  // corner. Firmware can't tell: the next instruction is 3 clocks away.
+  reg       wr_q;
+  reg [3:0] wr_addr_q;
+  reg [7:0] wr_data_q;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      wr_q      <= 1'b0;
+      wr_addr_q <= 4'd0;
+      wr_data_q <= 8'd0;
+    end else begin
+      wr_q      <= cfg_we;
+      wr_addr_q <= cfg_addr;
+      wr_data_q <= cfg_wdata;
+    end
+  end
+
+  wire cmd_clear   = wr_q && wr_addr_q == 4'd15 && wr_data_q[0];
+  wire cmd_abandon = wr_q && wr_addr_q == 4'd15 && wr_data_q[1];
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -78,17 +98,17 @@ module ser_engine (
       poly      <= 16'd0;
       crc_start <= 4'd0;
       crc_ones  <= 1'b0;
-    end else if (cfg_we) begin
-      case (cfg_addr)
-        4'd0: period[7:0]   <= cfg_wdata;
-        4'd1: period[11:8]  <= cfg_wdata[3:0];
-        4'd2: sample[7:0]   <= cfg_wdata;
-        4'd3: sample[11:8]  <= cfg_wdata[3:0];
-        4'd4: mode          <= cfg_wdata;
-        4'd5: {crc_w1, stuff_k} <= cfg_wdata;
-        4'd6: poly[7:0]     <= cfg_wdata;
-        4'd7: poly[15:8]    <= cfg_wdata;
-        4'd8: {crc_ones, crc_start} <= cfg_wdata[4:0];
+    end else if (wr_q) begin
+      case (wr_addr_q)
+        4'd0: period[7:0]   <= wr_data_q;
+        4'd1: period[11:8]  <= wr_data_q[3:0];
+        4'd2: sample[7:0]   <= wr_data_q;
+        4'd3: sample[11:8]  <= wr_data_q[3:0];
+        4'd4: mode          <= wr_data_q;
+        4'd5: {crc_w1, stuff_k} <= wr_data_q;
+        4'd6: poly[7:0]     <= wr_data_q;
+        4'd7: poly[15:8]    <= wr_data_q;
+        4'd8: {crc_ones, crc_start} <= wr_data_q[4:0];
         default: ;
       endcase
     end
