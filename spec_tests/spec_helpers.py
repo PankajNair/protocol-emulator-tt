@@ -448,8 +448,12 @@ def ser_rx_decode(cfg, wave, d=2, s_adj=0):
         that ends the packet), else a data bit (NRZI-decoded if nrzi),
         shifted in LSB first, 8 data bits a byte;
       * CRC over data bits of bytes crc_start onward (CRC field included);
-      * end signalled once the line is idle: 'not SE0, receive pin at the
-        idle level'. (SE0 is only looked for in se0 mode.)
+      * after an SE0 end: signalled once 'the receive pin [is] at the idle
+        level, not SE0'; after a stuff error: 'in se0 mode the engine waits
+        for the packet's SE0 and then the idle level; otherwise for K+1 bit
+        times (1 if K = 0) at the idle level without a break' (counted
+        here as (K+1)*P consecutive clocks). SE0 'only ends a packet in
+        se0 mode'.
     Returns events [('byte', v, cycle) | ('end', reason, cycle)] and the CRC
     register after each packet (list)."""
     S = cfg.S + s_adj
@@ -497,10 +501,20 @@ def ser_rx_decode(cfg, wave, d=2, s_adj=0):
                 continue
             state = "wait_idle"
             s["reason"] = reason
+            s["seen_se0"] = reason == "se0"
+            s["idle_run"] = 0
             crcs.append(s["crc"])
             continue
         if state == "wait_idle":
-            if not se0now and rx == cfg.idle:
+            if s["reason"] == "stuff" and not cfg.se0:
+                s["idle_run"] = s["idle_run"] + 1 if rx == cfg.idle else 0
+                if s["idle_run"] >= (cfg.K + 1 if cfg.K else 1) * P:
+                    ev.append(("end", s["reason"], c))
+                    state = "idle"
+                continue
+            if se0now:
+                s["seen_se0"] = True
+            elif s["seen_se0"] and rx == cfg.idle:
                 ev.append(("end", s["reason"], c))
                 state = "idle"
     return ev, crcs
@@ -1062,22 +1076,43 @@ def _selftest_engine():
             if cfg.crc_tx:
                 assert crcs == [0x800D]
     # stuff error: SYNC, PID, then the line stays K (no stuff bit)
-    w = usb_stuff_error_wave()[0]
+    w, t_rest, t_idle = usb_stuff_error_wave()
     assert rx_wave_robust(USB_CFG, w)[0] == [("byte", 0x80), ("byte", 0xC3), ("end", "stuff")]
+    ev, _ = ser_rx_decode(USB_CFG, w)
+    assert ev[-1][2] > t_idle      # the end waits for the packet's SE0, then J
+    # the J levels inside the rest of the packet would end it under a
+    # 'first idle level' rule: check that the waveform really has them
+    assert any(w[c] == (0, 1) for c in range(t_rest, t_idle))
+    # non-se0 stuff error: end after K+1 idle bit times without a break
+    cfg = SerCfg(P=40, S=20, idle=1, K=3, rx_en=1)
+    w = ([(1, 1)] * 50 + [(0, 1)] * 40 + [(1, 1)] * 40 + [(0, 1)] * 160 + [(1, 1)] * 120
+         + [(0, 1)] * 80 + [(1, 1)] * 120 + [(0, 1)] * 40 + [(1, 1)] * 600)
+    ev, _ = ser_rx_decode(cfg, w)
+    assert [e[:2] for e in ev] == [("end", "stuff")] and ev[0][2] >= len(w) - 600 + 160, ev
     # bitrev
     assert bitrev(0x01, 8) == 0x80 and bitrev(0b10110, 5) == 0b01101
 
 
-def usb_stuff_error_wave(hold=1500, lead=40, tail=300):
-    """SYNC + PID 0xC3 (USB settings), then the line held at K (D+ high) for
-    `hold` cycles -- seven equal levels with no stuff bit, a stuff error --
-    then J. Returns (wave, cycle index where J returns)."""
+USB_GARBAGE = [0x00, 0x00, 0x55, 0x33, 0x00, 0x0F, 0x00, 0x00]
+
+
+def usb_stuff_error_wave(lead=40, tail=300):
+    """SYNC + PID 0xC3 (USB settings), then 9 bit times at K (D+ high) --
+    seven equal levels with no stuff bit, a stuff error -- then the rest of
+    the packet (NRZI data of USB_GARBAGE: J and K levels, J runs up to 4
+    bits, no SE0), then SE0 SE0 J. Returns (wave, index where the rest of
+    the packet starts, index of the J after the SE0)."""
     bits, _ = ser_tx_bits(USB_CFG.but(crc_tx=0, se0=0), [0x80, 0xC3])
     assert bits[-1] == (1, 0)
-    w = bits_to_wave(bits, USB_CFG.P, lead=lead)
-    w += [(1, 0)] * hold
+    rest, _ = ser_tx_bits(USB_CFG.but(crc_tx=0, se0=0, K=0), USB_GARBAGE)
+    # NRZI from K: the encoder starts from idle J, so invert to continue at K
+    rest = [(1 - a, 1 - b) for a, b in rest]
+    assert (0, 1) in rest and (0, 0) not in rest
+    w = bits_to_wave(bits + [(1, 0)] * 9, USB_CFG.P, lead=lead)
+    t_rest = len(w)
+    w += bits_to_wave(rest + [(0, 0), (0, 0)], USB_CFG.P)
     t_idle = len(w)
-    return w + [(0, 1)] * tail, t_idle
+    return w + [(0, 1)] * tail, t_rest, t_idle
 
 
 if __name__ == "__main__":

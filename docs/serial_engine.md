@@ -58,7 +58,7 @@ once. If a command and the event it clears happen in the same clock, the
 event wins.
 
 `HALT` stops the CPU, not the engine: a packet being sent or received
-carries on.
+carries on, and the engine keeps driving the pins until it ends.
 
 ## Bit stuffing, in line levels
 
@@ -115,7 +115,8 @@ end:
   comes and goes inside it, so: in `se0` mode the engine waits for the
   packet's SE0 and then the idle level; otherwise for K+1 bit times
   (1 if K = 0) at the idle level without a break, longer than any level
-  inside a stuffed packet.
+  inside a stuffed packet. The packet's SE0 seen during this wait is
+  not a new end: status bit 2 stays as it was.
 
 `SRX Rd, timeout` blocks until one of:
 

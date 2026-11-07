@@ -283,7 +283,7 @@ movable-address indexed write ever turns out to be needed.
 | value | op | format | status | notes |
 |---|---|---|---|---|
 | `0` | NOP | 0-operand | locked | Deliberately 0 -- makes the all-zero 16-bit word (and any word with just the top 5 bits zero, since the low 11 bits are don't-care for a 0-operand op) a valid NOP encoding. Not a special case: a natural consequence of the assignment, consistent with "undefined opcode -> NOP" already being the safe default elsewhere. |
-| `1` | HALT | 0-operand | locked | Freezes the FSM -- stops fetching, no further state changes. All outputs (including `uio_oe`) hold their last-driven state; does **not** release pins or touch `HOST_STATUS`. Matters concretely since a mid-protocol `HALT` could leave e.g. SPI `CS` asserted or I2C `SCL` held low. Resumable only by external reset -- `HOST_GO` does not resume from `HALT`. |
+| `1` | HALT | 0-operand | locked | Freezes the FSM -- stops fetching, no further state changes. All outputs (including `uio_oe`) hold their last-driven state -- except pins 0/1 while the serial engine is sending a packet, which it finishes (the engine is not part of the CPU; [serial_engine.md](serial_engine.md)); does **not** release pins or touch `HOST_STATUS`. Matters concretely since a mid-protocol `HALT` could leave e.g. SPI `CS` asserted or I2C `SCL` held low. Resumable only by external reset -- `HOST_GO` does not resume from `HALT`. |
 | `2` | RET | 0-operand | locked | jumps to return-addr register |
 | `3` | BRANCH (JMP/BEQ/BNE/CALL) | branch | locked | cond field selects behavior |
 | `4` | LDI | reg+imm | locked | load immediate -> Rd |

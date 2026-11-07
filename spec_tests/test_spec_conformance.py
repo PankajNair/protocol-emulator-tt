@@ -2124,8 +2124,8 @@ async def test_xor_add_reserved_field_ignored(dut):
 # a test says otherwise, so the engine's drive is visible as Z -> driven ->
 # Z, and the harness can drive receive waveforms on them. Protocol pin 2
 # (MK) and 3 are firmware markers, pin 7 is a harness->firmware 'go' input.
-# Firmware never HALTs while the engine may be busy (it spins instead): see
-# the AMBIGUOUS note on HALT in test_ser_tx_usb_waveform.
+# Most firmware spins rather than HALTs after queueing bytes; HALT's effect
+# on the engine ('HALT stops the CPU, not the engine') has its own test.
 
 from spec_helpers import (SerCfg, USB_CFG, CAN_CFG, ser_tx_bits,  # noqa: E402
                           ser_rx_decode, ser_rx_summary, bits_to_wave,
@@ -2305,10 +2305,7 @@ async def test_ser_tx_usb_waveform(dut):
     'most significant first, each inverted if crc_inv, stuffed like data',
     then '2 bit times of SE0 and 1 of idle', then the pins are released.
     Payload with 0xFF/0x7F/0xFE forces stuff bits mid-packet. Exact, cycle
-    by cycle, against the reference encoder; P = 33.
-    AMBIGUOUS: isa.md HALT 'Freezes the FSM ... no further state changes'
-    does not say whether the engine freezes too; firmware here spins
-    instead of halting so the question never arises."""
+    by cycle, against the reference encoder; P = 33."""
     chip = await new_chip(dut)
     data = [0x80, 0xC3, 0xFF, 0x00, 0xFE, 0x7F, 0x01]
     bits, info = ser_tx_bits(USB_CFG, data)
@@ -2356,12 +2353,12 @@ async def test_ser_tx_stuff_bit_before_eop(dut):
 
 @cocotb.test()
 async def test_ser_tx_stuff_after_crc_before_eop(dut):
-    """AMBIGUOUS: serial_engine.md's end list puts '1. a stuff bit, if the
-    last bits leave one due' before '2. the CRC ... stuffed like data', so
-    it does not say whether a stuff bit due after the *last CRC bit* is sent
-    before the SE0. Tested reading: yes ('stuffed like data'; USB requires
-    it). Payload [0x80, 0xC3, 0x00, 0xB9] (found by search) makes the
-    inverted CRC16 end with seven equal levels."""
+    """serial_engine.md end of packet: '1. the CRC, if crc_tx ... stuffed
+    like data; 2. a stuff bit, if the last bits (data or CRC) leave one
+    due; 3. in se0 mode, 2 bit times of SE0 and 1 of idle'. Payload [0x80,
+    0xC3, 0x00, 0xB9] (found by search) makes the inverted CRC16 end with
+    seven equal levels, so a stuff bit comes between the CRC and the SE0.
+    (Pass 4 had this AMBIGUOUS; the updated list order settles it.)"""
     chip = await new_chip(dut)
     data = [0x80, 0xC3, 0x00, 0xB9]
     bits, info = ser_tx_bits(USB_CFG, data)
@@ -2413,9 +2410,8 @@ async def test_ser_tx_crc_settings(dut):
     onward'. One packet per setting, exact waveform:
     CRC-8 from byte 1; a 5-bit all-ones inverted CRC (USB CRC5 shape);
     CRC-16/0x1021 with NRZI; width 1 (parity); crc_tx = 0 with a CRC set up
-    (nothing appended).
-    ASSUMPTION (last case): crc_start past the end of the packet covers no
-    bits, so the CRC is its start value (all ones, inverted: 8 zeros)."""
+    (nothing appended); and 'A crc_start past the end of the packet leaves
+    the CRC at its starting value' (all ones, inverted: 8 zeros)."""
     chip = await new_chip(dut)
     cases = [
         ("crc8 from byte 1", SerCfg(P=5, S=2, crc_tx=1, width=8, poly=0x07, crc_start=1),
@@ -2562,6 +2558,126 @@ async def test_ser_tx_whole_byte_time_then_separate_packet(dut):
     assert m is None, f"second packet: {m}"
 
 
+@cocotb.test()
+async def test_ser_tx_run_starts_at_first_bit(dut):
+    """serial_engine.md Bit stuffing: 'A transmitted packet's run starts
+    with its first bit: the idle level before it doesn't count.' NRZ, idle
+    0, K = 3, byte 0x00 sent first: its first bit is at the idle level, and
+    the stuff bit comes after the 3rd 0 (counting the idle level would put
+    it after the 2nd). Expected levels, hand-derived: 000 s1 000 s1 00,
+    then 0xFF: 111 s0 111 s0 11."""
+    chip = await new_chip(dut)
+    cfg = SerCfg(P=6, S=3, K=3)
+    data = [0x00, 0xFF]
+    bits, _ = ser_tx_bits(cfg, data)
+    lv = "".join(str(x) for x, _ in bits)
+    assert lv == "000" + "1" + "000" + "1" + "00" + "111" + "0" + "111" + "0" + "11", lv
+    a = Asm()
+    fw_ser_config(a, cfg)
+    a.ldi(0, 0x00); a.stx(0)
+    a.ldi(1, 0xFF); a.stx(1)
+    fw_spin(a)
+    await chip.run(a)
+    exp = expected_trace(bits, cfg.P, "Z")
+    t0 = await tx_capture(chip, ("Z", "Z"), len(exp) + 60)
+    m = tx_mismatch(chip, t0, exp, ("Z", "Z"), 60, cfg.P)
+    assert m is None, f"stuffing run at packet start: {m}"
+
+
+@cocotb.test()
+async def test_ser_tx_byte_queued_during_crc_starts_new_packet(dut):
+    """serial_engine.md: a packet 'ends when the engine runs out of bytes:
+    then, in order, it sends 1. the CRC ...'; 'A byte queued after the
+    packet has ended starts a new packet.' NRZ, P = 33, CRC-8 appended.
+    Byte 1 is queued; byte 2 is queued about 11 bit times later, while the
+    CRC of packet 1 is going out. Expected: packet 1 = byte 1 + its CRC
+    (byte 2 is not added to it), then packet 2 = byte 2 + its own CRC, each
+    exact. Gap between them: not stated, any number of released cycles
+    (including none) is accepted."""
+    chip = await new_chip(dut)
+    P = 33
+    cfg = SerCfg(P=P, S=16, crc_tx=1, width=8, poly=0x07)
+    a = Asm()
+    fw_ser_config(a, cfg)
+    a.ldi(0, 0x3A); a.ldi(1, 0xC5)
+    a.stx(0)
+    a.delay(11 * P)
+    a.stx(1)
+    fw_spin(a)
+    b1, _ = ser_tx_bits(cfg, [0x3A])
+    b2, _ = ser_tx_bits(cfg, [0xC5])
+    e1, e2 = expected_trace(b1, P, "Z"), expected_trace(b2, P, "Z")
+    await chip.run(a)
+    t0 = await tx_capture(chip, ("Z", "Z"), len(e1) + len(e2) + 400)
+    n = len(e1) + len(e2) + 400
+    got = list(zip(drive_trace(chip, 0, t0, n), drive_trace(chip, 1, t0, n)))
+    assert got[:len(e1)] == e1, \
+        f"packet 1 (byte 1 + CRC) wrong; first diff at {next(i for i, (g, e) in enumerate(zip(got, e1)) if g != e)}"
+    i = len(e1)
+    while i < n and got[i] == ("Z", "Z"):
+        i += 1
+    assert i < 300 + len(e1), "byte queued during the CRC never went out"
+    seg = got[i:i + len(e2)]
+    assert seg == e2, f"packet 2 (byte 2 + its CRC) wrong, starting {i - len(e1)} cycles after packet 1"
+    assert got[i + len(e2)] == ("Z", "Z")
+
+
+@cocotb.test()
+async def test_ser_halt_does_not_stop_engine(dut):
+    """serial_engine.md: 'HALT stops the CPU, not the engine: a packet being
+    sent or received carries on.' Two bytes queued (one shifting, one
+    waiting), then HALT: the whole USB packet (both bytes, CRC16, SE0 SE0
+    J) still goes out exactly and the pins are released.
+    AMBIGUOUS: isa.md's HALT row still says 'All outputs (including uio_oe)
+    hold their last-driven state'; the newer serial_engine.md sentence is
+    followed (the engine's pins keep changing after HALT)."""
+    chip = await new_chip(dut)
+    data = [0x80, 0x4B]
+    bits, _ = ser_tx_bits(USB_CFG, data)
+    a = Asm()
+    fw_ser_config(a, USB_CFG)
+    a.ldi(0, data[0]); a.ldi(1, data[1])
+    a.stx(0)
+    a.stx(1)
+    a.halt()
+    await chip.run(a, ext={1: 1})
+    exp = expected_trace(bits, 33, "Z")
+    t0 = await tx_capture(chip, ("Z", "Z"), len(exp) + 100)
+    m = tx_mismatch(chip, t0, exp, ("Z", "Z"), 100, 33)
+    assert m is None, f"transmit after HALT: {m}"
+
+
+@cocotb.test()
+async def test_ser_sticky_bits_survive_transmit(dut):
+    """serial_engine.md: sticky bits 2-4 are 'cleared by command 15 bit 0 or
+    when the next received packet starts (a transmitted packet leaves
+    them)'. A received packet that overruns sets bits 2 and 4 (0x14 after
+    draining); a transmitted packet follows; afterwards status is still
+    0x14 (bit 5 busy back to 0)."""
+    chip = await new_chip(dut)
+    bits_a, _ = ser_tx_bits(USB_CFG, [0x80, 0xC3, 0x11, 0x22])
+    wa = bits_to_wave(bits_a, 33, tail=200, idle_pins=J)
+    a = Asm()
+    fw_ser_config(a, USB_CFG)
+    a.set(MK, 1, PP)
+    a.wait(GO7, 1)
+    fw_drain(a)
+    a.srd(2, 0); a.store(2, 0)
+    a.ldi(1, 0x80); a.stx(1)
+    a.ldi(1, 0xD2); a.stx(1)
+    a.delay(63, 1)                    # 2016 clocks: the packet is over
+    a.srd(2, 0); a.store(2, 1)
+    fw_report(a, 2)
+    a.halt()
+    await chip.run(a, data=[0] * 8, ext={1: 1})
+    await chip.wait_drive(MK, "1", 3000)
+    await chip.clk(30)
+    await play_wave(chip, wa)
+    chip.set_ext(GO7, 1)
+    got = await chip.host_read_n(2)
+    assert got == [0x14, 0x14], f"status before / after a transmit {[hex(x) for x in got]}, spec 0x14 0x14"
+
+
 # ------------------------------------------------------------------ receive
 def rx_collect_prog(cfg, nmax=12, extra=None):
     """Configure; MK = 1 (ready); collect bytes until the end; data[0] =
@@ -2643,27 +2759,96 @@ async def test_ser_rx_resyncs_to_other_bit_rates(dut):
 @cocotb.test()
 async def test_ser_rx_stuff_error_end_waits_for_idle(dut):
     """serial_engine.md: 'On receive, a stuff bit is dropped; if it is not a
-    level change, that is a stuff error and the packet ends.' 'After the end
-    (SE0 or a stuff error) the engine waits for the line to be idle (not
-    SE0, receive pin at the idle level), then signals the end.' SRD bit 3
-    'stuff error' (sticky); bit 2 stays 0. SYNC + PID, then the line stays
-    at K (D+ high) for 1500 clocks -- no stuff bit after 7 equal levels --
-    then J. The bytes before the error are delivered; the 4 data bits after
-    the PID are not a byte. The end (SRX flag 1, marker on pin 3) must come
-    only after J returns."""
+    level change, that is a stuff error and the packet ends.' 'after a
+    stuff error ... the rest of the packet is still on the line and the
+    idle level comes and goes inside it, so: in se0 mode the engine waits
+    for the packet's SE0 and then the idle level'. SYNC + PID, then 9 bit
+    times at K (seven equal levels, no stuff bit), then the rest of the
+    packet (J and K levels, no SE0), then SE0 SE0 J. Expected: the two
+    bytes before the error ('bits left over at the end are not delivered');
+    no byte from the rest of the packet (no new packet starts on its J->K
+    edges); the end (SRX flag 1, marker on pin 3) only after the final J.
+    SRD while the rest of the packet is on the line: bit 3 'stuff error'
+    set, bit 1 'in a received packet (until its end, before the wait for
+    idle)' clear, bit 0 clear. Final status 0x08 (see the ASSUMPTION in
+    test_ser_sticky_bits_cleared_when_next_packet_starts on bit 2)."""
     chip = await new_chip(dut)
-    wave, t_idle = usb_stuff_error_wave(hold=1500, lead=0)
+    wave, t_rest, t_idle = usb_stuff_error_wave(lead=0)
     summ, _ = rx_wave_robust(USB_CFG, wave)
     assert summ == [("byte", 0x80), ("byte", 0xC3), ("end", "stuff")]
-    prog = rx_collect_prog(USB_CFG, nmax=6, extra=lambda a: a.set(MK2, 1, PP))
-    t_play, got = await rx_run(chip, prog, wave, J, 10)
-    assert got[0] == 2 and got[4:6] == [0x80, 0xC3], f"report {got}"
-    assert got[1] == 0x08, f"status after a stuff error {got[1]:#04x}, spec 0x08"
+    assert t_idle - t_rest > 1200
+    a = Asm()
+    fw_ser_config(a, USB_CFG)
+    a.set(MK, 1, PP)
+    a.srx(0); a.store(0, 4)
+    a.srx(0); a.store(0, 5)
+    a.delay(24, 1)                    # 768 clocks: inside the rest of the packet
+    a.srd(2, 0); a.store(2, 2)
+    a.ldi(1, 2)
+    a.srx(0)
+    a.set(MK2, 1, PP)                 # end (or a stray byte) arrived
+    fw_store_flag(a, 3, 0)
+    a.store(0, 1)
+    a.srd(2, 0); a.store(2, 3)
+    fw_report(a, 6)
+    a.halt()
+    t_play, got = await rx_run(chip, a, wave, J, 6)
+    assert got[4:6] == [0x80, 0xC3], f"bytes before the error {[hex(x) for x in got[4:6]]}"
+    assert got[0] == 1 and got[1] == 0xC3, \
+        f"third SRX (flag, Rd) = {got[0:2]}: spec end (1, Rd unchanged 0xC3), no byte from the rest"
+    assert got[2] & 0x0B == 0x08, \
+        f"status during the wait {got[2]:#04x}: spec bit 3 set, bits 0/1 clear"
+    assert got[3] == 0x08, f"status after a stuff error {got[3]:#04x}, spec 0x08"
     rise = [c for c, s in chip.pin_edges(MK2) if s == "1"]
     assert rise, "SRX never signalled the end"
     assert rise[0] > t_play + t_idle, \
-        f"end signalled at {rise[0] - t_play}, before the line was idle (J at {t_idle})"
+        (f"end signalled at {rise[0] - t_play}, before the packet's SE0 + J (J at {t_idle}; "
+         f"rest of the packet from {t_rest})")
     assert rise[0] < t_play + t_idle + 120, f"end signalled {rise[0] - t_play - t_idle} cycles after idle"
+
+
+@cocotb.test()
+async def test_ser_rx_stuff_error_nrz_waits_k_plus_1_idle_bits(dut):
+    """serial_engine.md, after a stuff error outside se0 mode: the engine
+    waits 'for K+1 bit times (1 if K = 0) at the idle level without a break,
+    longer than any level inside a stuffed packet', then signals the end.
+    NRZ, idle 1, K = 3, P = 40: start bit 0, a 1, then four 0s (the fourth
+    is the missing stuff bit: error). The rest of the packet has idle-level
+    runs of 3 bit times (120 clocks, less than K+1 = 4), which must not end
+    it, and 0 runs whose edges must not start a new packet; then the line
+    stays idle. The end comes at least 4 bit times after the final idle
+    level starts (bound: > 3 bit times, to allow for synchronizer and
+    counting phase) and no byte is delivered."""
+    chip = await new_chip(dut)
+    P = 40
+    cfg = SerCfg(P=P, S=20, idle=1, K=3, rx_en=1)
+    L_, H_ = (0, 1), (1, 1)
+    wave = ([L_] * P + [H_] * P + [L_] * (4 * P)
+            + [H_] * (3 * P) + [L_] * (2 * P) + [H_] * (3 * P) + [L_] * P
+            + [H_] * (3 * P) + [L_] * (3 * P))
+    t_final = len(wave)
+    wave += [H_] * (20 * P)
+    summ, _ = rx_wave_robust(cfg, wave)
+    assert summ == [("end", "stuff")]
+    a = Asm()
+    fw_ser_config(a, cfg)
+    a.set(MK, 1, PP)
+    a.ldi(0, 0x5C)
+    a.srx(0)
+    a.set(MK2, 1, PP)
+    fw_store_flag(a, 3, 0)
+    a.store(0, 1)
+    a.srd(2, 0); a.store(2, 2)
+    fw_report(a, 3)
+    a.halt()
+    t_play, got = await rx_run(chip, a, wave, H_, 3)
+    assert got[0:2] == [1, 0x5C], f"SRX (flag, Rd) = {got[0:2]}, spec end (1, unchanged)"
+    assert got[2] == 0x88, f"status {got[2]:#04x}, spec 0x88 (stuff error; pin 0 high)"
+    rise = [c for c, s in chip.pin_edges(MK2) if s == "1"]
+    assert rise, "end never signalled"
+    d = rise[0] - (t_play + t_final)
+    assert d > 3 * P, f"end signalled {d} clocks into the final idle run; spec after K+1 = 4 bit times"
+    assert d < 4 * P + 60, f"end signalled {d} clocks into the final idle run (4 bit times = {4 * P})"
 
 
 @cocotb.test()
@@ -2672,12 +2857,13 @@ async def test_ser_rx_can_like_on_pin1_crc15_residual(dut):
     stuffing K = 5 (NRZ); 'for CAN CRC-15, 0' residual. Receive on pin 1,
     idle level 0, while pin 0 toggles (it must be ignored: no se0 mode).
     After the CRC field the line returns to 0: five equal levels and then
-    no stuff bit is a stuff error, which ends the packet; the line is
-    already idle, so the end is signalled. Status 0x08.
-    AMBIGUOUS: the doc does not say how the CRC field is delimited when a
-    packet ends by stuff error; the trailing bits here are zeros, which
-    leave a zero CRC unchanged, so the residual is 0 under either reading
-    (with a real CAN frame -- idle 1, EOF ones -- it would not be)."""
+    no stuff bit is a stuff error, which ends the packet; the line stays
+    at the idle level, so after 'K+1 bit times ... at the idle level' the
+    end is signalled. Status 0x08. The CRC register holds 'the CRC over
+    every data bit of bytes crc_start onward up to the end, the CRC field
+    included': the data bits received after the CRC field here are zeros,
+    which keep a zero CRC at 0, so it reads 0 (the doc notes a real CAN
+    frame's recessive tail would not)."""
     chip = await new_chip(dut)
     cfg = CAN_CFG.but(idle=0, rx_pin=1, rx_en=1)
     data = [0x35, 0x00, 0xFF, 0x80]
@@ -2931,13 +3117,18 @@ async def test_ser_sticky_bits_cleared_when_next_packet_starts(dut):
     command 15 bit 0 or when the next packet starts.' Packet A overruns
     (status after draining 0x14); packet B is read in time and ends by SE0
     (0x04: A's overrun gone); packet C ends by a stuff error (0x08: B's SE0
-    bit gone). No clear command is used."""
+    bit gone; C's own EOP SE0 is only what the engine waits for after the
+    error -- 'after a stuff error ... in se0 mode the engine waits for the
+    packet's SE0 and then the idle level' -- not the end of the packet, so
+    bit 2 stays 0). No clear command is used.
+    ASSUMPTION: bit 2 'last packet ended by SE0' is not set by the SE0 seen
+    while waiting after a stuff error."""
     chip = await new_chip(dut)
     bits_a, _ = ser_tx_bits(USB_CFG, [0x80, 0xC3, 0x11, 0x22])
     wa = bits_to_wave(bits_a, 33, tail=200, idle_pins=J)
     bits_b, _ = ser_tx_bits(USB_CFG.but(crc_tx=0), [0x80, 0xD2])
     wb = bits_to_wave(bits_b, 33, tail=200, idle_pins=J)
-    wc, _ = usb_stuff_error_wave(hold=300, lead=0, tail=200)
+    wc = usb_stuff_error_wave(lead=0, tail=200)[0]
     a = Asm()
     fw_ser_config(a, USB_CFG)
     a.set(MK, 1, PP)
@@ -2969,22 +3160,25 @@ async def test_ser_sticky_bits_cleared_when_next_packet_starts(dut):
 
 @cocotb.test()
 async def test_ser_rx_abandon_command(dut):
-    """serial_engine.md k = 15 bit 1: 'abandon the packet being received
-    (wait for idle)'. NRZ, idle 0, P = 40, no stuffing (so the packet only
-    ends by abandon). Byte 0xF5 arrives, then the line stays high for 40 bit
-    times (it would make five 0xFF bytes) and then returns to idle. After
-    the abandon no byte completes: status bits 0/1/3/4 are 0 and an SRX
-    with a 100-clock timeout returns flag 1 with Rd unchanged. After the
-    line is idle a new packet (0x6B, 0x0D) is received normally.
-    AMBIGUOUS: whether an abandoned packet signals an end once idle is not
-    stated; the firmware clears any pending end (command 15 bit 0) before
-    the second packet, and the status mask leaves out bit 2."""
+    """serial_engine.md k = 15 bit 1: 'abandon the packet being received:
+    drop a waiting byte, skip the rest of the packet (see Receive), signal
+    no end'; Receive: after an abandon, outside se0 mode, the engine waits
+    'for K+1 bit times (1 if K = 0) at the idle level without a break'.
+    NRZ, idle 0, P = 40, K = 0. Byte 0xF5 arrives and is left waiting; the
+    line stays high for 40 bit times (it would make five 0xFF bytes), then
+    returns to idle. Mid-way the firmware reads status (bit 0 waiting, bit
+    1 in a packet), abandons, and reads status again: bit 0 clear (the
+    byte was dropped). After the line is idle: bits 0/1/3/4 clear, and an SRX
+    with a 100-clock timeout runs to its timeout (no end is signalled, no
+    byte): flag 1, Rd unchanged. A new packet (0x6B, 0x0D) is then received
+    normally."""
     chip = await new_chip(dut)
     P = 40
     cfg = SerCfg(P=P, S=20, rx_en=1)
     I_, H_ = (0, 1), (1, 1)
     w1 = bits_to_wave([(b, 1) for b in [(0xF5 >> i) & 1 for i in range(8)]], P)
-    w1 += [H_] * (40 * P) + [I_] * 600
+    w1 += [H_] * (40 * P)
+    w1_idle = [I_] * 600
     w2 = bits_to_wave([(b, 1) for b in [(x >> i) & 1 for x in (0x6B, 0x0D) for i in range(8)]], P)
     w2 += [I_] * 400
     assert rx_wave_robust(cfg, [I_] * 40 + w2)[0][:2] == [("byte", 0x6B), ("byte", 0x0D)]
@@ -2992,34 +3186,47 @@ async def test_ser_rx_abandon_command(dut):
         [("byte", 0xF5), ("byte", 0xFF), ("byte", 0xFF)]   # what abandon must stop
     a = Asm()
     fw_ser_config(a, cfg)
+    a.set(MK2, 0, PP)
     a.set(MK, 1, PP)
-    a.srx(0); a.store(0, 0)
+    a.wait(GO7, 1)                    # harness: byte 1 is waiting, line high
+    a.srd(2, 0); a.store(2, 0)
     a.ldi(3, 2); a.scfg(3, 15)
-    a.wait(GO7, 1)
     a.srd(2, 0); a.store(2, 1)
+    a.wait(GO7, 0)                    # harness: line idle for a while
+    a.srd(2, 0); a.store(2, 2)
     a.ldi(0, 0x5C)
+    a.set(MK2, 1, KEEP)
     a.srx(0, 100, 0)
-    fw_store_flag(a, 3, 2)
-    a.store(0, 3)
-    a.ldi(3, 1); a.scfg(3, 15)
+    a.set(MK2, 0, KEEP)
+    fw_store_flag(a, 3, 3)
+    a.store(0, 4)
     a.set(MK, 0, KEEP)
-    a.srx(0); a.store(0, 4)
     a.srx(0); a.store(0, 5)
-    fw_report(a, 6)
+    a.srx(0); a.store(0, 6)
+    fw_report(a, 7)
     a.halt()
     await chip.run(a, data=[0] * 8, ext={0: 0, 1: 1})
     await chip.wait_drive(MK, "1", 3000)
     await chip.clk(30)
-    await play_wave(chip, w1)
+    await play_wave(chip, w1[:8 * P + 4 * P])
     chip.set_ext(GO7, 1)
+    await play_wave(chip, w1[8 * P + 4 * P:])
+    await play_wave(chip, w1_idle)
+    chip.set_ext(GO7, 0)
     await chip.wait_drive(MK, "0", 3000, "ready for packet 2")
     await chip.clk(30)
     await play_wave(chip, w2)
-    got = await chip.host_read_n(6)
-    assert got[0] == 0xF5, f"first byte {got[0]:#04x}"
-    assert got[1] & 0x1B == 0, f"status after abandon {got[1]:#04x}: bytes kept arriving (bits 0/1/3/4)"
-    assert got[2:4] == [1, 0x5C], f"SRX after abandon (flag, Rd) {got[2:4]}, spec (1, 0x5C)"
-    assert got[4:6] == [0x6B, 0x0D], f"next packet {[hex(x) for x in got[4:6]]}"
+    got = await chip.host_read_n(7)
+    assert got[0] & 0x03 == 0x03, f"status before abandon {got[0]:#04x}: spec byte waiting, in a packet"
+    assert got[1] & 0x01 == 0, f"status after abandon {got[1]:#04x}: the waiting byte was not dropped"
+    assert got[2] & 0x1B == 0, \
+        f"status after the line went idle {got[2]:#04x}: spec bits 0/1/3/4 clear (bytes kept arriving?)"
+    assert got[3:5] == [1, 0x5C], f"SRX after abandon (flag, Rd) {got[3:5]}, spec (1, 0x5C)"
+    e = chip.pin_edges(MK2)
+    r = [c for c, s in e if s == "1"][0]
+    f = [c for c, s in e if s == "0" and c > r][0]
+    assert f - r >= 100, f"SRX after abandon returned after {f - r} cycles: an end was signalled"
+    assert got[5:7] == [0x6B, 0x0D], f"next packet {[hex(x) for x in got[5:7]]}"
 
 
 @cocotb.test()
@@ -3080,10 +3287,10 @@ async def test_ser_srd_live_pins_and_other_k(dut):
     'the receive pin now'; 'other | 0'. USB settings with rx_en = 0 (no
     packet can start); the host sets (D+, D-) to J, K, SE0 and (1,1) and
     reads status: rx_pin = 0 -> 0x00 0x80 0x40 0x80; after SCFG k = 4 with
-    rx_pin = 1 -> 0x80 0x00 0x40 0x80. SRD k = 3, 7, 15 write 0 to a
-    register holding 0xFF.
-    AMBIGUOUS: whether bit 6 reports SE0 outside se0 mode is not stated
-    (se0 mode is on here)."""
+    rx_pin = 1 -> 0x80 0x00 0x40 0x80. Bit 6 is 'both pins low now (in any
+    mode)': with se0 mode then turned off, (0,0) still reads 0x40 and (1,0)
+    0x00 (rx_pin still 1). SRD k = 3, 7, 15 write 0 to a register holding
+    0xFF."""
     chip = await new_chip(dut)
     cfg = USB_CFG.but(rx_en=0)
 
@@ -3103,6 +3310,10 @@ async def test_ser_srd_live_pins_and_other_k(dut):
     a.scfg(1, 4)
     for _ in range(4):
         srd_send(a)
+    a.ldi(1, cfg.but(rx_pin=1, se0=0).flags())
+    a.scfg(1, 4)
+    for _ in range(2):
+        srd_send(a)
     for k in (3, 7, 15):
         a.ldi(1, 0xFF)
         a.srd(1, k)
@@ -3117,8 +3328,13 @@ async def test_ser_srd_live_pins_and_other_k(dut):
             chip.set_ext(1, p1)
             await chip.clk(12)
             got.append(await chip.host_read())
+    for p0, p1 in ((0, 0), (1, 0)):
+        chip.set_ext(0, p0)
+        chip.set_ext(1, p1)
+        await chip.clk(12)
+        got.append(await chip.host_read())
     got += await chip.host_read_n(3)
-    exp = [0x00, 0x80, 0x40, 0x80, 0x80, 0x00, 0x40, 0x80, 0, 0, 0]
+    exp = [0x00, 0x80, 0x40, 0x80, 0x80, 0x00, 0x40, 0x80, 0x40, 0x00, 0, 0, 0]
     assert got == exp, f"SRD {[hex(x) if x is not None else x for x in got]}, spec {[hex(x) for x in exp]}"
 
 
@@ -3210,9 +3426,8 @@ async def test_code_runs_in_data_region(dut):
     256, not 0, and a CALL from there returns to the full 9-bit address.'
     'word w is fetched from bytes 2w/2w+1', so LOAD offset 2*(300-256)+1
     reads the high byte of word 300. Also 3 cycles per instruction there
-    (architecture.md 'Uniform 3 cycles/instruction').
-    AMBIGUOUS: architecture.md Pipeline still says 'only 0-255 are
-    legitimate'; isa.md (newer) is followed."""
+    (architecture.md 'Uniform 3 cycles/instruction'; its Pipeline section
+    now also says words 256-511 are the data region and run as code)."""
     chip = await new_chip(dut)
     a = Asm()
     a.ldi(1, 0x21)                 # 0
