@@ -73,7 +73,7 @@ import blind_mutate  # noqa: E402
 
 TOP = "tt_um_pankajnair_protocol_emulator"
 PROOFS = ROOT / "formal" / "equiv_proofs.json"
-RTL = ["cpu/isa_defs.v", "cpu/regfile.v", "io/cycle_counter.v", "cpu/core.v", "io/pin_ctrl.v", "top.v"]
+RTL = ["cpu/isa_defs.v", "cpu/regfile.v", "io/cycle_counter.v", "cpu/core.v", "io/pin_ctrl.v", "io/ser_engine.v", "top.v"]
 PINS_OUT = ("uo_out", "uio_out", "uio_oe")
 MEM_BB = """(* blackbox *)
 module mem (input wire clk, input wire rst_n, input wire [9:0] addr, input wire we,
@@ -88,14 +88,14 @@ S_LOAD, S_FETCH_LO, S_EXECUTE = "2'd0", "2'd1", "2'd3"
 # register pair, asserted equal unless listed.
 CONTROLS = [
     # (mutant id, what it exercises)
-    ("cpu/core.v:360:13977:CONST:\"8'd1\"", "uo_out compare at reset (killed by formal only)"),
-    ("io/pin_ctrl.v:204:8903:CONST:\"1'd0\"", "uio_oe compare (HOST_STATUS enable)"),
-    ("cpu/core.v:432:16548:REL:'!='", "a program executing from the shared SRAM (OUT taken for every other opcode)"),
-    ("cpu/core.v:310:11975:DEL:';'", "write compare (STORE data; killed by simulation only)"),
+    ("cpu/core.v:401:15861:CONST:\"8'd1\"", "uo_out compare at reset (killed by formal only)"),
+    ("io/pin_ctrl.v:211:9189:CONST:\"1'd0\"", "uio_oe compare (HOST_STATUS enable)"),
+    ("cpu/core.v:474:18484:REL:'!='", "a program executing from the shared SRAM (OUT taken for every other opcode)"),
+    ("cpu/core.v:341:13323:DEL:';'", "write compare (STORE data; killed by simulation only)"),
 ]
 
 ALLOWED_DIFF = {
-    ("cpu/core.v", 292): (["dr"],
+    ("cpu/core.v", 323): (["dr"],
         # the default address is issued only in EXECUTE for non-memory
         # opcodes; that byte is in dr on EXECUTE's later cycles (decode
         # uses ir then) and in FETCH_LO (used only by a pending LOAD/LOADX
@@ -113,10 +113,10 @@ ALLOWED_DIFF = {
         # clears entering_execute, so a halted core decodes ir (the HALT
         # word), never the live SRAM byte
         "(!g_u_core_halted || !g_u_core_entering_execute)"),
-    ("cpu/core.v", 350): (["u_core.ir"],
+    ("cpu/core.v", 391): (["u_core.ir"],
         # ir is latched on EXECUTE's first cycle; until then nothing reads it
         f"(g_u_core_ir == m_u_core_ir) || (g_u_core_state != {S_EXECUTE}) || g_u_core_entering_execute"),
-    ("cpu/core.v", 362): (["u_core.pending_lx_rd"],
+    ("cpu/core.v", 403): (["u_core.pending_lx_rd"],
         "(g_u_core_pending_lx_rd == m_u_core_pending_lx_rd) || !g_u_core_pending_lx_writeback"),
 }
 
@@ -182,22 +182,22 @@ def _setoutb_idempotent() -> str:
 
 FORMAL_ONLY = {
     # reset value of pc: LOAD never reads pc, and START's rise sets it to 0
-    ("cpu/core.v", 348): (["u_core.pc"], f"{_eq('u_core.pc')} || {_ST} == {S_LOAD}"),
+    ("cpu/core.v", 389): (["u_core.pc"], f"{_eq('u_core.pc')} || {_ST} == {S_LOAD}"),
     # START's rise no longer re-zeroes pc: it is still 0 from reset
-    ("cpu/core.v", 370): ([], f"{_ST} != {S_LOAD} || {_G('u_core.pc')} == 9'd0"),
+    ("cpu/core.v", 411): ([], f"{_ST} != {S_LOAD} || {_G('u_core.pc')} == 9'd0"),
     # reset value of ir_lo: overwritten by the first FETCH_HI before EXECUTE reads it
-    ("cpu/core.v", 349): (["u_core.ir_lo"], f"{_eq('u_core.ir_lo')} || {_ST} != {S_EXECUTE}"),
+    ("cpu/core.v", 390): (["u_core.ir_lo"], f"{_eq('u_core.ir_lo')} || {_ST} != {S_EXECUTE}"),
     # entering_execute not reset: a stale 1 before the first EXECUTE makes
     # decode see {mem_rdata, ir_lo}, which nothing outside EXECUTE commits;
     # its only side effect is a counter load, overwritten before it is read
-    ("cpu/core.v", 351): (["u_core.entering_execute", "u_core.u_cycle_counter.count"],
+    ("cpu/core.v", 392): (["u_core.entering_execute", "u_core.u_cycle_counter.count"],
         f"({_eq('u_core.entering_execute')} || {_ST} != {S_EXECUTE}) && "
         f"({_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ})"),
     # exec_commit outside EXECUTE: the SET/OUTB in ir is re-applied, a no-op
-    ("cpu/core.v", 178): ([], _setoutb_idempotent()),
+    ("cpu/core.v", 201): ([], _setoutb_idempotent()),
     # start_fall has no consumer (core.v marks it unused); it is not a flop,
     # so nothing may differ
-    ("io/pin_ctrl.v", 137): ([], "1'b1"),
+    ("io/pin_ctrl.v", 144): ([], "1'b1"),
     # count's reset value, and its load value when shifted == 0: the
     # instruction exits on the load cycle, and every later reader reloads first
     ("io/cycle_counter.v", 88): (["u_core.u_cycle_counter.count"],
@@ -206,21 +206,21 @@ FORMAL_ONLY = {
         f"{_eq('u_core.u_cycle_counter.count')} || !{_COUNT_READ}"),
     # synchronizer reset values: flushed by the inputs within 2 edges,
     # while the FSM is still in LOAD with no HOST_GO edge (RESET_FACTS)
-    ("io/pin_ctrl.v", 99): (["u_pin_ctrl.ui_in_ff1", "u_pin_ctrl.ui_in_ff2"],
+    ("io/pin_ctrl.v", 105): (["u_pin_ctrl.ui_in_ff1", "u_pin_ctrl.ui_in_ff2"],
         f"({_eq('u_pin_ctrl.ui_in_ff1')} || rcnt == 2'd0) && ({_eq('u_pin_ctrl.ui_in_ff2')} || rcnt <= 2'd1)"),
-    ("io/pin_ctrl.v", 100): (["u_pin_ctrl.ui_in_ff2"], f"{_eq('u_pin_ctrl.ui_in_ff2')} || rcnt == 2'd0"),
+    ("io/pin_ctrl.v", 106): (["u_pin_ctrl.ui_in_ff2"], f"{_eq('u_pin_ctrl.ui_in_ff2')} || rcnt == 2'd0"),
     # uio bit 0 only (the mutant resets to 8'd1): not START, not HOST_GO,
     # and pin_read in LOAD selects pin 5
-    ("io/pin_ctrl.v", 101): (["u_pin_ctrl.uio_in_ff1", "u_pin_ctrl.uio_in_ff2"],
+    ("io/pin_ctrl.v", 107): (["u_pin_ctrl.uio_in_ff1", "u_pin_ctrl.uio_in_ff2"],
         f"({_eq('u_pin_ctrl.uio_in_ff1')} || (rcnt == 2'd0 && ((g_u_pin_ctrl_uio_in_ff1 ^ m_u_pin_ctrl_uio_in_ff1) & 8'hFE) == 8'd0)) && "
         f"({_eq('u_pin_ctrl.uio_in_ff2')} || (rcnt <= 2'd1 && ((g_u_pin_ctrl_uio_in_ff2 ^ m_u_pin_ctrl_uio_in_ff2) & 8'hFE) == 8'd0))"),
-    ("io/pin_ctrl.v", 102): (["u_pin_ctrl.uio_in_ff2"],
+    ("io/pin_ctrl.v", 108): (["u_pin_ctrl.uio_in_ff2"],
         f"{_eq('u_pin_ctrl.uio_in_ff2')} || (rcnt == 2'd0 && ((g_u_pin_ctrl_uio_in_ff2 ^ m_u_pin_ctrl_uio_in_ff2) & 8'hFE) == 8'd0)"),
     # edge-detector history reset values: with the synchronizer at 0 a
     # stale 1 can only fake a fall, and in LOAD with no ack pending
     # neither fall is consumed
-    ("io/pin_ctrl.v", 128): (["u_pin_ctrl.start_prev"], f"{_eq('u_pin_ctrl.start_prev')} || rcnt == 2'd0"),
-    ("io/pin_ctrl.v", 129): (["u_pin_ctrl.host_go_prev"], f"{_eq('u_pin_ctrl.host_go_prev')} || rcnt == 2'd0"),
+    ("io/pin_ctrl.v", 135): (["u_pin_ctrl.start_prev"], f"{_eq('u_pin_ctrl.start_prev')} || rcnt == 2'd0"),
+    ("io/pin_ctrl.v", 136): (["u_pin_ctrl.host_go_prev"], f"{_eq('u_pin_ctrl.host_go_prev')} || rcnt == 2'd0"),
 }
 
 # Negative control for FORMAL_ONLY: mutants with a real pin difference
@@ -229,16 +229,16 @@ FORMAL_ONLY = {
 # too permissive, so `--formal-only --controls` requires none PROVEN.
 FORMAL_ONLY_CONTROLS = [
     # (mutant id, FORMAL_ONLY key, or an explicit (allowed, invariant))
-    ("io/pin_ctrl.v:101:4474:CONST:\"8'd255\"", ("io/pin_ctrl.v", 101)),  # START/HOST_GO bits too
-    ("io/pin_ctrl.v:101:4460:DEL:';'", ("io/pin_ctrl.v", 101)),
-    ("io/pin_ctrl.v:102:4500:CONST:\"8'd255\"", ("io/pin_ctrl.v", 102)),
+    ("io/pin_ctrl.v:107:4719:CONST:\"8'd255\"", ("io/pin_ctrl.v", 107)),  # START/HOST_GO bits too
+    ("io/pin_ctrl.v:107:4705:DEL:';'", ("io/pin_ctrl.v", 107)),
+    ("io/pin_ctrl.v:108:4745:CONST:\"8'd255\"", ("io/pin_ctrl.v", 108)),
     ("io/cycle_counter.v:90:4344:ARITH:'+'", ("io/cycle_counter.v", 90)),  # count loaded wrong, then read
     ("io/cycle_counter.v:90:4346:CONST:\"24'd2\"", ("io/cycle_counter.v", 90)),
-    ("cpu/core.v:360:13977:CONST:\"8'd1\"",
+    ("cpu/core.v:401:15861:CONST:\"8'd1\"",
      (["u_core.uo_out_reg"], f"{_eq('u_core.uo_out_reg')} || rcnt == 2'd0")),  # reset value on the pins
-    ("cpu/core.v:361:13989:DEL:';'",
+    ("cpu/core.v:402:15873:DEL:';'",
      (["u_core.pending_lx_writeback"], f"{_eq('u_core.pending_lx_writeback')} || rcnt == 2'd0")),
-    ("io/pin_ctrl.v:138:5887:BIT:''", ([], "1'b1")),  # HOST_GO rise a cycle late
+    ("io/pin_ctrl.v:145:6173:BIT:''", ([], "1'b1")),  # HOST_GO rise a cycle late
 ]
 
 
